@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-09-30T20:41:32.170058+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-09-30T21:05:52.972148+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `158`
-- Declared pairs matching a schema method/path: `73`
+- Unique declared server method/path pairs: `159`
+- Declared pairs matching a schema method/path: `74`
 - Declared pairs outside the schema: `85`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -72,6 +72,7 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /UserFavoriteItems/{item_id}` | `src/api.rs` | match |
 | `GET /Search/Hints` | `src/api.rs` | match |
 | `GET /Sessions` | `src/api.rs` | match |
+| `POST /Sessions/Capabilities/Full` | `src/api.rs` | match |
 | `POST /Sessions/Logout` | `src/api.rs` | match |
 | `POST /Sessions/Playing` | `src/api.rs` | match |
 | `POST /Sessions/Playing/Progress` | `src/api.rs` | match |

@@ -118,6 +118,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/Search/Hints", get(search_hints))
         .route("/Sessions", get(list_sessions))
+        .route(
+            "/Sessions/Capabilities/Full",
+            post(update_session_capabilities),
+        )
         .route("/Sessions/Logout", post(logout))
         .route("/Sessions/Playing", post(start_playback))
         .route("/Sessions/Playing/Progress", post(progress_playback))
@@ -1053,6 +1057,7 @@ struct SessionDto {
     last_activity_date: DateTime<Utc>,
     is_active: bool,
     supports_remote_control: bool,
+    capabilities: serde_json::Value,
 }
 
 async fn list_sessions(
@@ -1076,9 +1081,90 @@ async fn list_sessions(
                 // Remote-control commands are intentionally not accepted until their
                 // ownership and command protocol are implemented.
                 supports_remote_control: false,
+                capabilities: row.capabilities,
             })
             .collect(),
     ))
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default, rename_all = "PascalCase")]
+struct ClientCapabilitiesDto {
+    playable_media_types: Vec<String>,
+    supported_commands: Vec<String>,
+    supports_media_control: bool,
+    supports_persistent_identifier: bool,
+    device_profile: Option<serde_json::Value>,
+    app_store_url: Option<String>,
+    icon_url: Option<String>,
+}
+
+impl ClientCapabilitiesDto {
+    fn validate(&self) -> Result<(), ApiError> {
+        let valid_text = |value: &str, limit: usize| {
+            value.len() <= limit && !value.chars().any(char::is_control)
+        };
+        if self.playable_media_types.len() > 16
+            || self.supported_commands.len() > 128
+            || self
+                .playable_media_types
+                .iter()
+                .any(|value| !valid_text(value, 128))
+            || self
+                .supported_commands
+                .iter()
+                .any(|value| !valid_text(value, 128))
+            || self
+                .app_store_url
+                .iter()
+                .chain(self.icon_url.iter())
+                .any(|value| !valid_text(value, 2048))
+            || self
+                .device_profile
+                .as_ref()
+                .is_some_and(|value| !value.is_object())
+        {
+            return Err(ApiError::BadRequest(
+                "Invalid client capabilities".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct CapabilitiesQuery {
+    #[serde(alias = "Id")]
+    id: Option<Uuid>,
+}
+
+async fn update_session_capabilities(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    headers: HeaderMap,
+    Query(query): Query<CapabilitiesQuery>,
+    Json(capabilities): Json<ClientCapabilitiesDto>,
+) -> Result<StatusCode, ApiError> {
+    capabilities.validate()?;
+    let (token, _) = auth::extract_raw_token(&headers)?.ok_or(ApiError::Unauthorized)?;
+    let session = db::auth_session_by_token(&state.db, &auth::token_digest(&token))
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    let capabilities = serde_json::to_value(capabilities)
+        .map_err(|_| ApiError::Internal("client capabilities serialization failed".to_owned()))?;
+    let updated = db::update_auth_session_capabilities(
+        &state.db,
+        state.run_id,
+        query.id.unwrap_or(session.id),
+        user.id,
+        user.is_admin,
+        &capabilities,
+    )
+    .await?;
+    if !updated {
+        return Err(ApiError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize, Default)]

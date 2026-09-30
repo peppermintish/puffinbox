@@ -176,6 +176,7 @@ pub struct AuthSessionRecord {
     pub device_id: String,
     pub created_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
+    pub capabilities: serde_json::Value,
 }
 
 #[derive(Clone, Debug)]
@@ -1394,7 +1395,7 @@ pub async fn list_auth_sessions(
     user_id: Uuid,
     include_all: bool,
 ) -> Result<Vec<AuthSessionRecord>, sqlx::Error> {
-    let rows = sqlx::query("SELECT t.id,t.user_id,u.username,t.client,t.device_name,t.device_id,t.created_at,t.last_seen_at FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.revoked_at IS NULL AND t.expires_at>NOW() AND ($1 OR t.user_id=$2) ORDER BY t.last_seen_at DESC LIMIT 1000")
+    let rows = sqlx::query("SELECT t.id,t.user_id,u.username,t.client,t.device_name,t.device_id,t.created_at,t.last_seen_at,t.capabilities FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.revoked_at IS NULL AND t.expires_at>NOW() AND ($1 OR t.user_id=$2) ORDER BY t.last_seen_at DESC LIMIT 1000")
         .bind(include_all).bind(user_id).fetch_all(pool).await?;
     rows.iter()
         .map(|row| {
@@ -1407,6 +1408,7 @@ pub async fn list_auth_sessions(
                 device_id: row.try_get("device_id")?,
                 created_at: row.try_get("created_at")?,
                 last_seen_at: row.try_get("last_seen_at")?,
+                capabilities: row.try_get("capabilities")?,
             })
         })
         .collect()
@@ -1416,7 +1418,7 @@ pub async fn auth_session_by_token(
     pool: &PgPool,
     token_hash: &str,
 ) -> Result<Option<AuthSessionRecord>, sqlx::Error> {
-    let row = sqlx::query("SELECT t.id,t.user_id,u.username,t.client,t.device_name,t.device_id,t.created_at,t.last_seen_at FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at>NOW() AND u.disabled=FALSE")
+    let row = sqlx::query("SELECT t.id,t.user_id,u.username,t.client,t.device_name,t.device_id,t.created_at,t.last_seen_at,t.capabilities FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at>NOW() AND u.disabled=FALSE")
         .bind(token_hash).fetch_optional(pool).await?;
     row.as_ref()
         .map(|row| {
@@ -1429,9 +1431,31 @@ pub async fn auth_session_by_token(
                 device_id: row.try_get("device_id")?,
                 created_at: row.try_get("created_at")?,
                 last_seen_at: row.try_get("last_seen_at")?,
+                capabilities: row.try_get("capabilities")?,
             })
         })
         .transpose()
+}
+
+pub async fn update_auth_session_capabilities(
+    pool: &PgPool,
+    run_id: Uuid,
+    session_id: Uuid,
+    user_id: Uuid,
+    is_admin: bool,
+    capabilities: &serde_json::Value,
+) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    require_active_run(&mut tx, run_id).await?;
+    let result = sqlx::query("UPDATE auth_tokens SET capabilities=$1 WHERE id=$2 AND ($3 OR user_id=$4) AND revoked_at IS NULL AND expires_at>NOW() AND EXISTS(SELECT 1 FROM users u WHERE u.id=auth_tokens.user_id AND u.disabled=FALSE)")
+        .bind(capabilities)
+        .bind(session_id)
+        .bind(is_admin)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn start_playback_session(

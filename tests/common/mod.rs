@@ -54,5 +54,10 @@ pub async fn apply_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     ))
     .execute(pool)
     .await?;
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0020_session_capabilities.sql"
+    ))
+    .execute(pool)
+    .await?;
     Ok(())
 }
