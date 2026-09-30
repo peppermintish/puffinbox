@@ -382,16 +382,32 @@ class DevTools {
       const message = JSON.parse(event.data);
       const pending = this.pending.get(message.id);
       if (!pending) return;
+      clearTimeout(pending.timeout);
       this.pending.delete(message.id);
       if (message.error) pending.reject(new Error(message.error.message));
       else pending.resolve(message.result || {});
+    });
+    socket.addEventListener('close', () => {
+      for (const pending of this.pending.values()) {
+        clearTimeout(pending.timeout);
+        pending.reject(new Error('Browser connection closed before its command completed.'));
+      }
+      this.pending.clear();
     });
   }
   send(method, params = {}, sessionId) {
     const id = this.nextId++;
     const message = { id, method, params };
     if (sessionId) message.sessionId = sessionId;
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); this.socket.send(JSON.stringify(message)); });
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Browser command timed out after 30 seconds: ${method}`));
+      }, 30000);
+      this.pending.set(id, { resolve, reject, timeout });
+      try { this.socket.send(JSON.stringify(message)); }
+      catch (error) { clearTimeout(timeout); this.pending.delete(id); reject(error); }
+    });
   }
   async evaluate(sessionId, expression) {
     const response = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
@@ -731,7 +747,9 @@ async function main() {
     socket?.close();
     chrome.kill();
     await Promise.race([once(chrome, 'exit').catch(() => {}), new Promise((resolve) => setTimeout(resolve, 3000))]);
-    await new Promise((resolve) => server.close(() => resolve()));
+    const closed = new Promise((resolve) => server.close(() => resolve()));
+    server.closeAllConnections();
+    await closed;
     for (let attempt = 0; attempt < 10; attempt += 1) {
       try { fs.rmSync(profilePath, { recursive: true, force: true }); break; }
       catch (error) { if (error.code !== 'EPERM' || attempt === 9) break; await new Promise((resolve) => setTimeout(resolve, 150)); }

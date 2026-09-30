@@ -386,9 +386,17 @@ class DevTools {
       if (!message.id) return;
       const pending = this.pending.get(message.id);
       if (!pending) return;
+      clearTimeout(pending.timeout);
       this.pending.delete(message.id);
       if (message.error) pending.reject(new Error(message.error.message));
       else pending.resolve(message.result || {});
+    });
+    socket.addEventListener('close', () => {
+      for (const pending of this.pending.values()) {
+        clearTimeout(pending.timeout);
+        pending.reject(new Error('Browser connection closed before its command completed.'));
+      }
+      this.pending.clear();
     });
   }
 
@@ -397,8 +405,13 @@ class DevTools {
     const message = { id, method, params };
     if (sessionId) message.sessionId = sessionId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.socket.send(JSON.stringify(message));
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Browser command timed out after 30 seconds: ${method}`));
+      }, 30000);
+      this.pending.set(id, { resolve, reject, timeout });
+      try { this.socket.send(JSON.stringify(message)); }
+      catch (error) { clearTimeout(timeout); this.pending.delete(id); reject(error); }
     });
   }
 
@@ -473,14 +486,14 @@ async function main() {
   for (let attempt = 0; attempt < 150; attempt += 1) {
     if (browser.exitCode != null) throw new Error(`Chrome exited before its debugging endpoint was ready: ${browserOutput}`);
     try {
-      const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`);
+      const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(1500) });
       if (response.ok) { devtoolsUrl = (await response.json()).webSocketDebuggerUrl; break; }
     } catch (_) { /* Chrome is still starting. */ }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   if (!devtoolsUrl) throw new Error(`Chrome did not expose its debugging endpoint: ${browserOutput}`);
   const socket = new WebSocket(devtoolsUrl);
-  await once(socket, 'open');
+  await once(socket, 'open', { signal: AbortSignal.timeout(15000) });
   const cdp = new DevTools(socket);
   const baseUrl = `http://127.0.0.1:${serverPort}`;
 
@@ -812,7 +825,9 @@ async function main() {
     socket.close();
     browser.kill();
     await Promise.race([once(browser, 'exit').catch(() => {}), new Promise((resolve) => setTimeout(resolve, 3000))]);
-    await new Promise((resolve) => server.close(() => resolve()));
+    const closed = new Promise((resolve) => server.close(() => resolve()));
+    server.closeAllConnections();
+    await closed;
     for (let attempt = 0; attempt < 10; attempt += 1) {
       try { fs.rmSync(profilePath, { recursive: true, force: true }); break; }
       catch (error) {
