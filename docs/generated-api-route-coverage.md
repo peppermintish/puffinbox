@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-09-30T21:05:52.972148+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-09-30T21:51:53.601938+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `159`
-- Declared pairs matching a schema method/path: `74`
+- Unique declared server method/path pairs: `164`
+- Declared pairs matching a schema method/path: `79`
 - Declared pairs outside the schema: `85`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -77,6 +77,8 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /Sessions/Playing` | `src/api.rs` | match |
 | `POST /Sessions/Playing/Progress` | `src/api.rs` | match |
 | `POST /Sessions/Playing/Stopped` | `src/api.rs` | match |
+| `GET /System/Endpoint` | `src/client_connection.rs` | match |
+| `GET /Playback/BitrateTest` | `src/client_connection.rs` | match |
 | `GET /Books/{item_id}/Reader` | `src/media_features/books.rs` | custom / not in target schema |
 | `GET /Books/{item_id}/Document` | `src/media_features/books.rs` | custom / not in target schema |
 | `HEAD /Books/{item_id}/Document` | `src/media_features/books.rs` | custom / not in target schema |
@@ -174,5 +176,8 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /Puffinbox/Plugins/TrustStaged` | `src/plugins.rs` | custom / not in target schema |
 | `POST /Puffinbox/Plugins/{plugin_id}/Enable` | `src/plugins.rs` | custom / not in target schema |
 | `POST /Puffinbox/Plugins/{plugin_id}/Disable` | `src/plugins.rs` | custom / not in target schema |
+| `POST /Users/Configuration` | `src/user_settings.rs` | match |
+| `GET /DisplayPreferences/{displayPreferencesId}` | `src/user_settings.rs` | match |
+| `POST /DisplayPreferences/{displayPreferencesId}` | `src/user_settings.rs` | match |
 
 The matched-count denominator is the full target schema's operation count, not this project's declarations. Unsupported operations are not implied to be implemented.

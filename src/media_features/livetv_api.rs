@@ -103,7 +103,7 @@ async fn lock_live_tv_mutation_user(
     let row = sqlx::query(
         "SELECT u.id,u.username,u.is_admin,u.disabled,u.enable_remote_access, \
          u.allow_media_playback,u.enable_content_downloading,u.enable_live_tv_access, \
-         u.enable_live_tv_management,u.restrict_libraries,u.max_parental_rating, \
+         u.enable_live_tv_management,u.restrict_libraries,u.configuration,u.max_parental_rating, \
          u.block_unrated_items,ARRAY[]::uuid[] AS allowed_library_ids \
          FROM users u WHERE u.id=$1 FOR UPDATE OF u",
     )
@@ -2894,6 +2894,7 @@ mod tests {
             max_parental_rating: Some(75),
             block_unrated_items: Vec::new(),
             allowed_library_ids: Vec::new(),
+            configuration: Default::default(),
         };
         assert!(rating_visible(&user, Some(75), "LiveTvProgram"));
         assert!(!rating_visible(&user, Some(100), "LiveTvProgram"));

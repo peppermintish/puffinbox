@@ -480,7 +480,7 @@ pub async fn user_count(pool: &PgPool) -> Result<i64, sqlx::Error> {
 
 pub async fn get_user(pool: &PgPool, id: Uuid) -> Result<Option<UserRecord>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id = $1",
+        "SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -494,7 +494,7 @@ pub async fn find_user_by_name(
 ) -> Result<Option<(UserRecord, String)>, sqlx::Error> {
     let normalized = username.trim().to_ascii_lowercase();
     let row = sqlx::query(
-        "SELECT u.id, u.username, u.password_hash, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.username_norm = $1",
+        "SELECT u.id, u.username, u.password_hash, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.username_norm = $1",
     )
     .bind(normalized)
     .fetch_optional(pool)
@@ -510,7 +510,7 @@ pub async fn find_user_by_name(
 
 pub async fn list_users(pool: &PgPool) -> Result<Vec<UserRecord>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u ORDER BY u.username_norm",
+        "SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u ORDER BY u.username_norm",
     )
     .fetch_all(pool)
     .await?;
@@ -607,7 +607,7 @@ pub async fn update_user(
     sqlx::query("SELECT pg_advisory_xact_lock(82473011)")
         .execute(&mut *tx)
         .await?;
-    let row = sqlx::query("SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id=$1 FOR UPDATE")
+    let row = sqlx::query("SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id=$1 FOR UPDATE")
         .bind(id).fetch_optional(&mut *tx).await?;
     let Some(existing) = row.as_ref().map(user_from_row).transpose()? else {
         return Ok(None);
@@ -769,6 +769,11 @@ pub(crate) fn user_from_row(row: &sqlx::postgres::PgRow) -> Result<UserRecord, s
             .map(i32::from),
         block_unrated_items: row.try_get("block_unrated_items")?,
         allowed_library_ids: row.try_get("allowed_library_ids")?,
+        configuration: row
+            .try_get::<sqlx::types::Json<crate::user_settings::UserConfiguration>, _>(
+                "configuration",
+            )?
+            .0,
     })
 }
 
@@ -1280,7 +1285,7 @@ pub async fn active_auth_identity(
     pool: &PgPool,
     token_hash: &str,
 ) -> Result<Option<(Uuid, UserRecord)>, sqlx::Error> {
-    let row = sqlx::query("SELECT t.id AS token_id, u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at > NOW() AND u.disabled=FALSE")
+    let row = sqlx::query("SELECT t.id AS token_id, u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at > NOW() AND u.disabled=FALSE")
         .bind(token_hash).fetch_optional(pool).await?;
     row.map(|r| Ok((r.try_get("token_id")?, user_from_row(&r)?)))
         .transpose()
@@ -1290,7 +1295,7 @@ pub async fn active_media_access_identity(
     pool: &PgPool,
     token_hash: &str,
 ) -> Result<Option<(Uuid, UserRecord)>, sqlx::Error> {
-    let row = sqlx::query("SELECT t.id AS token_id, u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM media_access_tokens m JOIN auth_tokens t ON t.id=m.parent_token_id JOIN users u ON u.id=t.user_id WHERE m.token_hash=$1 AND m.expires_at > NOW() AND t.revoked_at IS NULL AND t.expires_at > NOW() AND u.disabled=FALSE")
+    let row = sqlx::query("SELECT t.id AS token_id, u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM media_access_tokens m JOIN auth_tokens t ON t.id=m.parent_token_id JOIN users u ON u.id=t.user_id WHERE m.token_hash=$1 AND m.expires_at > NOW() AND t.revoked_at IS NULL AND t.expires_at > NOW() AND u.disabled=FALSE")
         .bind(token_hash).fetch_optional(pool).await?;
     row.map(|r| Ok((r.try_get("token_id")?, user_from_row(&r)?)))
         .transpose()
@@ -2244,6 +2249,7 @@ mod tests {
             max_parental_rating: Some(50),
             block_unrated_items: vec![],
             allowed_library_ids: vec![],
+            configuration: Default::default(),
         };
         let mut movie = ItemRecord {
             id: Uuid::nil(),
@@ -2298,6 +2304,7 @@ mod tests {
             max_parental_rating: None,
             block_unrated_items: Vec::new(),
             allowed_library_ids: Vec::new(),
+            configuration: Default::default(),
         };
         let mut item = ItemRecord {
             id: Uuid::new_v4(),

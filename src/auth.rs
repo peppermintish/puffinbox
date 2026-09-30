@@ -36,6 +36,8 @@ pub struct UserRecord {
     pub max_parental_rating: Option<i32>,
     pub block_unrated_items: Vec<String>,
     pub allowed_library_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub configuration: crate::user_settings::UserConfiguration,
 }
 
 #[derive(Clone, Debug)]

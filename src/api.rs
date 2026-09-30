@@ -131,6 +131,8 @@ pub fn router(state: AppState) -> Router {
         tracing::info_span!("http_request", method = %request.method(), path = %request.uri().path())
     });
     core.merge(crate::media_features::router(state.clone()))
+        .merge(crate::client_connection::router(state.clone()))
+        .merge(crate::user_settings::router(state.clone()))
         .merge(crate::playlists::router(state.clone()))
         .merge(crate::offline::router(state.clone()))
         .merge(crate::metadata::router(state.clone()))
@@ -586,20 +588,24 @@ struct UserPolicyDto {
 #[serde(rename_all = "PascalCase")]
 struct UserDto {
     id: Uuid,
+    server_id: Uuid,
     name: String,
     has_password: bool,
     has_configured_password: bool,
     is_administrator: bool,
     policy: UserPolicyDto,
+    configuration: crate::user_settings::UserConfiguration,
 }
 
-fn user_dto(user: &UserRecord) -> UserDto {
+fn user_dto(user: &UserRecord, server_id: Uuid) -> UserDto {
     UserDto {
         id: user.id,
+        server_id,
         name: user.username.clone(),
         has_password: true,
         has_configured_password: true,
         is_administrator: user.is_admin,
+        configuration: user.configuration.clone(),
         policy: UserPolicyDto {
             is_administrator: user.is_admin,
             is_disabled: user.disabled,
@@ -622,25 +628,30 @@ fn user_dto(user: &UserRecord) -> UserDto {
 #[serde(rename_all = "PascalCase")]
 struct AuthenticationResponseDto {
     user: UserDto,
+    session_info: SessionDto,
     access_token: String,
     server_id: Uuid,
 }
 
-fn authentication_response(
+async fn authentication_response(
+    state: &AppState,
     user: &UserRecord,
     token: String,
-    server_id: Uuid,
-    config: &crate::Config,
 ) -> Result<Response, ApiError> {
+    let session = db::auth_session_by_token(&state.db, &auth::token_digest(&token))
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
     let mut response = Json(AuthenticationResponseDto {
-        user: user_dto(user),
+        user: user_dto(user, state.server_id),
+        session_info: session_dto(session, state.server_id),
         access_token: token.clone(),
-        server_id,
+        server_id: state.server_id,
     })
     .into_response();
-    response
-        .headers_mut()
-        .insert(header::SET_COOKIE, auth::cookie_header(&token, config)?);
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        auth::cookie_header(&token, &state.config)?,
+    );
     Ok(response)
 }
 
@@ -683,7 +694,7 @@ async fn startup_create_user(
     let _ = tokio::fs::remove_file(state.config.data_dir.join("setup-token")).await;
     let issued =
         auth::issue_token(&state, &user, "PuffinBox", "Initial setup", "bootstrap").await?;
-    authentication_response(&user, issued.token, state.server_id, &state.config)
+    authentication_response(&state, &user, issued.token).await
 }
 
 async fn authenticate_by_name(
@@ -755,7 +766,7 @@ async fn authenticate_by_name(
     }
     db::clear_login_bucket(&state.db, state.run_id, &bucket_hash).await?;
     let issued = auth::issue_token(&state, &user, &client, &device_name, &device_id).await?;
-    authentication_response(&user, issued.token, state.server_id, &state.config)
+    authentication_response(&state, &user, issued.token).await
 }
 
 async fn record_login_failure(
@@ -982,8 +993,11 @@ fn block_unrated_patch(body: &UserWriteRequest) -> Option<Vec<String>> {
     }
 }
 
-async fn get_current_user(CurrentUser(user): CurrentUser) -> Json<UserDto> {
-    Json(user_dto(&user))
+async fn get_current_user(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+) -> Json<UserDto> {
+    Json(user_dto(&user, state.server_id))
 }
 
 #[derive(Serialize)]
@@ -1048,6 +1062,7 @@ async fn logout(
 #[serde(rename_all = "PascalCase")]
 struct SessionDto {
     id: Uuid,
+    server_id: Uuid,
     user_id: Uuid,
     user_name: String,
     client: String,
@@ -1057,7 +1072,43 @@ struct SessionDto {
     last_activity_date: DateTime<Utc>,
     is_active: bool,
     supports_remote_control: bool,
+    supports_media_control: bool,
+    playable_media_types: Vec<String>,
+    supported_commands: Vec<String>,
+    play_state: serde_json::Value,
+    additional_users: Vec<serde_json::Value>,
+    now_playing_queue: Vec<serde_json::Value>,
     capabilities: serde_json::Value,
+}
+
+fn session_dto(row: db::AuthSessionRecord, server_id: Uuid) -> SessionDto {
+    SessionDto {
+        id: row.id,
+        server_id,
+        user_id: row.user_id,
+        user_name: row.username,
+        client: row.client,
+        device_name: row.device_name,
+        device_id: row.device_id,
+        date_created: row.created_at,
+        last_activity_date: row.last_seen_at,
+        is_active: Utc::now()
+            .signed_duration_since(row.last_seen_at)
+            .num_minutes()
+            <= 30,
+        supports_remote_control: false,
+        supports_media_control: false,
+        playable_media_types: serde_json::from_value(
+            row.capabilities["PlayableMediaTypes"].clone(),
+        )
+        .unwrap_or_default(),
+        supported_commands: serde_json::from_value(row.capabilities["SupportedCommands"].clone())
+            .unwrap_or_default(),
+        play_state: serde_json::json!({"IsPaused": false, "CanSeek": false}),
+        additional_users: Vec::new(),
+        now_playing_queue: Vec::new(),
+        capabilities: row.capabilities,
+    }
 }
 
 async fn list_sessions(
@@ -1065,24 +1116,9 @@ async fn list_sessions(
     CurrentUser(user): CurrentUser,
 ) -> Result<Json<Vec<SessionDto>>, ApiError> {
     let rows = db::list_auth_sessions(&state.db, user.id, user.is_admin).await?;
-    let now = Utc::now();
     Ok(Json(
         rows.into_iter()
-            .map(|row| SessionDto {
-                id: row.id,
-                user_id: row.user_id,
-                user_name: row.username,
-                client: row.client,
-                device_name: row.device_name,
-                device_id: row.device_id,
-                date_created: row.created_at,
-                is_active: now.signed_duration_since(row.last_seen_at).num_minutes() <= 30,
-                last_activity_date: row.last_seen_at,
-                // Remote-control commands are intentionally not accepted until their
-                // ownership and command protocol are implemented.
-                supports_remote_control: false,
-                capabilities: row.capabilities,
-            })
+            .map(|row| session_dto(row, state.server_id))
             .collect(),
     ))
 }
@@ -1379,7 +1415,7 @@ async fn list_users(
         db::list_users(&state.db)
             .await?
             .iter()
-            .map(user_dto)
+            .map(|user| user_dto(user, state.server_id))
             .collect(),
     ))
 }
@@ -1395,7 +1431,7 @@ async fn get_user(
     let user = db::get_user(&state.db, user_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    Ok(Json(user_dto(&user)))
+    Ok(Json(user_dto(&user, state.server_id)))
 }
 
 async fn create_user(
@@ -1443,7 +1479,7 @@ async fn create_user(
     )
     .await
     .map_err(map_user_write_error)?;
-    Ok(Json(user_dto(&user)).into_response())
+    Ok(Json(user_dto(&user, state.server_id)).into_response())
 }
 
 async fn update_user(
@@ -1481,7 +1517,7 @@ async fn update_user(
         .await
         .map_err(map_user_write_error)?
         .ok_or(ApiError::NotFound)?;
-    Ok(Json(user_dto(&user)))
+    Ok(Json(user_dto(&user, state.server_id)))
 }
 
 async fn remove_user(
@@ -1512,7 +1548,7 @@ async fn get_user_policy(
     let user = db::get_user(&state.db, user_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    Ok(Json(user_dto(&user).policy))
+    Ok(Json(user_dto(&user, state.server_id).policy))
 }
 
 async fn update_user_policy(
@@ -1548,7 +1584,7 @@ async fn update_user_policy(
         .await
         .map_err(map_user_write_error)?
         .ok_or(ApiError::NotFound)?;
-    Ok(Json(user_dto(&user).policy))
+    Ok(Json(user_dto(&user, state.server_id).policy))
 }
 
 fn map_user_write_error(error: sqlx::Error) -> ApiError {
@@ -2237,6 +2273,7 @@ struct UserDataDto {
 #[serde(rename_all = "PascalCase")]
 struct BaseItemDto {
     id: Uuid,
+    server_id: Uuid,
     name: String,
     #[serde(rename = "Type")]
     item_type: String,
@@ -2297,6 +2334,7 @@ struct BaseItemPersonDto {
 
 fn item_dto(
     item: &ItemRecord,
+    server_id: Uuid,
     user_data: Option<UserDataDto>,
     navigation: Option<&db::ItemNavigationLinks>,
     metadata: Option<&crate::metadata::DisplayMetadata>,
@@ -2304,6 +2342,7 @@ fn item_dto(
 ) -> BaseItemDto {
     BaseItemDto {
         id: item.id,
+        server_id,
         name: metadata
             .and_then(|metadata| metadata.name.clone())
             .unwrap_or_else(|| item.name.clone()),
@@ -2510,10 +2549,14 @@ struct UserViewsParams {
 #[serde(rename_all = "PascalCase")]
 struct LibraryViewDto {
     id: Uuid,
+    server_id: Uuid,
     name: String,
     #[serde(rename = "Type")]
     item_type: &'static str,
     collection_type: String,
+    is_folder: bool,
+    display_preferences_id: String,
+    user_data: UserDataDto,
 }
 
 #[derive(Serialize)]
@@ -2521,6 +2564,20 @@ struct LibraryViewDto {
 struct LibraryViewsResultDto {
     items: Vec<LibraryViewDto>,
     total_record_count: i64,
+    start_index: i64,
+}
+
+fn library_view_dto(library: &LibraryRecord, server_id: Uuid) -> LibraryViewDto {
+    LibraryViewDto {
+        id: library.id,
+        server_id,
+        name: library.name.clone(),
+        item_type: "CollectionFolder",
+        collection_type: library.collection_type.clone(),
+        is_folder: true,
+        display_preferences_id: library.id.to_string(),
+        user_data: empty_user_data(library.id),
+    }
 }
 
 async fn user_views(
@@ -2538,16 +2595,12 @@ async fn user_views(
     let libraries = db::list_libraries(&state.db, &selected).await?;
     let items = libraries
         .iter()
-        .map(|library| LibraryViewDto {
-            id: library.id,
-            name: library.name.clone(),
-            item_type: "CollectionFolder",
-            collection_type: library.collection_type.clone(),
-        })
+        .map(|library| library_view_dto(library, state.server_id))
         .collect::<Vec<_>>();
     Ok(Json(LibraryViewsResultDto {
         total_record_count: items.len() as i64,
         items,
+        start_index: 0,
     }))
 }
 
@@ -2619,6 +2672,7 @@ async fn item_query_result(
                 .unwrap_or_else(|| empty_user_data(item.id));
             item_dto(
                 item,
+                state.server_id,
                 Some(data),
                 navigation.get(&item.id),
                 display_metadata.get(&item.id),
@@ -3254,16 +3308,24 @@ fn parse_item_types(value: Option<&str>) -> Result<Vec<String>, ApiError> {
 
 async fn get_item(
     State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
+    CurrentUser(current): CurrentUser,
     Path(item_id): Path<Uuid>,
-) -> Result<Json<BaseItemDto>, ApiError> {
+    Query(params): Query<UserViewsParams>,
+) -> Result<Response, ApiError> {
+    let user = selected_user(&state, &current, params.user_id).await?;
+    if let Some(library) = db::get_library(&state.db, item_id).await? {
+        if !db::library_visible_to_user(&state.db, &user, library.id).await? {
+            return Err(ApiError::NotFound);
+        }
+        return Ok(Json(library_view_dto(&library, state.server_id)).into_response());
+    }
     let item = db::get_item(&state.db, item_id)
         .await?
         .ok_or(ApiError::NotFound)?;
     if !db::item_visible_to_user(&state.db, &user, &item).await? {
         return Err(ApiError::NotFound);
     }
-    Ok(Json(item_dto_for_user(&state, &user, &item).await?))
+    Ok(Json(item_dto_for_user(&state, &user, &item).await?).into_response())
 }
 
 async fn item_dto_for_user(
@@ -3280,6 +3342,7 @@ async fn item_dto_for_user(
     let display_metadata = crate::metadata::load_display_metadata(&state.db, &[item_id]).await?;
     Ok(item_dto(
         item,
+        state.server_id,
         Some(data.unwrap_or_else(|| empty_user_data(item_id))),
         navigation.get(&item_id),
         display_metadata.get(&item_id),
@@ -3382,6 +3445,7 @@ async fn search_hints(
         .map(|item| {
             item_dto(
                 item,
+                state.server_id,
                 None,
                 navigation.get(&item.id),
                 display_metadata.get(&item.id),
@@ -3681,7 +3745,7 @@ mod item_dto_tests {
             overview: None,
             metadata_json: serde_json::Value::Null,
         };
-        let mut dto = item_dto(&item, None, None, None, false);
+        let mut dto = item_dto(&item, Uuid::new_v4(), None, None, None, false);
         set_music_person_kind(&mut dto);
         let wire = serde_json::to_value(dto).unwrap();
 
@@ -3693,6 +3757,7 @@ mod item_dto_tests {
     fn appeared_person_paging_keeps_total_and_applies_start_index() {
         let item = BaseItemDto {
             id: Uuid::new_v4(),
+            server_id: Uuid::new_v4(),
             name: "Example Artist".to_owned(),
             item_type: "Person".to_owned(),
             is_folder: false,
@@ -3757,8 +3822,15 @@ mod item_dto_tests {
             artist: Some("Example Artist".to_owned()),
             ..Default::default()
         };
-        let dto =
-            serde_json::to_value(item_dto(&item, None, Some(&navigation), None, false)).unwrap();
+        let dto = serde_json::to_value(item_dto(
+            &item,
+            Uuid::new_v4(),
+            None,
+            Some(&navigation),
+            None,
+            false,
+        ))
+        .unwrap();
         assert_eq!(dto["Type"], "Episode");
         assert_eq!(dto["SeriesId"], series_id.to_string());
         assert_eq!(dto["SeasonId"], season_id.to_string());
@@ -3799,8 +3871,17 @@ mod item_dto_tests {
             artwork_url: Some(format!("/Items/{}/Images/Primary", item.id)),
             primary_image_tag: Some("a".repeat(64)),
         };
-        let dto =
-            serde_json::to_value(item_dto(&item, None, None, Some(&metadata), false)).unwrap();
+        let server_id = Uuid::new_v4();
+        let dto = serde_json::to_value(item_dto(
+            &item,
+            server_id,
+            None,
+            None,
+            Some(&metadata),
+            false,
+        ))
+        .unwrap();
+        assert_eq!(dto["ServerId"], server_id.to_string());
         assert_eq!(dto["Name"], "Provider title");
         assert_eq!(dto["Overview"], "Provider description");
         assert_eq!(dto["Genres"][0], "Drama");

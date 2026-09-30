@@ -1,10 +1,12 @@
 pub mod api;
 pub mod auth;
+pub mod client_connection;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod library;
 pub mod state;
+pub mod user_settings;
 
 // Media endpoints are implemented in their own module so each API can share the
 // same authentication and library authorization policy.

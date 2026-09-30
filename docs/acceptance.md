@@ -5,8 +5,8 @@ Puffinbox is partial and unreleased. The checks below passed locally on 2026-10-
 | Check | Result |
 | --- | --- |
 | Rust formatting and strict workspace Clippy | Passed |
-| Standard Rust workspace suite | 211 passed, 0 failed; 20 database cases skipped by default |
-| Disposable PostgreSQL regression suite | 19 integration cases and 1 database-backed unit test passed |
+| Standard Rust workspace suite | 211 passed, 0 failed; 21 database cases skipped by default |
+| Disposable PostgreSQL regression suite | 20 integration cases and 1 database-backed unit test passed |
 | Python acceptance and route-report tests | 23 passed |
 | Browser helpers, playlists, Live TV, offline cache, and book reader | Passed; book reader has 8 Node cases |
 | Strict Cargo dependency audit and full notices | Passed with MIT and Apache-2.0 as the only allowed licenses |
@@ -14,13 +14,13 @@ Puffinbox is partial and unreleased. The checks below passed locally on 2026-10-
 | Outbound HTTPS verification | Trusted CA accepted; wrong CA and wrong host rejected in both the source process and scratch container |
 | Isolated container acceptance | 20 passed, 0 failed |
 
-The container result applies to operator test image `sha256:398b2d6edce77bc7558eb061d52902a4ed93394f7b9790f338efb71e702cce81`. Its FFmpeg tools are supplied separately from the server image. The generated ledger is kept in ignored local storage, alongside synthetic fixtures and credentials.
+The container result applies to operator test image `sha256:bfdd0c5a8e1868a28493ca180f1861122fb9a81aacfdb4b61d74a486643dca24`. Its FFmpeg tools are supplied separately from the server image. The generated ledger is kept in ignored local storage, alongside synthetic fixtures and credentials.
 
 The restart check starts a 300-second HLS fixture, serves a playlist and segment, commits its playback position, and stops the container while FFmpeg is active. It requires an exit code of zero, no forced decoder termination, and confirmation that all media children drained. After restart it checks catalog persistence, playback-row closure, the committed resume position, and rejection of the old HLS session. This run passed all those assertions. Unit tests also cover a cooperating child and a child that ignores termination, including reaping and the bounded forced-stop fallback.
 
-The current web client completed the synthetic H.264/AAC MP4 and reported that the final position was saved. The official Jellyfin web client successfully authenticated and registered session capabilities through an isolated localhost proxy. It still reports a connection failure before reaching its home page; official web browsing and playback remain unvalidated. The installed Jellyfin Media Player connected to this server and exposed its login form, but its captured display remained blank and automated password entry could not be verified. No current-source native playback result is claimed. Earlier client observations are [historical](validation-history.md).
+The current web client completed the synthetic H.264/AAC MP4 and reported that the final position was saved. The official Jellyfin web client authenticated, registered session capabilities, and listed all three synthetic movies through a localhost proxy. Its details page still needs ancestor and theme-media calls; official playback remains unvalidated. The demo server reports version 12.1.0, while the route comparison stays pinned to 12.0.0. The proxy forwards API response bodies unchanged and fetches only compiled web assets from the official demo. The installed Jellyfin Media Player exposed Puffinbox's login form, but its captured display remained blank and password entry could not be verified. No current-source native playback result is claimed. Earlier client observations are [historical](validation-history.md).
 
-The source is published at [peppermintish/puffinbox](https://github.com/peppermintish/puffinbox). The [first cloud CI run](https://github.com/peppermintish/puffinbox/actions/runs/36773703056) passed the isolated container job, while its source job stalled in the combined browser checks. Those checks now run separately with bounded command waits and job limits. A complete cloud result is pending. Release packaging is blocked by [the release gates](release-gates.json): the Cargo audit does not cover Rust's linked Unicode tables or musl, and full API behavior, features, external clients, remote access, and scale still need validation.
+The source is published at [peppermintish/puffinbox](https://github.com/peppermintish/puffinbox). [Cloud CI passed at `fe76ccc`](https://github.com/peppermintish/puffinbox/actions/runs/36780885839), including both source/static-build checks and isolated container acceptance. The newer preference and catalog changes have local results; their cloud run is pending. Release packaging is blocked by [the release gates](release-gates.json): the Cargo audit does not cover Rust's linked Unicode tables or musl, and full API behavior, features, external clients, remote access, and scale still need validation.
 
 ## Requirements
 
@@ -49,7 +49,7 @@ The limited PDF/EPUB reader and its library, parental-rating, and download-polic
 cargo test --locked --test postgres_book_reader -- --ignored --nocapture
 ```
 
-This target passed 1/1 locally. The source and release workflows invoke it against their isolated PostgreSQL service, but those cloud workflows have not run.
+This target passed 1/1 locally and in the successful source CI run. The release workflow also includes it; release packaging remains gated.
 
 The cookie-backed native media authorization regression is in `tests/postgres_media_access_tokens.rs`. It checks that the existing HttpOnly session cookie can still read `/Items/{id}/File`, the cookie-only same-origin exchange issues a bounded token, and that token is limited to its parent session and read-only media routes. Run it only against a disposable PostgreSQL database:
 

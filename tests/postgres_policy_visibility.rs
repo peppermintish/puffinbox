@@ -231,6 +231,7 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
         max_parental_rating: Some(50),
         block_unrated_items: vec!["Movie".to_owned()],
         allowed_library_ids: vec![library_id],
+        configuration: Default::default(),
     };
     assert!(
         !db::item_visible_to_user(&pool, &restricted, &catalog_rated_movie)
@@ -452,10 +453,11 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
     create_token(&pool, run_id, user_id, token).await;
     let admin_token = "policy-admin-test-token";
     create_token(&pool, run_id, admin_id, admin_token).await;
+    let server_id = Uuid::new_v4();
     let router = api::router(AppState::new_for_run(
         pool.clone(),
         Arc::new(test_config(database_url.clone())),
-        Uuid::new_v4(),
+        server_id,
         run_id,
         None,
     ));
@@ -463,6 +465,30 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
         get_status(&router, &format!("/Items/{}", allowed_folder.id), token).await,
         axum::http::StatusCode::OK
     );
+    let (library_status, library_json) =
+        get_json(&router, &format!("/Items/{library_id}"), token).await;
+    assert_eq!(library_status, axum::http::StatusCode::OK);
+    assert_eq!(library_json["Id"], library_id.to_string());
+    assert_eq!(library_json["ServerId"], server_id.to_string());
+    assert_eq!(library_json["IsFolder"], true);
+    assert_eq!(library_json["Type"], "CollectionFolder");
+    assert_eq!(
+        get_status(
+            &router,
+            &format!("/Items/{library_id}?userId={admin_id}"),
+            token
+        )
+        .await,
+        axum::http::StatusCode::FORBIDDEN
+    );
+    let (views_status, views_json) = get_json(&router, "/UserViews", token).await;
+    assert_eq!(views_status, axum::http::StatusCode::OK);
+    assert_eq!(views_json["StartIndex"], 0);
+    assert!(views_json["Items"].as_array().unwrap().iter().any(|view| {
+        view["Id"] == library_id.to_string()
+            && view["ServerId"] == server_id.to_string()
+            && view["IsFolder"] == true
+    }));
     for id in [
         blocked_folder.id,
         blocked_movie.id,
@@ -495,6 +521,7 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
     assert_eq!(browse_json["TotalRecordCount"], 1);
     assert_eq!(browse_json["Items"].as_array().unwrap().len(), 1);
     assert_eq!(browse_json["Items"][0]["Id"], allowed_folder.id.to_string());
+    assert_eq!(browse_json["Items"][0]["ServerId"], server_id.to_string());
 
     let (count_status, counts_json) = get_json(&router, "/Items/Counts", token).await;
     assert_eq!(count_status, axum::http::StatusCode::OK);
@@ -610,6 +637,10 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
     assert_eq!(views_status, axum::http::StatusCode::OK);
     assert_eq!(views_json["TotalRecordCount"], 0);
     assert!(views_json["Items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        get_status(&router, &format!("/Items/{library_id}"), token).await,
+        axum::http::StatusCode::NOT_FOUND
+    );
 
     let tv_library_id = Uuid::new_v4();
     db::insert_library(

@@ -905,7 +905,7 @@ async fn lock_recording_policy_user(
     let row = sqlx::query(
         "SELECT id,username,is_admin,disabled,enable_remote_access,allow_media_playback, \
          enable_content_downloading,enable_live_tv_access,enable_live_tv_management, \
-         restrict_libraries,max_parental_rating,block_unrated_items,ARRAY[]::uuid[] AS allowed_library_ids \
+         restrict_libraries,configuration,max_parental_rating,block_unrated_items,ARRAY[]::uuid[] AS allowed_library_ids \
          FROM users WHERE id=$1 FOR UPDATE",
     )
     .bind(claim.owner_id)
@@ -2257,6 +2257,7 @@ mod tests {
             max_parental_rating: None,
             block_unrated_items: Vec::new(),
             allowed_library_ids: Vec::new(),
+            configuration: Default::default(),
         };
         assert!(!recording_user_enabled(&user));
 

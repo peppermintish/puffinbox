@@ -7,7 +7,7 @@
     },
     "jellyfin_12_behavior": {
       "passed": false,
-      "detail": "74 of 364 operation declarations match; full behavioral compatibility has not been validated."
+      "detail": "79 of 364 operation declarations match; full behavioral compatibility has not been validated."
     },
     "feature_acceptance": {
       "passed": false,
