@@ -1,0 +1,30 @@
+# Local/operator assembly only. The default Dockerfile remains a minimal
+# statically linked Puffinbox image with no FFmpeg or system runtime libraries.
+ARG PUFFINBOX_BASE_IMAGE=puffinbox:local
+ARG OPERATOR_FFMPEG_IMAGE
+FROM ${PUFFINBOX_BASE_IMAGE} AS puffinbox
+FROM ${OPERATOR_FFMPEG_IMAGE} AS operator_runtime
+
+FROM scratch
+COPY --from=puffinbox / /
+
+# Copy the selected operator image's dynamic loader and library roots so its
+# externally supplied executables can run. Its full package documentation is
+# retained under /licenses/operator-runtime/share-doc.
+COPY --from=operator_runtime /lib/ /lib/
+COPY --from=operator_runtime /lib64/ /lib64/
+COPY --from=operator_runtime /usr/lib/ /usr/lib/
+COPY --from=operator_runtime /usr/bin/ffmpeg /operator-tools/ffmpeg
+COPY --from=operator_runtime /usr/bin/ffprobe /operator-tools/ffprobe
+COPY --from=operator_runtime /usr/share/doc/ /licenses/operator-runtime/share-doc/
+COPY --from=operator_runtime /usr/share/common-licenses/ /licenses/operator-runtime/share-common-licenses/
+
+USER 10001:10001
+WORKDIR /app
+ENV PUFFINBOX_WEB_ROOT=/app/web \
+    PUFFINBOX_DATA_DIR=/data \
+    PUFFINBOX_FFMPEG_PATH=/operator-tools/ffmpeg
+LABEL org.opencontainers.image.title="Puffinbox operator-assembled media runtime" \
+      org.opencontainers.image.description="Contains external media tools and runtime libraries selected by the operator; license and codec obligations vary with that selection."
+EXPOSE 8096
+ENTRYPOINT ["/puffinbox-server"]

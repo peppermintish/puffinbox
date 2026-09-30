@@ -1,0 +1,16 @@
+# Third-party dependency licenses
+
+This file is generated from the locked Cargo graph. It contains license texts and the package names and versions that use each license.
+
+{{#each licenses}}
+## {{{name}}}
+
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} — {{crate.repository}}{{else}} — https://crates.io/crates/{{crate.name}}{{/if}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}

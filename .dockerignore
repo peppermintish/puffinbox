@@ -1,0 +1,14 @@
+.git
+.local
+.env
+.env.*
+!.env.example
+target
+dist
+data
+media
+web/test-results
+web/playwright/.cache
+__pycache__
+*.pyc
+*.log

@@ -1,0 +1,25 @@
+{
+  "ready": false,
+  "gates": {
+    "runtime_license_boundary": {
+      "passed": false,
+      "detail": "The Cargo graph passes. Rust core Unicode tables and non-MIT musl components still require a complete linked-runtime audit or replacement."
+    },
+    "jellyfin_12_behavior": {
+      "passed": false,
+      "detail": "70 of 364 operation declarations match; full behavioral compatibility has not been validated."
+    },
+    "feature_acceptance": {
+      "passed": false,
+      "detail": "Feature areas remain partial. See compatibility.md for individual limits."
+    },
+    "external_client_and_remote_security": {
+      "passed": false,
+      "detail": "Broader external client, reverse-proxy, and remote-network acceptance remains incomplete."
+    },
+    "operational_scale": {
+      "passed": false,
+      "detail": "No 1 PB, billion-file, or thousand-stream load result is available."
+    }
+  }
+}

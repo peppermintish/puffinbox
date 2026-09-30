@@ -1,0 +1,20 @@
+# Opt-in Linux host-network overlay for paired-address SSDP discovery.
+# Keep the database published on loopback only: the host-networked server
+# connects to it through this local TCP port instead of Compose service DNS.
+services:
+  database:
+    ports:
+      - target: 5432
+        published: "${PUFFINBOX_POSTGRES_HOST_PORT:-55432}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+
+  server:
+    network_mode: host
+    ports: !reset []
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:?Set POSTGRES_USER}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@127.0.0.1:${PUFFINBOX_POSTGRES_HOST_PORT:-55432}/${POSTGRES_DB:?Set POSTGRES_DB}
+      PUFFINBOX_BIND: ${PUFFINBOX_DLNA_INTERFACE_ADDRESS:?Set PUFFINBOX_DLNA_INTERFACE_ADDRESS}:8096
+      PUFFINBOX_DLNA_ENABLED: "true"
+      PUFFINBOX_DLNA_INTERFACE_ADDRESS: ${PUFFINBOX_DLNA_INTERFACE_ADDRESS:?Set PUFFINBOX_DLNA_INTERFACE_ADDRESS}
+      PUFFINBOX_DLNA_ADVERTISED_ORIGIN: ${PUFFINBOX_DLNA_ADVERTISED_ORIGIN:?Set PUFFINBOX_DLNA_ADVERTISED_ORIGIN}

@@ -1,0 +1,13 @@
+/target
+/.env
+/.env.*
+!/.env.example
+/.local/
+/data/
+/media/
+/dist/
+__pycache__/
+*.pyc
+*.log
+/web/test-results/
+/web/playwright/.cache/

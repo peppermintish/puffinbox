@@ -1,0 +1,10 @@
+# Operator-provided trust roots are mounted separately from the project image.
+services:
+  server:
+    environment:
+      SSL_CERT_FILE: /operator-trust/ca-bundle.pem
+    volumes:
+      - type: bind
+        source: ${TLS_CA_BUNDLE:?Set TLS_CA_BUNDLE to an operator-provided PEM certificate bundle}
+        target: /operator-trust/ca-bundle.pem
+        read_only: true

@@ -1,0 +1,1 @@
+ALTER TABLE users ALTER COLUMN enable_remote_access SET DEFAULT FALSE;

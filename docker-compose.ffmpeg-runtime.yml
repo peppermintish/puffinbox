@@ -1,0 +1,13 @@
+# Local/operator assembly only. The base application image must already be
+# built as puffinbox:local before this image can be assembled.
+services:
+  server:
+    image: ${PUFFINBOX_OPERATOR_IMAGE:-puffinbox:operator-ffmpeg}
+    build:
+      context: .
+      dockerfile: Dockerfile.ffmpeg-runtime
+      args:
+        PUFFINBOX_BASE_IMAGE: ${PUFFINBOX_BASE_IMAGE:-puffinbox:local}
+        OPERATOR_FFMPEG_IMAGE: ${OPERATOR_FFMPEG_IMAGE:?Set OPERATOR_FFMPEG_IMAGE to a local Linux image containing /usr/bin/ffmpeg, /usr/bin/ffprobe, runtime libraries, and full package notices}
+    environment:
+      PUFFINBOX_FFMPEG_PATH: /operator-tools/ffmpeg

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#10131c" />
+    <title>Puffinbox</title>
+    <link rel="stylesheet" href="/web/styles.css" />
+    <script src="/web/vendor/hls.min.js" defer></script>
+    <script src="/web/client-compat.js" defer></script>
+    <script src="/web/device-id.js" defer></script>
+    <script src="/web/offline-cache.js" defer></script>
+    <script src="/web/playback-heartbeat.js" defer></script>
+    <script src="/web/jmp-player.js" defer></script>
+    <script src="/web/live-tv.js" defer></script>
+    <script src="/web/app.js" defer></script>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <main class="boot-screen" aria-live="polite">
+        <span class="brand-mark" aria-hidden="true">p</span>
+        <p>Opening your library…</p>
+      </main>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <dialog id="player-dialog" class="player-dialog">
+      <form method="dialog" class="player-header">
+        <div>
+          <p class="eyebrow">Now playing</p>
+          <h2 id="player-title">Media</h2>
+        </div>
+        <button class="icon-button" aria-label="Close player">×</button>
+      </form>
+      <div id="player-options" class="player-options" hidden>
+        <label class="player-choice" id="audio-track-control" hidden>Audio track
+          <select id="player-audio-track" aria-label="Audio track"></select>
+        </label>
+        <label class="player-choice" id="subtitle-track-control" hidden>Subtitles
+          <select id="player-subtitle-track" aria-label="Subtitle track"></select>
+        </label>
+        <div id="player-resume-controls" class="player-resume-controls" hidden>
+          <button id="player-resume" class="button small" type="button">Resume</button>
+          <button id="player-start-over" class="button small secondary" type="button">Start over</button>
+        </div>
+      </div>
+      <div id="player-stage" class="player-stage"></div>
+      <div id="native-player-controls" class="native-player-controls" hidden>
+        <button id="native-play-pause" class="button small secondary" type="button">Pause</button>
+        <label class="native-seek-control">Position
+          <input id="native-seek" type="range" min="0" max="0" value="0" step="1000" disabled />
+        </label>
+        <span id="native-position" class="subtle">0:00 / 0:00</span>
+      </div>
+      <p id="player-note" class="player-note"></p>
+    </dialog>
+    <dialog id="item-dialog" class="item-dialog"></dialog>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+services:
+  server:
+    # The default scratch image runs only fully static x86_64 Linux tools here.
+    # Verify supplied ffmpeg and ffprobe with scripts/check-static-tools.sh.
+    environment:
+      PUFFINBOX_FFMPEG_PATH: /operator-tools/ffmpeg
+    volumes:
+      - type: bind
+        source: ${FFMPEG_HOST_DIR:?Set FFMPEG_HOST_DIR to a directory containing your external Linux ffmpeg and matching ffprobe}
+        target: /operator-tools
+        read_only: true

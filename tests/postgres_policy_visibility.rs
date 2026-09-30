@@ -1,0 +1,1037 @@
+use std::{env, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+
+use axum::{body::Body, http::Request};
+use chrono::{Duration as ChronoDuration, Utc};
+use http_body_util::BodyExt;
+use ipnet::IpNet;
+use puffinbox::{
+    AppState, Config, api, auth, db,
+    library::{ItemQuery, ItemRecord},
+};
+use sqlx::{PgPool, postgres::PgPoolOptions};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+mod common;
+
+#[tokio::test]
+#[ignore = "requires a disposable PostgreSQL database via PUFFINBOX_TEST_DATABASE_URL"]
+async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
+    let database_url = env::var("PUFFINBOX_TEST_DATABASE_URL")
+        .expect("set PUFFINBOX_TEST_DATABASE_URL to a disposable PostgreSQL database");
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("puffinbox_policy_test_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+
+    let connection_schema = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(6)
+        .after_connect(move |connection, _metadata| {
+            let schema = connection_schema.clone();
+            Box::pin(async move {
+                sqlx::query(&format!("SET search_path TO \"{schema}\""))
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&database_url)
+        .await
+        .unwrap();
+    common::apply_migrations(&pool).await.unwrap();
+    let policy_index_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname='live_tv_recordings_item_policy_idx')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(policy_index_exists);
+    let run_id = Uuid::new_v4();
+    db::activate_run(&pool, run_id).await.unwrap();
+
+    let library_id = Uuid::new_v4();
+    db::insert_library(
+        &pool,
+        run_id,
+        library_id,
+        "Policy test",
+        "movies",
+        &[PathBuf::from("/media")],
+        true,
+    )
+    .await
+    .unwrap();
+    let user_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,username,username_norm,password_hash,restrict_libraries,max_parental_rating,block_unrated_items,enable_remote_access) VALUES ($1,'restricted','restricted','unused',TRUE,50,ARRAY['Movie']::TEXT[],TRUE)")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let admin_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,username,username_norm,password_hash,is_admin,enable_remote_access) VALUES ($1,'admin','admin','unused',TRUE,TRUE)")
+        .bind(admin_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES ($1,$2)")
+        .bind(user_id)
+        .bind(library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let allowed_folder = insert_item(
+        &pool,
+        library_id,
+        None,
+        "Allowed",
+        "Folder",
+        "/media/Allowed",
+        None,
+    )
+    .await;
+    let allowed_movie = insert_item(
+        &pool,
+        library_id,
+        Some(allowed_folder.id),
+        "allowed.mkv",
+        "Movie",
+        "/media/Allowed/allowed.mkv",
+        Some(40),
+    )
+    .await;
+    set_local_policy_rating(&pool, allowed_movie.id, "PG-13", 50).await;
+    let allowed_movie = db::get_item(&pool, allowed_movie.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let blocked_folder = insert_item(
+        &pool,
+        library_id,
+        None,
+        "Blocked",
+        "Folder",
+        "/media/Blocked",
+        None,
+    )
+    .await;
+    let blocked_movie = insert_item(
+        &pool,
+        library_id,
+        Some(blocked_folder.id),
+        "blocked.mkv",
+        "Movie",
+        "/media/Blocked/blocked.mkv",
+        Some(80),
+    )
+    .await;
+    set_local_policy_rating(&pool, blocked_movie.id, "R", 75).await;
+    let blocked_movie = db::get_item(&pool, blocked_movie.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let unrated_folder = insert_item(
+        &pool,
+        library_id,
+        None,
+        "Unrated",
+        "Folder",
+        "/media/Unrated",
+        None,
+    )
+    .await;
+    let unrated_movie = insert_item(
+        &pool,
+        library_id,
+        Some(unrated_folder.id),
+        "unrated.mkv",
+        "Movie",
+        "/media/Unrated/unrated.mkv",
+        Some(10),
+    )
+    .await;
+    // An explicit local-NFO "Not Rated" row keeps the item unrated even when
+    // a legacy catalog score is present.
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,content_rating) VALUES ($1,'local-nfo','Not Rated')")
+        .bind(unrated_movie.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let unrated_movie = db::get_item(&pool, unrated_movie.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let catalog_rated_movie = insert_item(
+        &pool,
+        library_id,
+        Some(allowed_folder.id),
+        "catalog-rated.mkv",
+        "Movie",
+        "/media/Allowed/catalog-rated.mkv",
+        Some(45),
+    )
+    .await;
+    assert_eq!(allowed_movie.rating, Some(50));
+    assert_eq!(blocked_movie.rating, Some(75));
+    let raw_unrated_score: Option<i16> = sqlx::query_scalar("SELECT rating FROM items WHERE id=$1")
+        .bind(unrated_movie.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(raw_unrated_score, Some(10));
+    assert_eq!(unrated_movie.rating, None);
+    let raw_catalog_score: Option<i16> = sqlx::query_scalar("SELECT rating FROM items WHERE id=$1")
+        .bind(catalog_rated_movie.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(raw_catalog_score, Some(45));
+    assert_eq!(catalog_rated_movie.rating, None);
+    let hidden_movie = insert_item(
+        &pool,
+        library_id,
+        None,
+        "secret.mkv",
+        "Movie",
+        "/media/.private/secret.mkv",
+        Some(10),
+    )
+    .await;
+    let legacy_file = insert_item(
+        &pool,
+        library_id,
+        None,
+        "credentials.env",
+        "File",
+        "/media/credentials.env",
+        None,
+    )
+    .await;
+
+    let restricted = auth::UserRecord {
+        id: user_id,
+        username: "restricted".to_owned(),
+        is_admin: false,
+        disabled: false,
+        enable_remote_access: true,
+        allow_media_playback: true,
+        enable_content_downloading: true,
+        enable_live_tv_access: false,
+        enable_live_tv_management: false,
+        restrict_libraries: true,
+        max_parental_rating: Some(50),
+        block_unrated_items: vec!["Movie".to_owned()],
+        allowed_library_ids: vec![library_id],
+    };
+    assert!(
+        !db::item_visible_to_user(&pool, &restricted, &catalog_rated_movie)
+            .await
+            .unwrap(),
+        "an unclassified catalog score is not parental-rating provenance"
+    );
+    let mut stricter_user = restricted.clone();
+    stricter_user.max_parental_rating = Some(40);
+    assert!(
+        !db::item_visible_to_user(&pool, &stricter_user, &catalog_rated_movie)
+            .await
+            .unwrap(),
+        "an unclassified catalog score remains unrated under stricter policy"
+    );
+    assert!(
+        db::item_visible_to_user(&pool, &restricted, &allowed_folder)
+            .await
+            .unwrap()
+    );
+    // The unrated folder has no visible descendants; this exercises the
+    // recursive CTE's category lookup through each child's metadata_json.
+    for blocked in [
+        &blocked_folder,
+        &blocked_movie,
+        &unrated_folder,
+        &unrated_movie,
+        &hidden_movie,
+        &legacy_file,
+    ] {
+        assert!(
+            !db::item_visible_to_user(&pool, &restricted, blocked)
+                .await
+                .unwrap()
+        );
+    }
+
+    // A completed DVR recording has an explicit server-owned US-PARENTAL-v1
+    // snapshot. It remains policy-rated after the source guide can change.
+    let recording_library_id = Uuid::new_v4();
+    db::insert_library(
+        &pool,
+        run_id,
+        recording_library_id,
+        "Recording policy fixture",
+        "movies",
+        &[PathBuf::from("/media/recording-policy")],
+        true,
+    )
+    .await
+    .unwrap();
+    let recording_user_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,username,username_norm,password_hash,restrict_libraries,max_parental_rating,block_unrated_items,enable_live_tv_access) VALUES ($1,'recording-policy','recording-policy','unused',TRUE,50,ARRAY['LiveTvProgram']::TEXT[],TRUE)")
+        .bind(recording_user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES($1,$2)")
+        .bind(recording_user_id)
+        .bind(recording_library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let recording_user = db::get_user(&pool, recording_user_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let source_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO live_tv_sources(id,library_id,name,playlist_url,origin_pins) VALUES($1,$2,'Policy fixture','https://example.invalid/list.m3u','[]'::jsonb)")
+        .bind(source_id)
+        .bind(recording_library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let channel = insert_item(
+        &pool,
+        recording_library_id,
+        None,
+        "Policy fixture channel",
+        "LiveTvChannel",
+        "/media/recording-policy/policy-fixture-channel",
+        None,
+    )
+    .await;
+    sqlx::query("INSERT INTO live_tv_channels(item_id,library_id,source_id,source_channel_id,name,stream_url) VALUES($1,$2,$3,'policy-fixture','Policy fixture channel','https://example.invalid/live.m3u8')")
+        .bind(channel.id)
+        .bind(recording_library_id)
+        .bind(source_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let recorded_item = insert_item(
+        &pool,
+        recording_library_id,
+        None,
+        "Recorded policy fixture.mkv",
+        "Movie",
+        "/media/recording-policy/Recorded policy fixture.mkv",
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE items SET metadata_json=jsonb_build_object('LiveTvRecording',TRUE) WHERE id=$1",
+    )
+    .bind(recorded_item.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let timer_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO live_tv_timers(id,owner_user_id,channel_item_id,start_at,end_at,output_library_id,status,started_at,finished_at,policy_rating_scale,policy_rating_value) VALUES($1,$2,$3,NOW()-INTERVAL '1 hour',NOW()-INTERVAL '1 second',$4,'completed',NOW()-INTERVAL '1 hour',NOW(),'US-PARENTAL-v1',50)")
+        .bind(timer_id)
+        .bind(recording_user_id)
+        .bind(channel.id)
+        .bind(recording_library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO live_tv_recordings(id,timer_id,channel_item_id,library_id,channel_name,title,relative_path,item_id,status,byte_count,sha256,started_at,finished_at,policy_rating_scale,policy_rating_value) VALUES($1,$2,$3,$4,'Policy fixture channel','Recorded policy fixture','recordings/policy-fixture.mkv',$5,'completed',1,repeat('a',64),NOW()-INTERVAL '1 hour',NOW(),'US-PARENTAL-v1',50)")
+        .bind(Uuid::new_v4())
+        .bind(timer_id)
+        .bind(channel.id)
+        .bind(recording_library_id)
+        .bind(recorded_item.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let recorded_item = db::get_item(&pool, recorded_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded_item.rating, Some(50));
+    assert!(
+        db::item_visible_to_user(&pool, &recording_user, &recorded_item)
+            .await
+            .unwrap()
+    );
+    assert!(
+        db::library_visible_to_user(&pool, &recording_user, recording_library_id)
+            .await
+            .unwrap()
+    );
+    let (recording_movies, recording_movie_count) = db::browse_items(
+        &pool,
+        &recording_user,
+        ItemQuery {
+            parent_id: Some(recording_library_id),
+            include_item_types: vec!["Movie".to_owned()],
+            limit: 10,
+            enable_total_record_count: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(recording_movie_count, Some(1));
+    assert_eq!(
+        recording_movies
+            .iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>(),
+        [recorded_item.id]
+    );
+    let mut plan_transaction = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL enable_seqscan=off")
+        .execute(&mut *plan_transaction)
+        .await
+        .unwrap();
+    let policy_lookup_plan = sqlx::query_scalar::<_, String>(
+        "EXPLAIN (COSTS OFF) SELECT r.policy_rating_value FROM live_tv_recordings r WHERE r.item_id=$1 AND r.status='completed' AND r.policy_rating_scale='US-PARENTAL-v1'",
+    )
+    .bind(recorded_item.id)
+    .fetch_all(&mut *plan_transaction)
+    .await
+    .unwrap()
+    .join("\n");
+    plan_transaction.rollback().await.unwrap();
+    assert!(policy_lookup_plan.contains("live_tv_recordings_item_policy_idx"));
+
+    let (top_level, total) = db::browse_items(
+        &pool,
+        &restricted,
+        ItemQuery {
+            parent_id: Some(library_id),
+            limit: 100,
+            enable_total_record_count: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(total, Some(1));
+    assert_eq!(
+        top_level.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [allowed_folder.id]
+    );
+    let (blocked_children, blocked_total) = db::browse_items(
+        &pool,
+        &restricted,
+        ItemQuery {
+            parent_id: Some(blocked_folder.id),
+            limit: 100,
+            enable_total_record_count: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(blocked_children.is_empty());
+    assert_eq!(blocked_total, Some(0));
+    let counts = db::item_counts(&pool, &restricted).await.unwrap();
+    assert_eq!(counts.movie_count, 1);
+    assert!(
+        db::library_visible_to_user(&pool, &restricted, library_id)
+            .await
+            .unwrap()
+    );
+
+    let token = "policy-test-token";
+    create_token(&pool, run_id, user_id, token).await;
+    let admin_token = "policy-admin-test-token";
+    create_token(&pool, run_id, admin_id, admin_token).await;
+    let router = api::router(AppState::new_for_run(
+        pool.clone(),
+        Arc::new(test_config(database_url.clone())),
+        Uuid::new_v4(),
+        run_id,
+        None,
+    ));
+    assert_eq!(
+        get_status(&router, &format!("/Items/{}", allowed_folder.id), token).await,
+        axum::http::StatusCode::OK
+    );
+    for id in [
+        blocked_folder.id,
+        blocked_movie.id,
+        unrated_folder.id,
+        unrated_movie.id,
+        hidden_movie.id,
+        legacy_file.id,
+    ] {
+        assert_eq!(
+            get_status(&router, &format!("/Items/{id}"), token).await,
+            axum::http::StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        get_status(
+            &router,
+            &format!("/Items?ParentId={}", blocked_folder.id),
+            token
+        )
+        .await,
+        axum::http::StatusCode::NOT_FOUND
+    );
+    let (browse_status, browse_json) = get_json(
+        &router,
+        &format!("/Items?ParentId={library_id}&Limit=100"),
+        token,
+    )
+    .await;
+    assert_eq!(browse_status, axum::http::StatusCode::OK);
+    assert_eq!(browse_json["TotalRecordCount"], 1);
+    assert_eq!(browse_json["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(browse_json["Items"][0]["Id"], allowed_folder.id.to_string());
+
+    let (count_status, counts_json) = get_json(&router, "/Items/Counts", token).await;
+    assert_eq!(count_status, axum::http::StatusCode::OK);
+    assert_eq!(counts_json["MovieCount"], 1);
+    for id in [hidden_movie.id, legacy_file.id] {
+        assert_eq!(
+            get_status(&router, &format!("/Items/{id}"), admin_token).await,
+            axum::http::StatusCode::NOT_FOUND
+        );
+    }
+    let (admin_count_status, admin_counts_json) =
+        get_json(&router, "/Items/Counts", admin_token).await;
+    assert_eq!(admin_count_status, axum::http::StatusCode::OK);
+    assert_eq!(admin_counts_json["MovieCount"], 5);
+    let (latest_status, latest_json) = get_json(
+        &router,
+        "/Items/Latest?IncludeItemTypes=Movie&Limit=10",
+        token,
+    )
+    .await;
+    assert_eq!(latest_status, axum::http::StatusCode::OK);
+    assert!(latest_json.is_array());
+    assert!(
+        latest_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["Id"] == allowed_movie.id.to_string())
+    );
+
+    sqlx::query("UPDATE items SET runtime_ticks=1000 WHERE id=$1")
+        .bind(allowed_movie.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (save_status, saved_data) = post_json(
+        &router,
+        &format!("/UserItems/{}/UserData", allowed_movie.id),
+        token,
+        serde_json::json!({
+            "ItemId": allowed_movie.id,
+            "Played": false,
+            "PlaybackPositionTicks": 400
+        }),
+    )
+    .await;
+    assert_eq!(save_status, axum::http::StatusCode::OK);
+    assert_eq!(saved_data["ItemId"], allowed_movie.id.to_string());
+    assert_eq!(saved_data["PlaybackPositionTicks"], 400);
+    assert_eq!(saved_data["PlayedPercentage"].as_f64(), Some(40.0));
+    let (resume_status, resume_json) = get_json(&router, "/UserItems/Resume?Limit=10", token).await;
+    assert_eq!(resume_status, axum::http::StatusCode::OK);
+    assert_eq!(resume_json["TotalRecordCount"], 1);
+    assert_eq!(resume_json["Items"][0]["Id"], allowed_movie.id.to_string());
+    let (favorite_status, favorite_data) = post_json(
+        &router,
+        &format!("/UserFavoriteItems/{}", allowed_movie.id),
+        token,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(favorite_status, axum::http::StatusCode::OK);
+    assert_eq!(favorite_data["IsFavorite"], true);
+    let (played_status, played_data) = post_json(
+        &router,
+        &format!("/UserPlayedItems/{}", allowed_movie.id),
+        token,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(played_status, axum::http::StatusCode::OK);
+    assert_eq!(played_data["Played"], true);
+    assert_eq!(played_data["PlaybackPositionTicks"], 0);
+    let (unplayed_status, unplayed_data) = delete_json(
+        &router,
+        &format!("/UserPlayedItems/{}", allowed_movie.id),
+        token,
+    )
+    .await;
+    assert_eq!(unplayed_status, axum::http::StatusCode::OK);
+    assert_eq!(unplayed_data["Played"], false);
+    let (favorite_get_status, favorite_get_json) =
+        get_json(&router, "/Items?Filters=IsFavorite&Limit=10", token).await;
+    assert_eq!(favorite_get_status, axum::http::StatusCode::OK);
+    assert_eq!(favorite_get_json["TotalRecordCount"], 1);
+    assert_eq!(
+        favorite_get_json["Items"][0]["Id"],
+        allowed_movie.id.to_string()
+    );
+
+    sqlx::query("DELETE FROM items WHERE id=$1")
+        .bind(allowed_movie.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM items WHERE id=$1")
+        .bind(catalog_rated_movie.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !db::library_visible_to_user(&pool, &restricted, library_id)
+            .await
+            .unwrap()
+    );
+    assert!(
+        db::list_libraries(&pool, &restricted)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let (views_status, views_json) = get_json(&router, "/UserViews", token).await;
+    assert_eq!(views_status, axum::http::StatusCode::OK);
+    assert_eq!(views_json["TotalRecordCount"], 0);
+    assert!(views_json["Items"].as_array().unwrap().is_empty());
+
+    let tv_library_id = Uuid::new_v4();
+    db::insert_library(
+        &pool,
+        run_id,
+        tv_library_id,
+        "TV navigation test",
+        "tvshows",
+        &[PathBuf::from("/tv")],
+        true,
+    )
+    .await
+    .unwrap();
+    let series = insert_item(
+        &pool,
+        tv_library_id,
+        None,
+        "Example Series",
+        "Series",
+        "/tv/Example Series",
+        None,
+    )
+    .await;
+    let season = insert_item(
+        &pool,
+        tv_library_id,
+        Some(series.id),
+        "Season 1",
+        "Season",
+        "/tv/Example Series/Season 1",
+        None,
+    )
+    .await;
+    let episode = insert_item(
+        &pool,
+        tv_library_id,
+        Some(season.id),
+        "S01E02 - Pilot.mkv",
+        "Episode",
+        "/tv/Example Series/Season 1/S01E02 - Pilot.mkv",
+        None,
+    )
+    .await;
+    let (seasons_status, seasons_json) = get_json(
+        &router,
+        &format!("/Shows/{}/Seasons", series.id),
+        admin_token,
+    )
+    .await;
+    assert_eq!(seasons_status, axum::http::StatusCode::OK);
+    assert_eq!(seasons_json["Items"][0]["Id"], season.id.to_string());
+    let (episodes_status, episodes_json) = get_json(
+        &router,
+        &format!("/Shows/{}/Episodes?SeasonId={}", series.id, season.id),
+        admin_token,
+    )
+    .await;
+    assert_eq!(episodes_status, axum::http::StatusCode::OK);
+    assert_eq!(episodes_json["Items"][0]["Id"], episode.id.to_string());
+    assert_eq!(episodes_json["Items"][0]["SeriesId"], series.id.to_string());
+    assert_eq!(episodes_json["Items"][0]["SeasonId"], season.id.to_string());
+    assert_eq!(episodes_json["Items"][0]["IndexNumber"], 2);
+    assert_eq!(episodes_json["Items"][0]["ParentIndexNumber"], 1);
+
+    let music_library_id = Uuid::new_v4();
+    db::insert_library(
+        &pool,
+        run_id,
+        music_library_id,
+        "Music navigation test",
+        "music",
+        &[PathBuf::from("/music")],
+        true,
+    )
+    .await
+    .unwrap();
+    let artist = insert_item(
+        &pool,
+        music_library_id,
+        None,
+        "Example Artist",
+        "MusicArtist",
+        "/music/Example Artist",
+        None,
+    )
+    .await;
+    let album = insert_item(
+        &pool,
+        music_library_id,
+        Some(artist.id),
+        "Example Album",
+        "MusicAlbum",
+        "/music/Example Artist/Example Album",
+        None,
+    )
+    .await;
+    let song = insert_item(
+        &pool,
+        music_library_id,
+        Some(album.id),
+        "01 - Opening.flac",
+        "Audio",
+        "/music/Example Artist/Example Album/01 - Opening.flac",
+        None,
+    )
+    .await;
+    let (artists_status, artists_json) = get_json(
+        &router,
+        &format!("/Artists?ParentId={music_library_id}"),
+        admin_token,
+    )
+    .await;
+    assert_eq!(artists_status, axum::http::StatusCode::OK);
+    assert_eq!(artists_json["Items"][0]["Id"], artist.id.to_string());
+    let (persons_status, persons_json) = get_json(
+        &router,
+        &format!("/Persons?ParentId={music_library_id}&PersonTypes=Actor%2CArtist&Limit=10"),
+        admin_token,
+    )
+    .await;
+    assert_eq!(persons_status, axum::http::StatusCode::OK);
+    assert_eq!(persons_json["TotalRecordCount"], 1);
+    assert_eq!(persons_json["Items"][0]["Id"], artist.id.to_string());
+    assert_eq!(persons_json["Items"][0]["Type"], "Person");
+    let (repeated_person_types_status, repeated_person_types_json) = get_json(
+        &router,
+        &format!(
+            "/Persons?ParentId={music_library_id}&PersonTypes=Actor&PersonTypes=AlbumArtist&Limit=10"
+        ),
+        admin_token,
+    )
+    .await;
+    assert_eq!(repeated_person_types_status, axum::http::StatusCode::OK);
+    assert_eq!(repeated_person_types_json["TotalRecordCount"], 1);
+    let (person_by_name_status, person_by_name_json) =
+        get_json(&router, "/Persons/Example%20Artist", admin_token).await;
+    assert_eq!(person_by_name_status, axum::http::StatusCode::OK);
+    assert_eq!(person_by_name_json["Id"], artist.id.to_string());
+    assert_eq!(person_by_name_json["Type"], "Person");
+    let (appears_status, appears_json) = get_json(
+        &router,
+        &format!(
+            "/Persons?AppearsInItemId={}&PersonTypes=AlbumArtist",
+            song.id
+        ),
+        admin_token,
+    )
+    .await;
+    assert_eq!(appears_status, axum::http::StatusCode::OK);
+    assert_eq!(appears_json["TotalRecordCount"], 1);
+    assert_eq!(appears_json["Items"][0]["Id"], artist.id.to_string());
+    let (appears_page_status, appears_page_json) = get_json(
+        &router,
+        &format!(
+            "/Persons?AppearsInItemId={}&PersonTypes=Artist&StartIndex=1&Limit=1",
+            song.id
+        ),
+        admin_token,
+    )
+    .await;
+    assert_eq!(appears_page_status, axum::http::StatusCode::OK);
+    assert_eq!(appears_page_json["TotalRecordCount"], 1);
+    assert_eq!(appears_page_json["StartIndex"], 1);
+    assert!(appears_page_json["Items"].as_array().unwrap().is_empty());
+    let (actor_status, actor_json) = get_json(
+        &router,
+        &format!("/Persons?ParentId={music_library_id}&PersonTypes=Actor"),
+        admin_token,
+    )
+    .await;
+    assert_eq!(actor_status, axum::http::StatusCode::OK);
+    assert_eq!(actor_json["TotalRecordCount"], 0);
+    assert!(actor_json["Items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        get_status(
+            &router,
+            &format!("/Persons?ParentId={music_library_id}"),
+            token,
+        )
+        .await,
+        axum::http::StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get_status(&router, "/Persons/Example%20Artist", token).await,
+        axum::http::StatusCode::NOT_FOUND
+    );
+
+    // Exact name resolution must not depend on whether that item fits into the
+    // bounded full-text substring page ahead of many prefix matches.
+    for index in 0..120 {
+        let name = format!("A Zeta Artist Target {index:03}");
+        let path = format!("/music/{name}");
+        insert_item(
+            &pool,
+            music_library_id,
+            None,
+            &name,
+            "MusicArtist",
+            &path,
+            None,
+        )
+        .await;
+    }
+    let exact_artist = insert_item(
+        &pool,
+        music_library_id,
+        None,
+        "Zeta Artist Target",
+        "MusicArtist",
+        "/music/Zeta Artist Target",
+        None,
+    )
+    .await;
+    let (late_person_status, late_person_json) =
+        get_json(&router, "/Persons/Zeta%20Artist%20Target", admin_token).await;
+    assert_eq!(late_person_status, axum::http::StatusCode::OK);
+    assert_eq!(late_person_json["Id"], exact_artist.id.to_string());
+    assert_eq!(late_person_json["Type"], "Person");
+    let stored_title_artist = insert_item(
+        &pool,
+        music_library_id,
+        None,
+        "Stored Artist Name",
+        "MusicArtist",
+        "/music/Stored Artist Name",
+        None,
+    )
+    .await;
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,title) VALUES ($1,'local-nfo','Visible Artist Name')")
+        .bind(stored_title_artist.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (visible_person_status, visible_person_json) =
+        get_json(&router, "/Persons/Visible%20Artist%20Name", admin_token).await;
+    assert_eq!(visible_person_status, axum::http::StatusCode::OK);
+    assert_eq!(
+        visible_person_json["Id"],
+        stored_title_artist.id.to_string()
+    );
+    assert_eq!(visible_person_json["Name"], "Visible Artist Name");
+    assert_eq!(
+        get_status(&router, "/Persons/Stored%20Artist%20Name", admin_token).await,
+        axum::http::StatusCode::NOT_FOUND
+    );
+    let (song_status, song_json) =
+        get_json(&router, &format!("/Items/{}", song.id), admin_token).await;
+    assert_eq!(song_status, axum::http::StatusCode::OK);
+    assert_eq!(song_json["AlbumId"], album.id.to_string());
+    assert_eq!(song_json["Album"], "Example Album");
+    assert_eq!(song_json["ArtistItems"][0]["Id"], artist.id.to_string());
+    assert_eq!(song_json["IndexNumber"], 1);
+
+    drop(router);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    admin_pool.close().await;
+}
+
+async fn insert_item(
+    pool: &PgPool,
+    library_id: Uuid,
+    parent_id: Option<Uuid>,
+    name: &str,
+    item_type: &str,
+    path: &str,
+    rating: Option<i16>,
+) -> ItemRecord {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO items(id,library_id,parent_id,name,sort_name,item_type,path,path_hash,rating) VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8)")
+        .bind(id)
+        .bind(library_id)
+        .bind(parent_id)
+        .bind(name)
+        .bind(item_type)
+        .bind(path)
+        .bind(db::path_hash(path))
+        .bind(rating)
+        .execute(pool)
+        .await
+        .unwrap();
+    db::get_item(pool, id).await.unwrap().unwrap()
+}
+
+async fn set_local_policy_rating(pool: &PgPool, item_id: Uuid, label: &str, value: i16) {
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,content_rating,policy_rating_scale,policy_rating_value) VALUES ($1,'local-nfo',$2,'US-MPAA-v1',$3)")
+        .bind(item_id)
+        .bind(label)
+        .bind(value)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn get_status(router: &axum::Router, uri: &str, token: &str) -> axum::http::StatusCode {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("X-Emby-Token", token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+async fn get_json(
+    router: &axum::Router,
+    uri: &str,
+    token: &str,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("X-Emby-Token", token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body_len = body.len();
+    let value = serde_json::from_slice(&body).unwrap_or_else(|error| {
+        panic!("GET {uri} returned {status} with a {body_len}-byte body; JSON parse error: {error}")
+    });
+    (status, value)
+}
+
+async fn post_json(
+    router: &axum::Router,
+    uri: &str,
+    token: &str,
+    value: serde_json::Value,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    request_json(router, axum::http::Method::POST, uri, token, Some(value)).await
+}
+
+async fn delete_json(
+    router: &axum::Router,
+    uri: &str,
+    token: &str,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    request_json(router, axum::http::Method::DELETE, uri, token, None).await
+}
+
+async fn request_json(
+    router: &axum::Router,
+    method: axum::http::Method,
+    uri: &str,
+    token: &str,
+    value: Option<serde_json::Value>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("X-Emby-Token", token);
+    let body = if let Some(value) = value {
+        builder = builder.header("Content-Type", "application/json");
+        Body::from(serde_json::to_vec(&value).unwrap())
+    } else {
+        Body::empty()
+    };
+    let response = router
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json = if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&body).unwrap()
+    };
+    (status, json)
+}
+
+async fn create_token(pool: &PgPool, run_id: Uuid, user_id: Uuid, token: &str) {
+    db::create_auth_token(
+        pool,
+        run_id,
+        db::NewAuthToken {
+            token_id: Uuid::new_v4(),
+            user_id,
+            token_hash: auth::token_digest(token),
+            expires_at: Utc::now() + ChronoDuration::hours(1),
+            client: "test".to_owned(),
+            device_name: "test".to_owned(),
+            device_id: "policy-test".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+fn test_config(database_url: String) -> Config {
+    Config {
+        bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        public_base_url: None,
+        database_url,
+        server_name: "Test".to_owned(),
+        web_root: env::temp_dir(),
+        data_dir: env::temp_dir(),
+        ffmpeg_path: None,
+        max_scan_workers: 1,
+        max_page_size: 100,
+        access_token_lifetime_hours: 24,
+        cookie_secure: false,
+        cors_origins: Vec::new(),
+        trusted_proxies: Vec::new(),
+        local_networks: vec!["127.0.0.0/8".parse::<IpNet>().unwrap()],
+        setup_token: None,
+        bootstrap_admin_username: None,
+        bootstrap_admin_password: None,
+    }
+}

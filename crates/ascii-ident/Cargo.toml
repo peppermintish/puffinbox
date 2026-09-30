@@ -1,0 +1,10 @@
+[package]
+name = "unicode-ident"
+version = "1.0.26"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Puffinbox's ASCII-only identifier checks for procedural macro builds"
+publish = false
+
+[lib]
+path = "src/lib.rs"

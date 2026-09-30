@@ -1,0 +1,9 @@
+# Add to the normal compose file only for isolated local acceptance runs.
+services:
+  database:
+    ports:
+      - "${PUFFINBOX_ACCEPTANCE_POSTGRES_PORT:-127.0.0.1:55432}:5432"
+    restart: "no"
+
+  server:
+    restart: "no"

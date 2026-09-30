@@ -1,0 +1,201 @@
+name: Tagged release archive build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  source-validation:
+    name: Source, license, and project-image validation
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18.6-alpine
+        env:
+          POSTGRES_USER: throttle_test
+          POSTGRES_PASSWORD: throttle_test
+          POSTGRES_DB: throttle_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U throttle_test -d throttle_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: Check release readiness
+        run: python3 scripts/check_release_readiness.py
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools binutils perl make
+      - name: Select the locked release toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --target x86_64-unknown-linux-musl
+          rustup default 1.98.1
+      - name: Install dependency audit tools
+        run: |
+          cargo install --locked --version 0.20.2 cargo-deny
+          cargo install --locked --features cli --version 0.9.2 cargo-about
+      - name: Validate source and dependency licenses
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace --all-targets
+          node --check web/client-compat.js
+          node --check web/app.js
+          node --check web/live-tv.js
+          node --check web/book-reader.js
+          node --check web/device-id.js
+          node --check web/jmp-player.js
+          node --check web/playback-heartbeat.js
+          node --check web/offline-cache.js
+          node --check web/offline-sw.js
+          node --check scripts/test_offline_browser.js
+          node --check scripts/test_livetv_browser.js
+          node --check scripts/test_playlists_browser.js
+          node scripts/test_client_compat.js
+          node scripts/test_device_id.js
+          node scripts/test_jmp_player.js
+          node scripts/test_playback_heartbeat.js
+          node scripts/test_offline_cache.js
+          node --test web/book-reader.test.cjs
+          node scripts/test_offline_browser.js
+          node scripts/test_livetv_browser.js
+          node scripts/test_playlists_browser.js
+          python3 -m compileall -q scripts
+          python3 scripts/test_acceptance_config.py
+          python3 scripts/test_api_coverage.py
+          python3 scripts/acceptance.py --help >/dev/null
+          python3 scripts/api_coverage.py --check --output "$RUNNER_TEMP/api-route-coverage.md"
+          python3 scripts/build_license_bundle.py
+          cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
+      - name: Run isolated PostgreSQL regression targets
+        env:
+          PUFFINBOX_TEST_DATABASE_URL: postgres://throttle_test:throttle_test@127.0.0.1:5432/throttle_test
+        run: |
+          cargo test --locked --test postgres_login_throttle -- --ignored --nocapture
+          cargo test --locked --test postgres_policy_visibility -- --ignored --nocapture
+          cargo test --locked --test postgres_server_guards -- --ignored --nocapture
+          cargo test --locked --test postgres_media_access_tokens -- --ignored --nocapture
+          cargo test --locked --test postgres_metadata_schema -- --ignored --nocapture
+          cargo test --locked --test postgres_offline_packages -- --ignored --nocapture
+          cargo test --locked --test postgres_plugins -- --ignored --nocapture
+          cargo test --locked --test postgres_playlists -- --ignored --nocapture
+          cargo test --locked --test postgres_metadata_catalog -- --ignored --nocapture
+          cargo test --locked --test postgres_dlna -- --ignored --nocapture
+          cargo test --locked --test postgres_book_reader -- --ignored --nocapture
+          cargo test --locked --test postgres_livetv -- --ignored --nocapture
+          cargo test --locked --test postgres_livetv_dvr -- --ignored --nocapture
+          cargo test --locked --lib media_features::livetv_recorder::tests::due_timer_claim_serializes_with_stale_channel_cleanup -- --ignored --exact --nocapture
+      - name: Build project-only container image
+        run: docker build --tag puffinbox:local --file Dockerfile .
+
+  isolated-acceptance:
+    name: PostgreSQL and synthetic media semantic acceptance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: Install fixture generator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Create isolated synthetic media and credentials
+        run: python3 scripts/prepare_acceptance.py
+
+      - name: Add supplemental original synthetic fixtures
+        run: python3 scripts/prepare_supplemental_fixtures.py
+      - name: Build project-only and external test-tool images
+        run: |
+          docker build --tag puffinbox:local --file Dockerfile .
+          docker build --tag puffinbox:acceptance-tools --file Dockerfile.acceptance-ffmpeg .
+      - name: Assemble isolated operator test image
+        run: >-
+          docker compose --project-name puffinbox-acceptance --env-file .local/acceptance/acceptance.env
+          -f docker-compose.yml
+          -f docker-compose.acceptance.yml
+          -f docker-compose.ffmpeg-runtime.yml
+          build server
+      - name: Check operator FFmpeg and FFprobe inside the local runtime image
+        run: python3 scripts/check_operator_runtime.py --image puffinbox:operator-ffmpeg
+      - name: Start isolated PostgreSQL and server
+        run: >-
+          docker compose --project-name puffinbox-acceptance --env-file .local/acceptance/acceptance.env
+          -f docker-compose.yml
+          -f docker-compose.acceptance.yml
+          -f docker-compose.ffmpeg-runtime.yml
+          up -d --wait --wait-timeout 120
+      - name: Run complete isolated semantic acceptance
+        run: python3 scripts/acceptance.py --require-scan --require-transcode
+      - name: Save acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: tagged-release-acceptance-evidence
+          path: .local/acceptance/acceptance-results.json
+          if-no-files-found: warn
+      - name: Stop isolated services and remove synthetic volumes
+        if: always()
+        run: >-
+          docker compose --project-name puffinbox-acceptance --env-file .local/acceptance/acceptance.env
+          -f docker-compose.yml
+          -f docker-compose.acceptance.yml
+          -f docker-compose.ffmpeg-runtime.yml
+          down --volumes --remove-orphans
+
+  archive:
+    name: Package validated Linux archive
+    needs: [source-validation, isolated-acceptance]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools binutils perl make
+      - name: Select the locked release toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --target x86_64-unknown-linux-musl
+          rustup default 1.98.1
+      - name: Install dependency audit tools
+        run: |
+          cargo install --locked --version 0.20.2 cargo-deny
+          cargo install --locked --features cli --version 0.9.2 cargo-about
+      - name: Build archive contents after validation gates pass
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/build_license_bundle.py
+          cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
+          package="dist/archive/puffinbox-${RELEASE_TAG}-linux-x86_64"
+          mkdir -p "$package"
+          install -m 0555 target/x86_64-unknown-linux-musl/release/puffinbox-server "$package/puffinbox-server"
+           cp -R web "$package/web"
+           cp -R docs "$package/docs"
+           cp -R dist/licenses "$package/licenses"
+          cp LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md README.md "$package/"
+          tar -C dist/archive -czf "dist/puffinbox-${RELEASE_TAG}-linux-x86_64.tar.gz" "puffinbox-${RELEASE_TAG}-linux-x86_64"
+          sha256sum "dist/puffinbox-${RELEASE_TAG}-linux-x86_64.tar.gz" > "dist/puffinbox-${RELEASE_TAG}-linux-x86_64.tar.gz.sha256"
+      - name: Attach archive and checksum to the workflow run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: puffinbox-${{ github.ref_name }}-linux-x86_64
+          path: |
+            dist/puffinbox-${{ github.ref_name }}-linux-x86_64.tar.gz
+            dist/puffinbox-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
