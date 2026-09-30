@@ -367,7 +367,7 @@ pub async fn issue_token(
             expires_at,
             client: sanitize_header(client),
             device_name: sanitize_header(device_name),
-            device_id: sanitize_header(device_id),
+            device_id: sanitize_identity(device_id, MAX_DEVICE_ID_BYTES),
         },
     )
     .await?;
@@ -399,11 +399,19 @@ pub async fn issue_media_access_token(
 }
 
 fn sanitize_header(value: &str) -> String {
-    let cleaned: String = value
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(128)
-        .collect();
+    sanitize_identity(value, 128)
+}
+
+pub const MAX_DEVICE_ID_BYTES: usize = 1024;
+
+fn sanitize_identity(value: &str, max_bytes: usize) -> String {
+    let mut cleaned = String::new();
+    for character in value.chars().filter(|c| !c.is_control()) {
+        if cleaned.len() + character.len_utf8() > max_bytes {
+            break;
+        }
+        cleaned.push(character);
+    }
     if cleaned.trim().is_empty() {
         "unknown".to_owned()
     } else {
@@ -510,8 +518,13 @@ pub fn client_identity_from_headers(headers: &HeaderMap) -> Result<ClientIdentit
                     None
                 };
                 if let Some(target) = target {
+                    let max_bytes = if name.eq_ignore_ascii_case("DeviceId") {
+                        MAX_DEVICE_ID_BYTES
+                    } else {
+                        128
+                    };
                     if value.is_empty()
-                        || value.len() > 128
+                        || value.len() > max_bytes
                         || !value
                             .bytes()
                             .all(|byte| byte.is_ascii_graphic() || byte == b' ')
@@ -931,6 +944,35 @@ mod tests {
             extract_raw_token(&headers).unwrap(),
             Some(("opaque-token-1234567890".to_owned(), false))
         );
+    }
+
+    #[test]
+    fn long_device_ids_remain_distinct_and_other_metadata_stays_bounded() {
+        let prefix = "opaque-browser-id-".repeat(24);
+        let first = format!("{prefix}first");
+        let second = format!("{prefix}second");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_str(&format!(
+            "MediaBrowser Client=\"Jellyfin Web\", Device=\"Chrome\", DeviceId=\"{first}\", Version=\"12.0.0\""
+        )).unwrap());
+        let parsed = client_identity_from_headers(&headers).unwrap();
+        assert_eq!(parsed.device_id.as_deref(), Some(first.as_str()));
+        assert_eq!(sanitize_identity(&first, MAX_DEVICE_ID_BYTES), first);
+        assert_ne!(
+            sanitize_identity(&first, MAX_DEVICE_ID_BYTES),
+            sanitize_identity(&second, MAX_DEVICE_ID_BYTES)
+        );
+        for (field, value) in [
+            ("DeviceId", "x".repeat(MAX_DEVICE_ID_BYTES + 1)),
+            ("Client", "x".repeat(129)),
+            ("Device", "x".repeat(129)),
+        ] {
+            headers.insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("MediaBrowser {field}=\"{value}\"")).unwrap(),
+            );
+            assert!(client_identity_from_headers(&headers).is_err(), "{field}");
+        }
     }
 
     #[test]

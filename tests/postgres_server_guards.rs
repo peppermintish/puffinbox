@@ -396,6 +396,38 @@ async fn server_run_fences_playback_and_scans_and_scan_reconciliation_fails_safe
         .unwrap()
         .token;
     let app = api::router(state.clone());
+
+    // The official web client uses these legacy spellings during sign-in.
+    // They must not fall through to the authenticated user-update route.
+    for path in ["/Users/AuthenticateByName", "/Users/authenticatebyname"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from("{"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+    for path in ["/Users/Public", "/users/public"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!([]),
+            "anonymous login screens must not expose the database's accounts"
+        );
+    }
     let identities_path = "/Puffinbox/Libraries/RootIdentities";
     let unauthenticated = app
         .clone()

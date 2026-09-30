@@ -1,13 +1,13 @@
 # Generated route declaration comparison
 
-Generated at 2026-09-30T19:26:44.560591+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-09-30T20:41:32.170058+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `153`
-- Declared pairs matching a schema method/path: `70`
-- Declared pairs outside the schema: `83`
+- Unique declared server method/path pairs: `158`
+- Declared pairs matching a schema method/path: `73`
+- Declared pairs outside the schema: `85`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
 
@@ -19,11 +19,16 @@ This is a source declaration comparison only. It does not establish that a match
 | `GET /health` | `src/api.rs` | custom / not in target schema |
 | `GET /health/ready` | `src/api.rs` | custom / not in target schema |
 | `GET /System/Info/Public` | `src/api.rs` | match |
+| `GET /Branding/Configuration` | `src/api.rs` | match |
+| `GET /QuickConnect/Enabled` | `src/api.rs` | match |
+| `GET /Users/Public` | `src/api.rs` | match |
+| `GET /users/public` | `src/api.rs` | custom / not in target schema |
 | `GET /System/Info` | `src/api.rs` | match |
 | `GET /Localization/ParentalRatings` | `src/api.rs` | match |
 | `GET /Startup/Configuration` | `src/api.rs` | match |
 | `POST /Startup/User` | `src/api.rs` | match |
 | `POST /Users/AuthenticateByName` | `src/api.rs` | match |
+| `POST /Users/authenticatebyname` | `src/api.rs` | custom / not in target schema |
 | `GET /Users/Me` | `src/api.rs` | match |
 | `POST /Users/Me/MediaAccessToken` | `src/api.rs` | Puffinbox extension / outside target schema |
 | `POST /Users/Me/Logout` | `src/api.rs` | custom / not in target schema |

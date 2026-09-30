@@ -38,11 +38,16 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/health/ready", get(ready))
         .route("/System/Info/Public", get(public_system_info))
+        .route("/Branding/Configuration", get(branding_configuration))
+        .route("/QuickConnect/Enabled", get(quick_connect_enabled))
+        .route("/Users/Public", get(public_users))
+        .route("/users/public", get(public_users))
         .route("/System/Info", get(system_info))
         .route("/Localization/ParentalRatings", get(parental_ratings))
         .route("/Startup/Configuration", get(startup_configuration))
         .route("/Startup/User", post(startup_create_user))
         .route("/Users/AuthenticateByName", post(authenticate_by_name))
+        .route("/Users/authenticatebyname", post(authenticate_by_name))
         .route("/Users/Me", get(get_current_user))
         .route(
             "/Users/Me/MediaAccessToken",
@@ -385,6 +390,31 @@ async fn root_redirect() -> Redirect {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct BrandingOptionsDto {
+    login_disclaimer: Option<&'static str>,
+    custom_css: Option<&'static str>,
+    splashscreen_enabled: bool,
+}
+
+async fn branding_configuration() -> Json<BrandingOptionsDto> {
+    Json(BrandingOptionsDto {
+        login_disclaimer: None,
+        custom_css: None,
+        splashscreen_enabled: false,
+    })
+}
+
+async fn quick_connect_enabled() -> Json<bool> {
+    Json(false)
+}
+
+async fn public_users() -> Json<Vec<UserDto>> {
+    // Accounts use manual sign-in; do not publish their names anonymously.
+    Json(Vec::new())
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HealthResponse {
     status: &'static str,
@@ -681,9 +711,10 @@ async fn authenticate_by_name(
         input.device_name.as_deref(),
     )?
     .unwrap_or_else(|| "unknown".to_owned());
-    let device_id = login_identity(
+    let device_id = login_identity_with_limit(
         header_identity.device_id.as_deref(),
         input.device_id.as_deref(),
+        auth::MAX_DEVICE_ID_BYTES,
     )?
     .unwrap_or_else(|| "unknown".to_owned());
     let username = input.username.trim().to_ascii_lowercase();
@@ -767,15 +798,22 @@ fn login_identity(
     header_value: Option<&str>,
     body_value: Option<&str>,
 ) -> Result<Option<String>, ApiError> {
+    login_identity_with_limit(header_value, body_value, 128)
+}
+
+fn login_identity_with_limit(
+    header_value: Option<&str>,
+    body_value: Option<&str>,
+    max_bytes: usize,
+) -> Result<Option<String>, ApiError> {
     let validate = |value: Option<&str>| -> Result<Option<String>, ApiError> {
         let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
             return Ok(None);
         };
-        if value.len() > 128 || value.chars().any(char::is_control) {
-            return Err(ApiError::BadRequest(
-                "Client identity fields must be at most 128 characters without control characters"
-                    .to_owned(),
-            ));
+        if value.len() > max_bytes || value.chars().any(char::is_control) {
+            return Err(ApiError::BadRequest(format!(
+                "Client identity fields must be at most {max_bytes} bytes without control characters"
+            )));
         }
         Ok(Some(value.to_owned()))
     };
@@ -3706,7 +3744,34 @@ mod item_dto_tests {
 
 #[cfg(test)]
 mod user_write_request_tests {
-    use super::UserWriteRequest;
+    use super::{UserWriteRequest, login_identity, login_identity_with_limit};
+
+    #[test]
+    fn long_device_identity_requires_matching_header_and_body() {
+        let device_id = "opaque-browser-id-".repeat(24);
+        assert_eq!(
+            login_identity_with_limit(
+                Some(&device_id),
+                Some(&device_id),
+                crate::auth::MAX_DEVICE_ID_BYTES
+            )
+            .unwrap(),
+            Some(device_id.clone()),
+        );
+        assert!(login_identity(Some(&device_id), None).is_err());
+        assert!(
+            login_identity_with_limit(
+                Some(&device_id),
+                Some("different-device"),
+                crate::auth::MAX_DEVICE_ID_BYTES
+            )
+            .is_err()
+        );
+        assert!(
+            login_identity_with_limit(None, Some("device\nname"), crate::auth::MAX_DEVICE_ID_BYTES)
+                .is_err()
+        );
+    }
 
     #[test]
     fn new_users_need_explicit_remote_access_opt_in() {

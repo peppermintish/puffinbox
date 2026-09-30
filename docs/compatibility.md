@@ -4,13 +4,13 @@ Puffinbox is partial and unreleased. Local checks on 2026-10-01 passed; their sc
 
 ## Current-source gates
 
-The Rust workspace passes formatting, strict Clippy, and 209 standard tests. All 18 PostgreSQL integration cases and the database-backed recorder unit test passed against a disposable database. Python, browser, and book-reader checks passed. The current static container passed all 20 HTTP and restart acceptance checks. Source and scratch-container TLS checks passed.
+The Rust workspace passes formatting, strict Clippy, and 211 standard tests. All 18 PostgreSQL integration cases and the database-backed recorder unit test passed against a disposable database. Python, browser, and book-reader checks passed. The current static container passed all 20 HTTP and restart acceptance checks. Source and scratch-container TLS checks passed.
 
-The MIT/Apache-2.0 Cargo allowlist passes without exceptions. The linked Rust Unicode tables carry Unicode-3.0, and musl has additional component licenses. The runtime boundary is still open; see [licensing.md](licensing.md). No release tag or archive has been created. Cloud CI is pending the first push.
+The MIT/Apache-2.0 Cargo allowlist passes without exceptions. The linked Rust Unicode tables carry Unicode-3.0, and musl has additional component licenses. The runtime boundary is still open; see [licensing.md](licensing.md). No release tag or archive has been created. The first cloud CI run is in progress.
 
 ## Jellyfin API target
 
-The target is the public [Jellyfin 12.0.0 OpenAPI document](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json). The [route report](generated-api-route-coverage.md) finds 70 exact method/path declarations among 364 operations. This counts declarations, not compatible behavior. Response semantics, query combinations, errors, and client expectations must be tested separately.
+The target is the public [Jellyfin 12.0.0 OpenAPI document](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json). The [route report](generated-api-route-coverage.md) finds 73 exact method/path declarations among 364 operations. This counts declarations, not compatible behavior. Response semantics, query combinations, errors, and client expectations must be tested separately.
 
 ## Requested scope
 
@@ -29,7 +29,7 @@ The target is the public [Jellyfin 12.0.0 OpenAPI document](https://repo.jellyfi
 | Books | A bounded PDF/EPUB reader with library, parental, and download policy checks; 8 Node reader cases pass. | PDF assets exclude non-allowlisted CMaps/fonts/decoders. Some PDFs cannot render fully. EPUB media, annotations, DRM, conversion, and broad client support are incomplete. |
 | Offline sync | Browser-origin IndexedDB transfers with chunk and whole-file SHA-256, interrupted resume, cached streaming, ranges, and account-change handling. | Copies belong to the browser/site origin. Real storage pressure, eviction, cross-device sync, and external clients need acceptance. Server deletion does not erase a downloaded copy. |
 | Deployment | A static Linux server image, external PostgreSQL, and a separately assembled FFmpeg test runtime. Active HLS shutdown and resume passed on the current image. | Whole-runtime license closure and production operations remain open. |
-| Official clients | The installed player connected and exposed Puffinbox's login form. The current original web client completed a synthetic MP4. | The installed player's captured display was blank; current native playback is unvalidated. Serving Puffinbox's page inside a client does not prove official Jellyfin web/API behavior. |
+| Official clients | Official Jellyfin web authenticated against the current server through an isolated localhost proxy. The installed player exposed Puffinbox's login form. The original Puffinbox web client completed a synthetic MP4. | Official web browsing stops at the missing session-capabilities endpoint. The installed player's captured display was blank; native playback is unvalidated. |
 | Scale | An earlier bounded [2,048-file scanner benchmark](scanner-scale.md) measured about 4,567 rows per second. | No result supports a 1 PB library, billions of files, or thousands of concurrent streams. |
 
 ## Licensing closure
