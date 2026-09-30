@@ -628,6 +628,7 @@ async function main() {
     await cdp.waitFor(manager, 'document.querySelector("[data-live-tv-cancel-timer=\\"' + programTimerPost.createdId + '\\"]") === null', Boolean, 'the programme timer cancellation');
     assert.ok(apiRequests.some((entry) => entry.method === 'DELETE' && entry.pathname === '/LiveTv/Timers/' + programTimerPost.createdId), 'timer cancellation used an unsupported route');
 
+    await cdp.waitFor(manager, 'window.__liveTvPending === 0 && document.querySelector("[data-live-tv-record-series=\\"' + PROGRAM_ID + '\\"]") !== null', Boolean, 'the refreshed programme controls after timer cancellation');
     await cdp.evaluate(manager.sessionId, '(() => { const row = document.querySelector("[data-live-tv-record-series=\\"' + PROGRAM_ID + '\\"]").closest(".live-tv-program"); row.querySelector("[name=DayPattern]").value = "Weekdays"; row.querySelector("[data-live-tv-record-series]").click(); return true; })()');
     await cdp.waitFor(manager, 'document.querySelectorAll(".live-tv-series-row").length === 2', Boolean, 'the series timer to appear');
     const seriesTimerPost = apiRequests.find((entry) => entry.method === 'POST' && entry.pathname === '/LiveTv/SeriesTimers');
@@ -757,4 +758,11 @@ async function main() {
   }
 }
 
-main().catch((error) => { console.error(error); process.exitCode = 1; });
+main().catch((error) => {
+  console.error(error);
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const detail = String(error.stack || error).slice(0, 10000).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+    console.log('::error title=Live TV browser checks::' + detail);
+  }
+  process.exitCode = 1;
+});
