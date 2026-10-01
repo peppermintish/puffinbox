@@ -433,5 +433,21 @@
       });
   }
 
-  return { isPresent, getDeviceProfile, externalSubtitleFormat, playbackInfoForSubtitle, formatPlaybackRouteDiagnostic, load, stop, control, seek, getPosition };
+  function timeline(session) {
+    const offsetMs = Math.max(0, Number(session?.positionOffsetTicks) || 0) / 10_000;
+    const elapsedMs = Math.max(0, Number(session?.nativePositionMs) || 0);
+    const remainingMs = Math.max(0, Number(session?.nativeDurationMs) || 0);
+    const sourceDurationMs = Math.max(0, Number(session?.item?.RunTimeTicks) || 0) / 10_000;
+    const durationMs = sourceDurationMs || offsetMs + remainingMs;
+    const seekMaximumMs = Math.max(offsetMs, Math.min(durationMs, offsetMs + remainingMs));
+    return {
+      positionMs: Math.min(offsetMs + elapsedMs, durationMs || offsetMs + elapsedMs),
+      durationMs,
+      seekMinimumMs: offsetMs,
+      seekMaximumMs,
+      canSeek: session?.isLiveTv !== true && remainingMs > 0 && seekMaximumMs > offsetMs,
+    };
+  }
+
+  return { isPresent, getDeviceProfile, externalSubtitleFormat, playbackInfoForSubtitle, formatPlaybackRouteDiagnostic, load, stop, control, seek, getPosition, timeline };
 });

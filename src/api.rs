@@ -2229,6 +2229,8 @@ struct ItemsQueryParams {
     search_term: Option<String>,
     #[serde(default, rename = "IncludeItemTypes", alias = "includeItemTypes")]
     include_item_types: Option<String>,
+    #[serde(default, rename = "MediaTypes", alias = "mediaTypes")]
+    media_types: Option<String>,
     #[serde(default, rename = "Recursive", alias = "recursive")]
     recursive: Option<bool>,
     #[serde(default, rename = "StartIndex", alias = "startIndex")]
@@ -2359,13 +2361,8 @@ fn item_dto(
                 | "MusicArtist"
                 | "MusicAlbum"
         ),
-        media_type: match item.item_type.as_str() {
-            "Movie" | "Series" | "Episode" | "Video" | "Trailer" | "MusicVideo" => Some("Video"),
-            "Audio" | "MusicAlbum" | "MusicArtist" => Some("Audio"),
-            "Photo" => Some("Photo"),
-            "Book" | "AudioBook" | "EBook" => Some("Book"),
-            _ => None,
-        },
+        media_type: crate::library::MediaType::for_item_type(&item.item_type)
+            .map(crate::library::MediaType::name),
         parent_id: item.parent_id,
         container: item.container.clone(),
         run_time_ticks: item.runtime_ticks,
@@ -2529,6 +2526,7 @@ fn item_query(params: ItemsQueryParams, state: &AppState) -> Result<ItemQuery, A
         search_term,
         exact_name: None,
         include_item_types,
+        media_types: parse_media_types(params.media_types.as_deref())?,
         recursive: params.recursive.unwrap_or(false),
         start_index,
         limit,
@@ -2727,6 +2725,8 @@ struct LatestItemsParams {
     parent_id: Option<Uuid>,
     #[serde(default, rename = "IncludeItemTypes", alias = "includeItemTypes")]
     include_item_types: Option<String>,
+    #[serde(default, rename = "MediaTypes", alias = "mediaTypes")]
+    media_types: Option<String>,
     #[serde(default, rename = "IsPlayed", alias = "isPlayed")]
     is_played: Option<bool>,
     #[serde(default, rename = "StartIndex", alias = "startIndex")]
@@ -2750,6 +2750,7 @@ async fn latest_items(
         search_term: None,
         exact_name: None,
         include_item_types: parse_item_types(params.include_item_types.as_deref())?,
+        media_types: parse_media_types(params.media_types.as_deref())?,
         recursive: true,
         start_index,
         limit,
@@ -2770,6 +2771,8 @@ struct ResumeItemsParams {
     parent_id: Option<Uuid>,
     #[serde(default, rename = "IncludeItemTypes", alias = "includeItemTypes")]
     include_item_types: Option<String>,
+    #[serde(default, rename = "MediaTypes", alias = "mediaTypes")]
+    media_types: Option<String>,
     #[serde(default, rename = "SearchTerm", alias = "searchTerm")]
     search_term: Option<String>,
     #[serde(default, rename = "StartIndex", alias = "startIndex")]
@@ -2794,6 +2797,7 @@ async fn resume_items(
         search_term,
         exact_name: None,
         include_item_types: parse_item_types(params.include_item_types.as_deref())?,
+        media_types: parse_media_types(params.media_types.as_deref())?,
         recursive: true,
         start_index,
         limit,
@@ -2839,6 +2843,7 @@ async fn show_seasons(
         search_term: None,
         exact_name: None,
         include_item_types: vec!["Season".to_owned()],
+        media_types: Vec::new(),
         recursive: false,
         start_index,
         limit,
@@ -2875,6 +2880,7 @@ async fn show_episodes(
         search_term: None,
         exact_name: None,
         include_item_types: vec!["Episode".to_owned()],
+        media_types: Vec::new(),
         recursive: params.season_id.is_none(),
         start_index,
         limit,
@@ -3035,6 +3041,7 @@ async fn list_music_persons(
         search_term,
         exact_name: None,
         include_item_types: vec!["MusicArtist".to_owned()],
+        media_types: Vec::new(),
         recursive: true,
         start_index,
         limit,
@@ -3150,6 +3157,7 @@ async fn get_music_person(
     let query = ItemQuery {
         exact_name: Some(name),
         include_item_types: vec!["MusicArtist".to_owned()],
+        media_types: Vec::new(),
         recursive: true,
         start_index: 0,
         limit: 1,
@@ -3245,6 +3253,7 @@ async fn list_music_artists(
         search_term: normalized_search_term(params.search_term)?,
         exact_name: None,
         include_item_types: vec!["MusicArtist".to_owned()],
+        media_types: Vec::new(),
         recursive: true,
         start_index,
         limit,
@@ -3306,6 +3315,34 @@ fn parse_item_types(value: Option<&str>) -> Result<Vec<String>, ApiError> {
         ));
     }
     Ok(items)
+}
+
+fn parse_media_types(value: Option<&str>) -> Result<Vec<crate::library::MediaType>, ApiError> {
+    use crate::library::MediaType;
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if value.len() > 256 {
+        return Err(ApiError::BadRequest(
+            "MediaTypes exceeds the 256-character limit".to_owned(),
+        ));
+    }
+    let mut kinds = Vec::new();
+    for name in value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let kind = MediaType::KNOWN
+            .into_iter()
+            .chain([MediaType::Unknown])
+            .find(|kind| name.eq_ignore_ascii_case(kind.name()))
+            .ok_or_else(|| ApiError::BadRequest("Unsupported MediaTypes value".to_owned()))?;
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    Ok(kinds)
 }
 
 async fn get_item(
@@ -3451,6 +3488,7 @@ async fn search_hints(
         search_term: Some(search.to_owned()),
         exact_name: None,
         include_item_types: Vec::new(),
+        media_types: Vec::new(),
         recursive: true,
         start_index: start,
         limit,

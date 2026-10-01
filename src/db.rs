@@ -2089,6 +2089,31 @@ fn push_item_conditions(
             .push_bind(query.include_item_types.clone())
             .push(") ");
     }
+    if !query.media_types.is_empty() {
+        let selected = query
+            .media_types
+            .iter()
+            .flat_map(|kind| kind.item_types().iter().copied())
+            .collect::<Vec<_>>();
+        builder
+            .push(" AND (i.item_type = ANY(")
+            .push_bind(selected)
+            .push(") ");
+        if query
+            .media_types
+            .contains(&crate::library::MediaType::Unknown)
+        {
+            let known = crate::library::MediaType::KNOWN
+                .into_iter()
+                .flat_map(|kind| kind.item_types().iter().copied())
+                .collect::<Vec<_>>();
+            builder
+                .push(" OR i.item_type <> ALL(")
+                .push_bind(known)
+                .push(") ");
+        }
+        builder.push(") ");
+    }
     if let Some(played) = query.is_played {
         builder.push(if played {
             " AND EXISTS (SELECT 1 FROM user_item_data ud WHERE ud.user_id="

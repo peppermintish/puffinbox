@@ -13,6 +13,10 @@ These sources describe public HTTP routes and the documented desktop bridge. Puf
 
 On 2026-09-27, the installed Jellyfin Media Player 1.12.0 on Windows was used to load the server-hosted `/web/` page and exercise its login flow. The client uses the page supplied by the server. On 2026-09-29, against rebuilt image `664a5a3`, the installed client played the 180-second subtitle-selection fixture natively and displayed English cues at their expected source times. In a separate run it also rendered cue 10 after switching from Server default to English mid-playback. During that switch, the player progress display reset to a 0:49 HLS window while the burned-in source timestamp continued; no seeking behavior is inferred. These are narrow observations for one fixture and client, not broad API, codec, or client compatibility. Seeking and audio-track selection remain unvalidated.
 
+On 2026-10-01, official compiled Jellyfin web assets were loaded through a localhost proxy against the synthetic test server. API response bodies were forwarded unchanged. Authentication, movie details, media-category resume lists, HLS decoding, pause, and stop worked. Resume exposed a client/server timeline mismatch. Public demo `PlaybackInfo` responses were compared as HTTP data; no implementation source was read. The demo reported 12.1.0, while the API schema target remains 12.0.0.
+
+The installed desktop player also decoded the current synthetic HLS fixture through Puffinbox's original web interface and the documented native bridge. Its source-time display matched the burned-in timecode. Home and Right sought within the resumed clip while paused, and the stop callback saved 125.873 seconds. This validates that bounded control path; general seeking and audio-track selection remain unvalidated.
+
 Development of the interface relied on the public documentation linked above and direct interaction with the installed client. No Jellyfin server or client GPL implementation source was inspected, copied, or adapted for this project.
 
 ## Bundled browser dependency

@@ -61,6 +61,24 @@ async function waitFor(predicate) {
 }
 
 async function main() {
+  const resumed = {
+    nativePositionMs: 39_000,
+    nativeDurationMs: 214_000,
+    positionOffsetTicks: 858_733_980,
+    item: { RunTimeTicks: 3_000_000_000 },
+  };
+  assert.deepEqual(adapter.timeline(resumed), {
+    positionMs: 124_873.398,
+    durationMs: 300_000,
+    seekMinimumMs: 85_873.398,
+    seekMaximumMs: 299_873.398,
+    canSeek: true,
+  }, 'a resumed native stream displays the source timeline and bounds seeks to its available clip');
+  assert.deepEqual(adapter.timeline({ nativePositionMs: 120_000, nativeDurationMs: 300_000 }), {
+    positionMs: 120_000, durationMs: 300_000, seekMinimumMs: 0, seekMaximumMs: 300_000, canSeek: true,
+  }, 'direct playback already uses source-relative positions');
+  assert.equal(adapter.timeline({ ...resumed, isLiveTv: true }).canSeek, false);
+  assert.equal(adapter.timeline({ ...resumed, nativeDurationMs: 0 }).canSeek, false);
   const calls = [];
   const player = {
     playing: event(), paused: event(), finished: event(), canceled: event(), error: event(),

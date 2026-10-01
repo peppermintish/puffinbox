@@ -1674,12 +1674,13 @@
   }
 
   function renderNativePosition(session) {
-    const current = Math.max(0, Number(session?.nativePositionMs) || 0);
-    const duration = Math.max(0, Number(session?.nativeDurationMs) || 0);
-    nativeSeek.disabled = duration <= 0;
-    nativeSeek.max = String(duration);
-    nativeSeek.value = String(Math.min(current, duration || current));
-    nativePosition.textContent = `${formatPlaybackPosition(current * 10_000)} / ${formatPlaybackPosition(duration * 10_000)}`;
+    const timeline = window.PuffinboxJmpPlayer.timeline(session);
+    nativeSeek.disabled = !timeline.canSeek;
+    nativeSeek.min = String(timeline.seekMinimumMs);
+    nativeSeek.max = String(timeline.seekMaximumMs);
+    nativeSeek.value = String(Math.min(timeline.positionMs, timeline.seekMaximumMs));
+    nativeSeek.setAttribute('aria-valuetext', formatPlaybackPosition(timeline.positionMs * 10_000));
+    nativePosition.textContent = `${formatPlaybackPosition(timeline.positionMs * 10_000)} / ${formatPlaybackPosition(timeline.durationMs * 10_000)}`;
   }
 
   function formatPlaybackPosition(ticks) {
@@ -2673,7 +2674,8 @@
   });
   nativeSeek.addEventListener('change', () => {
     if (!activePlayback?.isNative || !activePlayback.nativePlayer) return;
-    const position = Number(nativeSeek.value);
+    const timeline = window.PuffinboxJmpPlayer.timeline(activePlayback);
+    const position = Math.max(0, Math.min(Number(nativeSeek.value), timeline.seekMaximumMs) - timeline.seekMinimumMs);
     if (!window.PuffinboxJmpPlayer.seek(activePlayback.nativePlayer, position)) {
       setPlaybackNote(activePlayback, 'Seeking is unavailable in the native player.');
       return;

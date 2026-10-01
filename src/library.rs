@@ -58,6 +58,7 @@ pub struct ItemQuery {
     pub search_term: Option<String>,
     pub exact_name: Option<String>,
     pub include_item_types: Vec<String>,
+    pub media_types: Vec<MediaType>,
     pub recursive: bool,
     pub start_index: i64,
     pub limit: i64,
@@ -67,6 +68,52 @@ pub struct ItemQuery {
     pub is_played: Option<bool>,
     pub is_favorite: bool,
     pub is_resumable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaType {
+    Unknown,
+    Video,
+    Audio,
+    Photo,
+    Book,
+}
+
+impl MediaType {
+    pub const KNOWN: [Self; 4] = [Self::Video, Self::Audio, Self::Photo, Self::Book];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "Unknown",
+            Self::Video => "Video",
+            Self::Audio => "Audio",
+            Self::Photo => "Photo",
+            Self::Book => "Book",
+        }
+    }
+
+    pub fn item_types(self) -> &'static [&'static str] {
+        match self {
+            Self::Unknown => &[],
+            Self::Video => &[
+                "Movie",
+                "Series",
+                "Episode",
+                "Video",
+                "Trailer",
+                "MusicVideo",
+            ],
+            Self::Audio => &["Audio", "MusicAlbum", "MusicArtist"],
+            Self::Photo => &["Photo"],
+            Self::Book => &["Book", "AudioBook", "EBook"],
+        }
+    }
+
+    pub fn for_item_type(item_type: &str) -> Option<Self> {
+        Self::KNOWN
+            .into_iter()
+            .find(|kind| kind.item_types().contains(&item_type))
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

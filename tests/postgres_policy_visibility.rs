@@ -576,6 +576,111 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
     assert_eq!(resume_status, axum::http::StatusCode::OK);
     assert_eq!(resume_json["TotalRecordCount"], 1);
     assert_eq!(resume_json["Items"][0]["Id"], allowed_movie.id.to_string());
+
+    let mut category_items = Vec::new();
+    for (name, kind, path) in [
+        ("song.mp3", "Audio", "/media/Allowed/song.mp3"),
+        ("novel.epub", "Book", "/media/Allowed/novel.epub"),
+        ("picture.jpg", "Photo", "/media/Allowed/picture.jpg"),
+        ("hidden.mp3", "Audio", "/media/Allowed/.hidden.mp3"),
+    ] {
+        let item = insert_item(
+            &pool,
+            library_id,
+            Some(allowed_folder.id),
+            name,
+            kind,
+            path,
+            Some(40),
+        )
+        .await;
+        sqlx::query("INSERT INTO user_item_data(user_id,item_id,playback_position_ticks,played,last_played_at) VALUES ($1,$2,400,FALSE,now())")
+            .bind(user_id).bind(item.id).execute(&pool).await.unwrap();
+        category_items.push(item);
+    }
+    // A saved position predating a policy change must not reveal a restricted movie.
+    sqlx::query("INSERT INTO user_item_data(user_id,item_id,playback_position_ticks,played,last_played_at) VALUES ($1,$2,400,FALSE,now())")
+        .bind(user_id).bind(blocked_movie.id).execute(&pool).await.unwrap();
+
+    for (category, expected_id) in [
+        ("Video", allowed_movie.id),
+        ("Audio", category_items[0].id),
+        ("Book", category_items[1].id),
+        ("Photo", category_items[2].id),
+    ] {
+        let (status, result) = get_json(
+            &router,
+            &format!("/UserItems/Resume?MediaTypes={category}&Limit=1"),
+            token,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(result["TotalRecordCount"], 1);
+        assert_eq!(result["Items"].as_array().unwrap().len(), 1);
+        assert_eq!(result["Items"][0]["Id"], expected_id.to_string());
+        assert_eq!(result["Items"][0]["MediaType"], category);
+    }
+    let (status, result) = get_json(
+        &router,
+        "/UserItems/Resume?mediaTypes=Audio,Video&Limit=1&StartIndex=1",
+        token,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(result["TotalRecordCount"], 2);
+    assert_eq!(result["StartIndex"], 1);
+    assert_eq!(result["Items"].as_array().unwrap().len(), 1);
+    for endpoint in ["/UserItems/Resume", "/Items?Recursive=true"] {
+        let separator = if endpoint.contains('?') { '&' } else { '?' };
+        let (status, result) = get_json(
+            &router,
+            &format!("{endpoint}{separator}MediaTypes=Audio&IncludeItemTypes=Movie"),
+            token,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(result["TotalRecordCount"], 0);
+        assert!(result["Items"].as_array().unwrap().is_empty());
+    }
+    let (status, result) = get_json(&router, "/Items/Latest?MediaTypes=Audio&Limit=1", token).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(result.as_array().unwrap().len(), 1);
+    assert_eq!(result[0]["Id"], category_items[0].id.to_string());
+    let (status, result) =
+        get_json(&router, "/Items?MediaTypes=Unknown&Recursive=true", token).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(result["TotalRecordCount"], 1);
+    assert_eq!(result["Items"][0]["Id"], allowed_folder.id.to_string());
+    assert!(
+        result["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["MediaType"].is_null())
+    );
+    for endpoint in ["/UserItems/Resume", "/Items", "/Items/Latest"] {
+        assert_eq!(
+            get_status(&router, &format!("{endpoint}?MediaTypes=Invalid"), token).await,
+            axum::http::StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        get_status(
+            &router,
+            &format!("/UserItems/Resume?MediaTypes=Audio&UserId={admin_id}"),
+            token
+        )
+        .await,
+        axum::http::StatusCode::FORBIDDEN
+    );
+    for item in category_items {
+        sqlx::query("DELETE FROM items WHERE id=$1")
+            .bind(item.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     let (favorite_status, favorite_data) = post_json(
         &router,
         &format!("/UserFavoriteItems/{}", allowed_movie.id),
