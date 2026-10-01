@@ -40,6 +40,8 @@ pub(super) struct ProbedStream {
     pub kind: String,
     pub codec: Option<String>,
     pub profile: Option<String>,
+    /// Set only for an explicitly signalled range that we can classify.
+    pub video_range_type: Option<&'static str>,
     pub language: Option<String>,
     pub title: Option<String>,
     pub is_default: bool,
@@ -74,6 +76,9 @@ struct RawStream {
     codec_type: Option<String>,
     codec_name: Option<String>,
     profile: Option<String>,
+    color_transfer: Option<String>,
+    #[serde(default)]
+    side_data_list: Vec<RawSideData>,
     width: Option<u32>,
     height: Option<u32>,
     channels: Option<u32>,
@@ -88,6 +93,39 @@ struct RawDisposition {
     default: Option<i32>,
     forced: Option<i32>,
     attached_pic: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct RawSideData {
+    side_data_type: Option<String>,
+}
+
+fn explicit_video_range(stream: &RawStream) -> Option<&'static str> {
+    if stream.codec_type.as_deref() != Some("video")
+        || stream
+            .disposition
+            .as_ref()
+            .is_some_and(|disposition| disposition.attached_pic.unwrap_or_default() != 0)
+    {
+        return None;
+    }
+    // A transfer function alone cannot rule out dynamic HDR metadata. Accept
+    // only unrelated side-data records we recognise; unknown records stay
+    // unclassified instead of turning an HDR source into an SDR claim.
+    if stream.side_data_list.iter().any(|data| {
+        !matches!(
+            data.side_data_type.as_deref(),
+            Some("Display Matrix" | "Stereo 3D" | "Spherical Mapping" | "CPB properties")
+        )
+    }) {
+        return None;
+    }
+    match stream.color_transfer.as_deref() {
+        Some("bt709" | "bt470m" | "bt470bg" | "smpte170m" | "smpte240m" | "iec61966-2-1") => {
+            Some("SDR")
+        }
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -374,6 +412,7 @@ fn parse_output(output: &[u8], extension: &str) -> Option<ProbeInfo> {
     }
     let mut streams = Vec::with_capacity(raw.streams.len());
     for stream in raw.streams {
+        let video_range_type = explicit_video_range(&stream);
         let index = u32::try_from(stream.index?).ok()?;
         let raw_kind = stream.codec_type?.to_ascii_lowercase();
         let disposition = stream.disposition.unwrap_or(RawDisposition {
@@ -403,6 +442,7 @@ fn parse_output(output: &[u8], extension: &str) -> Option<ProbeInfo> {
             kind,
             codec: stream.codec_name.map(|value| value.to_ascii_lowercase()),
             profile: stream.profile,
+            video_range_type,
             language: find_tag("language"),
             title: find_tag("title"),
             is_default: disposition.default.unwrap_or_default() != 0,
@@ -494,6 +534,43 @@ mod tests {
         let parsed = parse_output(br#"{"streams":[{"index":0,"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":1}},{"index":1,"codec_type":"video","codec_name":"h264","width":640,"height":360,"disposition":{"attached_pic":0}}],"format":{"format_name":"mov,mp4"}}"#, "m4a").unwrap();
         assert_eq!(parsed.streams[0].kind, "embedded_image");
         assert_eq!(parsed.streams[1].kind, "video");
+    }
+
+    #[test]
+    fn video_range_requires_explicit_sdr_signalling_without_hdr_side_data() {
+        for (transfer, side_data, expected) in [
+            ("bt709", None, Some("SDR")),
+            ("smpte170m", Some("Display Matrix"), Some("SDR")),
+            ("unknown", None, None),
+            ("smpte2084", None, None),
+            ("arib-std-b67", None, None),
+            ("bt709", Some("DOVI configuration record"), None),
+            ("bt709", Some("Mastering display metadata"), None),
+            (
+                "bt709",
+                Some("HDR Dynamic Metadata SMPTE2094-40 (HDR10+)"),
+                None,
+            ),
+            ("bt709", Some("Unrecognised future metadata"), None),
+        ] {
+            let wire = serde_json::json!({
+                "streams": [{"index":0,"codec_type":"video","codec_name":"h264",
+                    "color_transfer":transfer,
+                    "side_data_list":side_data.map(|kind| vec![serde_json::json!({"side_data_type":kind})]).unwrap_or_default()}],
+                "format":{"format_name":"mov,mp4"}
+            });
+            let parsed = parse_output(&serde_json::to_vec(&wire).unwrap(), "mp4").unwrap();
+            assert_eq!(
+                parsed.streams[0].video_range_type, expected,
+                "{transfer} / {side_data:?}"
+            );
+        }
+        let missing = parse_output(
+            br#"{"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}"#,
+            "mp4",
+        )
+        .unwrap();
+        assert_eq!(missing.streams[0].video_range_type, None);
     }
 
     #[tokio::test]

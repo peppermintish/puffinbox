@@ -74,8 +74,7 @@ jobs:
           node scripts/test_offline_cache.js
           node --test web/book-reader.test.cjs
           python3 -m compileall -q scripts
-          python3 scripts/test_acceptance_config.py
-          python3 scripts/test_api_coverage.py
+          python3 -m unittest discover -s scripts -p 'test_*.py'
           python3 scripts/acceptance.py --help >/dev/null
           python3 scripts/api_coverage.py --check --output "$RUNNER_TEMP/api-route-coverage.md"
           python3 scripts/build_license_bundle.py

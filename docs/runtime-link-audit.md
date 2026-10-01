@@ -48,6 +48,14 @@ An isolated follow-up rebuilt the standard library from Rust 1.98.1 sources with
 
 That map selects 387 libc members and five unwind members. The unwind contributions that remain in the output map are three compiler-identification `.comment` entries; no `_Unwind_` functions appear in the binary symbols. By comparison, the baseline and profile-only abort maps retain executable unwind sections. The rebuilt probe still has 39 core Unicode-data symbols and the existing startup objects, so it does not clear the runtime boundary. It is a link-input experiment, not a validated alternative runtime for the server. Its evidence is preserved under `.local/runtime-build-std-20261002`.
 
+## Dynamic-link probe
+
+An isolated current-source build tested Rust's [prefer-dynamic option](https://doc.rust-lang.org/rustc/codegen-options/index.html#prefer-dynamic) for `x86_64-unknown-linux-gnu`. The source was mounted read-only at the dirty `1bf5b2a` working tree, with networking disabled and the project lockfile retained. Binary SHA-256 was `3b48358ac1a68db0b2be02c34680d10c884124239ef802f1f9efdba242bbd413`.
+
+Its symbol inventory imports seven core Unicode-data symbols and defines a whitespace lookup function. The whitespace table is imported from the shared standard library. It also imports `_Unwind_Resume`. Required shared objects are `libstd-64f5f36fb0927694.so`, `libgcc_s.so.1`, `libm.so.6`, `libc.so.6`, and the GNU loader. The standard-library input has SHA-256 `2988c07760fd0baeab583e75dc23aa56a56c5d169d94bcaeceb1c933318e32bb`.
+
+The output map still retains system `Scrt1.o`, `crti.o`, `crtbeginS.o`, `crtendS.o`, and `crtn.o`. This changes where runtime code and data reside without establishing an allowed distribution: retained startup objects, the Unicode lookup body, and any proposed runtime bundle need their own license review. The probe has no server acceptance result, and production remains the static musl build. Evidence is preserved under `.local/runtime-dynamic-retry-20261002`; the earlier failed helper invocation is retained separately.
+
 ## Reproducing the link inventory
 
 Inside the locked Linux builder, relink with a fresh output directory:

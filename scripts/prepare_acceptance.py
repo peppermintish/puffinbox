@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / ".local" / "acceptance"
 DIRECT_PLAY_FIXTURE_NAME = "Puffinbox Synthetic Direct Play Fixture.mp4"
+SDR_DIRECT_PLAY_FIXTURE_NAME = "Puffinbox Explicit SDR Direct Play Fixture.mp4"
 SHUTDOWN_FIXTURE_NAME = "Puffinbox Active HLS Shutdown Fixture.mkv"
 
 
@@ -65,6 +66,23 @@ def paths_overlap(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
 
 
+def generate_sdr_direct_play_fixture(ffmpeg: str, destination: Path) -> None:
+    require_unoccupied_targets([destination])
+    subprocess.run([
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-n",
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+        "-t", "12", "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "libx264", "-preset", "ultrafast", "-profile:v", "baseline",
+        "-pix_fmt", "yuv420p", "-color_trc", "bt709", "-colorspace", "bt709",
+        "-color_primaries", "bt709",
+        "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+        "-c:a", "aac", "-b:a", "64k",
+        "-movflags", "+faststart", "-metadata", "title=Puffinbox Explicit SDR Direct Play Fixture",
+        "-metadata", "comment=Generated synthetic test content", str(destination),
+    ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+
 def main() -> int:
     state_root_override = os.environ.get("PUFFINBOX_ACCEPTANCE_STATE_ROOT")
     state_root = Path(state_root_override).expanduser() if state_root_override else LOCAL
@@ -101,11 +119,12 @@ def main() -> int:
     trust_root.mkdir(parents=True, exist_ok=True)
     incompatible = movies / "Puffinbox Synthetic Transcode Fixture.mkv"
     direct_play = movies / DIRECT_PLAY_FIXTURE_NAME
+    sdr_direct_play = movies / SDR_DIRECT_PLAY_FIXTURE_NAME
     shutdown_fixture = movies / SHUTDOWN_FIXTURE_NAME
     photo = photos / "Puffinbox Synthetic Photo.png"
     trust_fixture = trust_root / "Puffinbox Scanner Trust Fixture.mkv"
     subtitle_file = state_root / "synthetic-subtitles.srt"
-    require_unoccupied_targets([incompatible, direct_play, shutdown_fixture, photo, trust_fixture, subtitle_file])
+    require_unoccupied_targets([incompatible, direct_play, sdr_direct_play, shutdown_fixture, photo, trust_fixture, subtitle_file])
     subtitle_file.write_text(
         "1\n00:00:01,000 --> 00:00:03,000\nSynthetic subtitle acceptance cue.\n\n"
         "2\n00:00:05,000 --> 00:00:07,000\nSecond synthetic cue.\n",
@@ -170,6 +189,7 @@ def main() -> int:
         diagnostic = (error.stderr or b"").decode("utf-8", errors="replace").strip()
         suffix = f": {diagnostic[-1000:]}" if diagnostic else ""
         raise SystemExit(f"FFmpeg could not generate the H.264/AAC direct-play fixture; libx264 and AAC encoding are required{suffix}") from error
+    generate_sdr_direct_play_fixture(ffmpeg, sdr_direct_play)
     subprocess.run(
         [
             ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-n",

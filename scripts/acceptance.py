@@ -32,6 +32,7 @@ DEFAULT_FIXTURE_ROOT = ROOT / ".local" / "acceptance" / "media"
 DEFAULT_RESULTS_FILE = ROOT / ".local" / "acceptance" / "acceptance-results.json"
 FIXTURE_RELATIVE = Path("Movies") / "Puffinbox Synthetic Transcode Fixture.mkv"
 DIRECT_PLAY_FIXTURE_RELATIVE = Path("Movies") / "Puffinbox Synthetic Direct Play Fixture.mp4"
+SDR_DIRECT_PLAY_FIXTURE_RELATIVE = Path("Movies") / "Puffinbox Explicit SDR Direct Play Fixture.mp4"
 SHUTDOWN_FIXTURE_RELATIVE = Path("Movies") / "Puffinbox Active HLS Shutdown Fixture.mkv"
 MAX_WAIT_SECONDS = 90
 COMPOSE_PROJECT = "puffinbox-acceptance"
@@ -319,6 +320,32 @@ def verify_direct_play_acceptance(client: HttpClient, fixture_path: Path, timeou
             "authenticated direct-play range did not return the original MP4 bytes")
     report("H.264/AAC direct-play negotiation and authenticated original MP4 full/range streaming", True,
            f"{total_length} source bytes; HTTP 200 full and HTTP 206 bytes {range_start}-{range_end}")
+
+
+def verify_video_range_acceptance(client: HttpClient, sdr_path: Path, unknown_path: Path, timeout_seconds: int) -> None:
+    sdr = wait_for_item(client, sdr_path, timeout_seconds)
+    unknown = wait_for_item(client, unknown_path, timeout_seconds)
+    require(sdr is not None and unknown is not None, "video-range acceptance fixtures are missing from the catalog")
+    profile = {
+        "DirectPlayProfiles": [{"Type": "Video"}],
+        "CodecProfiles": [{"Type": "Video", "Conditions": [{
+            "Property": "VideoRangeType", "Condition": "NotEquals", "Value": "DOVI", "IsRequired": False,
+        }]}],
+    }
+    _, _, playback = client.json("POST", f"/Items/{sdr['Id']}/PlaybackInfo", {"DeviceProfile": profile})
+    source = playback["MediaSources"][0]
+    require(source.get("SupportsDirectPlay") is True, "explicit SDR did not satisfy the desktop video-range condition")
+    require(source.get("DirectStreamUrl") == f"/Videos/{sdr['Id']}/stream", "SDR direct play did not select original bytes")
+    video = next(stream for stream in source["MediaStreams"] if stream["Type"] == "Video")
+    require(video.get("VideoRangeType") == "SDR", "explicit source range was not returned to the client")
+    for value, expected in [("SDR", False), ("MisspelledRange", False), ("HDR10", True)]:
+        profile["CodecProfiles"][0]["Conditions"][0]["Value"] = value
+        _, _, playback = client.json("POST", f"/Items/{sdr['Id']}/PlaybackInfo", {"DeviceProfile": profile})
+        require(playback["MediaSources"][0].get("SupportsDirectPlay") is expected, f"video-range condition incorrectly evaluated {value}")
+    profile["CodecProfiles"][0]["Conditions"][0]["Value"] = "DOVI"
+    _, _, playback = client.json("POST", f"/Items/{unknown['Id']}/PlaybackInfo", {"DeviceProfile": profile})
+    require(playback["MediaSources"][0].get("SupportsDirectPlay") is False, "missing range metadata was treated as proven SDR")
+    report("Explicit SDR video-range conditions and conservative unknown/mismatched profiles", True)
 
 
 def scan_library(admin: HttpClient, library_id: str, timeout_seconds: int, expected_status: str = "completed") -> dict:
@@ -773,10 +800,13 @@ def run(args: argparse.Namespace) -> int:
     photo_root = values.get("PUFFINBOX_ACCEPTANCE_PHOTO_ROOT", "/media/Photos").rstrip("/")
     fixture_path = fixture_root / FIXTURE_RELATIVE
     direct_play_fixture_path = fixture_root / DIRECT_PLAY_FIXTURE_RELATIVE
+    sdr_direct_play_fixture_path = fixture_root / SDR_DIRECT_PLAY_FIXTURE_RELATIVE
     if not args.direct_play_only and not fixture_path.is_file():
         raise SystemExit(f"Missing generated synthetic fixture: {fixture_path}")
     if not direct_play_fixture_path.is_file():
         raise SystemExit(f"Missing generated H.264/AAC direct-play fixture: {direct_play_fixture_path}")
+    if not sdr_direct_play_fixture_path.is_file():
+        raise SystemExit(f"Missing generated explicit SDR fixture: {sdr_direct_play_fixture_path}")
     client = HttpClient(base_url)
 
     readiness_deadline = time.monotonic() + MAX_WAIT_SECONDS
@@ -875,6 +905,7 @@ def run(args: argparse.Namespace) -> int:
     if args.direct_play_only:
         scan_library(client, library_id, args.scan_timeout)
         verify_direct_play_acceptance(client, direct_play_fixture_path, args.scan_timeout)
+        verify_video_range_acceptance(client, sdr_direct_play_fixture_path, direct_play_fixture_path, args.scan_timeout)
         return 0
 
     initial_scan = scan_library(client, library_id, args.scan_timeout)
@@ -889,6 +920,7 @@ def run(args: argparse.Namespace) -> int:
     require(initial_scan.get("FilesSeen", 0) >= 2, "initial scanner pass did not see the video and photo fixtures")
     report("Synthetic media discovered by a completed, error-free catalog scan", True)
     verify_direct_play_acceptance(client, direct_play_fixture_path, args.scan_timeout)
+    verify_video_range_acceptance(client, sdr_direct_play_fixture_path, direct_play_fixture_path, args.scan_timeout)
     verify_scan_lifecycle(client, library_id, fixture_path.parent, args.scan_timeout)
     verify_catalog_filters(client, library_id)
     verify_scanner_root_identity(

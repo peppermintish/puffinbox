@@ -119,8 +119,7 @@ jobs:
           node scripts/test_offline_cache.js
           node --test web/book-reader.test.cjs
           python -m compileall -q scripts
-          python scripts/test_acceptance_config.py
-          python scripts/test_api_coverage.py
+          python -m unittest discover -s scripts -p 'test_*.py'
           python scripts/acceptance.py --help >/dev/null
 
       - name: Check offline behavior in Chromium

@@ -254,6 +254,8 @@ struct MediaStream {
     kind: String,
     codec: Option<String>,
     profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    video_range_type: Option<&'static str>,
     language: Option<String>,
     title: Option<String>,
     is_default: bool,
@@ -548,6 +550,7 @@ pub(super) async fn negotiate(
         kind: "Subtitle".to_owned(),
         codec: Some(sidecar.format),
         profile: None,
+        video_range_type: None,
         language: sidecar.language,
         title: Some(sidecar.title.clone()),
         is_default: false,
@@ -1460,28 +1463,89 @@ fn total_bit_rate(metadata: &ProbeInfo) -> Option<u64> {
 
 fn has_unhandled_codec_constraints(profile: &DeviceProfile, metadata: &ProbeInfo) -> bool {
     profile.codec_profiles.iter().any(|codec_profile| {
-        !codec_profile.conditions.is_empty()
-            && metadata.streams.iter().any(|stream| {
-                let is_media_stream = stream.kind == "video" || stream.kind == "audio";
-                let kind_applies = match codec_profile.kind.as_deref() {
-                    Some(kind) if kind.eq_ignore_ascii_case("video") => stream.kind == "video",
-                    Some(kind) if kind.eq_ignore_ascii_case("audio") => stream.kind == "audio",
-                    Some(kind) if kind.eq_ignore_ascii_case("videoaudio") => is_media_stream,
-                    _ => is_media_stream,
-                };
-                if !kind_applies {
-                    return false;
-                }
-                match codec_profile.codec.as_deref() {
-                    None => true,
-                    Some(wanted) if wanted.trim().is_empty() => true,
-                    Some(wanted) => match stream.codec.as_deref() {
-                        Some(codec) if !codec.trim().is_empty() => csv_contains(wanted, codec),
-                        _ => true,
-                    },
-                }
-            })
+        if codec_profile.kind.as_deref().is_some_and(|kind| {
+            !["video", "audio", "videoaudio"]
+                .iter()
+                .any(|known| kind.eq_ignore_ascii_case(known))
+        }) {
+            return !codec_profile.conditions.is_empty();
+        }
+        metadata.streams.iter().any(|stream| {
+            let is_media_stream = stream.kind == "video" || stream.kind == "audio";
+            let kind_applies = match codec_profile.kind.as_deref() {
+                Some(kind) if kind.eq_ignore_ascii_case("video") => stream.kind == "video",
+                Some(kind) if kind.eq_ignore_ascii_case("audio") => stream.kind == "audio",
+                Some(kind) if kind.eq_ignore_ascii_case("videoaudio") => is_media_stream,
+                _ => is_media_stream,
+            };
+            if !kind_applies {
+                return false;
+            }
+            let codec_applies = match codec_profile.codec.as_deref() {
+                None => true,
+                Some(wanted) if wanted.trim().is_empty() => true,
+                Some(wanted) => match stream.codec.as_deref() {
+                    Some(codec) if !codec.trim().is_empty() => csv_contains(wanted, codec),
+                    _ => true,
+                },
+            };
+            codec_applies
+                && codec_profile
+                    .conditions
+                    .iter()
+                    .any(|condition| !source_condition_matches(condition, stream))
+        })
     })
+}
+
+fn source_condition_matches(condition: &serde_json::Value, stream: &ProbedStream) -> bool {
+    let Some(property) = condition
+        .get("Property")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    if !property.eq_ignore_ascii_case("VideoRangeType") || stream.kind != "video" {
+        return false;
+    }
+    let Some(actual) = stream.video_range_type else {
+        return false;
+    };
+    let Some(wanted) = condition.get("Value").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    if ![
+        "Unknown",
+        "SDR",
+        "HDR10",
+        "HLG",
+        "DOVI",
+        "DOVIWithHDR10",
+        "DOVIWithHLG",
+        "DOVIWithSDR",
+        "DOVIWithEL",
+        "DOVIWithHDR10Plus",
+        "DOVIWithELHDR10Plus",
+        "DOVIInvalid",
+        "HDR10Plus",
+    ]
+    .iter()
+    .any(|range| range.eq_ignore_ascii_case(wanted))
+    {
+        return false;
+    }
+    match condition
+        .get("Condition")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(operator) if operator.eq_ignore_ascii_case("Equals") => {
+            actual.eq_ignore_ascii_case(wanted)
+        }
+        Some(operator) if operator.eq_ignore_ascii_case("NotEquals") => {
+            !actual.eq_ignore_ascii_case(wanted)
+        }
+        _ => false,
+    }
 }
 
 fn direct_audio_channels_fit(
@@ -1562,6 +1626,7 @@ impl MediaStream {
             .to_owned(),
             codec: stream.codec.clone(),
             profile: stream.profile.clone(),
+            video_range_type: stream.video_range_type,
             language: stream.language.clone(),
             title: stream.title.clone(),
             is_default: stream.is_default,
@@ -1689,6 +1754,7 @@ mod tests {
                 kind: "audio".to_owned(),
                 codec: codec.map(str::to_owned),
                 profile: None,
+                video_range_type: None,
                 language: None,
                 title: None,
                 is_default: true,
@@ -1761,6 +1827,7 @@ mod tests {
                 kind: "video".to_owned(),
                 codec: Some("hevc".to_owned()),
                 profile: None,
+                video_range_type: None,
                 language: None,
                 title: None,
                 is_default: false,
@@ -1776,6 +1843,7 @@ mod tests {
                 kind: "video".to_owned(),
                 codec: Some("h264".to_owned()),
                 profile: None,
+                video_range_type: None,
                 language: None,
                 title: None,
                 is_default: true,
@@ -1811,6 +1879,7 @@ mod tests {
                     kind: "video".to_owned(),
                     codec: Some("h264".to_owned()),
                     profile: None,
+                    video_range_type: None,
                     language: None,
                     title: None,
                     is_default: true,
@@ -1826,6 +1895,7 @@ mod tests {
                     kind: "audio".to_owned(),
                     codec: Some("aac".to_owned()),
                     profile: None,
+                    video_range_type: None,
                     language: None,
                     title: None,
                     is_default: true,
@@ -1913,6 +1983,54 @@ mod tests {
     }
 
     #[test]
+    fn video_range_conditions_allow_proven_sdr_and_reject_unknown_or_failed_constraints() {
+        let mut media = audio_probe(Some("h264"), "mp4");
+        let stream = &mut media.streams[0];
+        stream.kind = "video".to_owned();
+        let mut condition = serde_json::json!({
+            "Condition":"NotEquals", "Property":"VideoRangeType", "Value":"DOVI",
+            "IsRequired":false,
+        });
+        assert!(
+            !super::source_condition_matches(&condition, stream),
+            "unknown range remains conservative even for an optional condition"
+        );
+        stream.video_range_type = Some("SDR");
+        assert!(super::source_condition_matches(&condition, stream));
+        condition["Condition"] = "Equals".into();
+        assert!(!super::source_condition_matches(&condition, stream));
+        condition["Value"] = "SDR".into();
+        assert!(super::source_condition_matches(&condition, stream));
+        for (property, operator, wanted) in [
+            ("VideoRangeType", "NotEquals", "MisspelledRange"),
+            ("VideoRangeType", "GreaterThanEqual", "SDR"),
+            ("VideoRangeType", "NotEquals", ""),
+            ("UnrecognisedProperty", "NotEquals", "DOVI"),
+        ] {
+            let unsupported =
+                serde_json::json!({"Property":property,"Condition":operator,"Value":wanted});
+            assert!(!super::source_condition_matches(&unsupported, stream));
+        }
+        let profile = DeviceProfile {
+            codec_profiles: vec![CodecProfile {
+                kind: Some("Video".to_owned()),
+                codec: None,
+                conditions: vec![
+                    serde_json::json!({"Condition":"NotEquals","Property":"VideoRangeType","Value":"DOVI"}),
+                ],
+            }],
+            ..DeviceProfile::default()
+        };
+        assert!(!has_unhandled_codec_constraints(&profile, &media));
+        let mut invalid_profile = profile;
+        invalid_profile.codec_profiles[0].kind = Some("Unrecognised".to_owned());
+        assert!(has_unhandled_codec_constraints(&invalid_profile, &media));
+        invalid_profile.codec_profiles[0].kind = Some("Video".to_owned());
+        media.streams[0].video_range_type = None;
+        assert!(has_unhandled_codec_constraints(&invalid_profile, &media));
+    }
+
+    #[test]
     fn type_only_direct_profile_does_not_weaken_explicit_container_or_codec_mismatches() {
         let flac = audio_probe(Some("flac"), "flac");
         let wrong_container = DirectPlayProfile {
@@ -1950,6 +2068,7 @@ mod tests {
                 kind: "video".to_owned(),
                 codec: None,
                 profile: None,
+                video_range_type: None,
                 language: None,
                 title: None,
                 is_default: true,
@@ -1995,6 +2114,7 @@ mod tests {
                     kind: "video".to_owned(),
                     codec: Some("h264".to_owned()),
                     profile: None,
+                    video_range_type: None,
                     language: None,
                     title: None,
                     is_default: true,
@@ -2010,6 +2130,7 @@ mod tests {
                     kind: "audio".to_owned(),
                     codec: Some("aac".to_owned()),
                     profile: None,
+                    video_range_type: None,
                     language: None,
                     title: None,
                     is_default: true,
@@ -2050,6 +2171,7 @@ mod tests {
                 kind: "video".to_owned(),
                 codec: Some("h264".to_owned()),
                 profile: None,
+                video_range_type: None,
                 language: None,
                 title: None,
                 is_default: true,
@@ -2105,6 +2227,7 @@ mod tests {
                     kind: "video".to_owned(),
                     codec: Some("h264".to_owned()),
                     profile: None,
+                    video_range_type: None,
                     language: None,
                     title: None,
                     is_default: true,
@@ -2120,6 +2243,7 @@ mod tests {
                     kind: "audio".to_owned(),
                     codec: Some("aac".to_owned()),
                     profile: None,
+                    video_range_type: None,
                     language: None,
                     title: None,
                     is_default: true,
@@ -2318,6 +2442,7 @@ mod tests {
             kind: "attachment".to_owned(),
             codec: Some("mjpeg".to_owned()),
             profile: None,
+            video_range_type: None,
             language: None,
             title: None,
             is_default: false,
@@ -2341,6 +2466,7 @@ mod tests {
             kind: "subtitle".to_owned(),
             codec: Some("subrip".to_owned()),
             profile: None,
+            video_range_type: None,
             language: Some("en".to_owned()),
             title: None,
             is_default: false,
@@ -2411,6 +2537,7 @@ mod tests {
                 kind: "subtitle".to_owned(),
                 codec: Some("subrip".to_owned()),
                 profile: None,
+                video_range_type: None,
                 language: None,
                 title: None,
                 is_default: false,
