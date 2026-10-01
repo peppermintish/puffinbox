@@ -44,6 +44,10 @@ The builder's Debian musl copyright file and Rust's bundled libc are separate ev
 
 A separate build used `CARGO_PROFILE_RELEASE_PANIC=abort` in the same isolated builder. It succeeded with binary SHA-256 `73d023b8be6cf52ae447f658a0cc2f4ff703d2198b706235d79294e098298936`. Its map still selects 389 libc members and five unwind members; its symbols still include core Unicode tables and unwind functions. Changing this profile alone does not remove the identified blockers. No production panic setting was changed. Cargo also [ignores this setting for ordinary tests](https://doc.rust-lang.org/cargo/reference/profiles.html#panic), so passing the standard suite would not validate an aborting production build.
 
+An isolated follow-up rebuilt the standard library from Rust 1.98.1 sources with an empty standard-library feature set and `panic=immediate-abort`. These are [experimental Cargo options](https://doc.rust-lang.org/cargo/reference/unstable.html#build-std); the probe used `RUSTC_BOOTSTRAP=1`, retained the original project lockfile, and did not change the production toolchain or profile. Its builder was `sha256:26dc10cfb31747d4d9f5f43a73f16ca95c2bb426d7d3669fa0799362b7cb38c8`, derived from the same `f33c138` builder with `rust-src` added. Binary SHA-256 was `2244eea7557fe9f3bb37984595bb5376b1660f671167f6572fa340935d127c3a`.
+
+That map selects 387 libc members and five unwind members. The unwind contributions that remain in the output map are three compiler-identification `.comment` entries; no `_Unwind_` functions appear in the binary symbols. By comparison, the baseline and profile-only abort maps retain executable unwind sections. The rebuilt probe still has 39 core Unicode-data symbols and the existing startup objects, so it does not clear the runtime boundary. It is a link-input experiment, not a validated alternative runtime for the server. Its evidence is preserved under `.local/runtime-build-std-20261002`.
+
 ## Reproducing the link inventory
 
 Inside the locked Linux builder, relink with a fresh output directory:

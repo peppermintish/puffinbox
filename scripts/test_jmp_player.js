@@ -418,10 +418,36 @@ async function main() {
   const transcodedUrl = new URL(transcodedLoad[1]);
   assert.equal(transcodedUrl.searchParams.get('ApiKey'), hlsToken, 'HLS root carries the read-only media credential');
   assert.equal(transcodedUrl.searchParams.get('PlaySessionId'), 'test', 'HLS auth preserves the negotiated playback session');
-  assert.equal(transcodedLoad[4], '', 'HLS audio selection is already applied by the server');
+  assert.equal(transcodedLoad[4], '#1', 'the native player must enable the single audio track selected by the HLS server');
   assert.equal(transcodedLoad[5], '', 'HLS subtitle selection is already applied and offset by the server');
   assert.deepEqual(transcodedLoad[3].headers, {}, 'HLS token is not exposed in a native authorization header');
   await adapter.stop(transcodedSession, transcodedHost);
+
+  for (const selection of [undefined, 4, 7, -1]) {
+    const defaultAudio = makePlayer();
+    const defaultAudioHost = makeHost(defaultAudio.player);
+    const audioSession = await adapter.load({
+      url: '/Videos/default-audio/stream', accessToken: 'token', mediaType: 'video',
+      item: { Id: 'default-audio' },
+      streams: [{ Index: 4, Type: 'Audio' }, { Index: 7, Type: 'Audio', IsDefault: true }],
+      audioStreamIndex: selection,
+    }, defaultAudioHost);
+    assert.equal(defaultAudio.calls.find(([name]) => name === 'load')[4],
+      selection === -1 ? '' : selection === 4 ? '#1' : '#2',
+      'native playback enables the default track while preserving explicit selection or disablement');
+    await adapter.stop(audioSession, defaultAudioHost);
+  }
+  for (const [streams, selection] of [[[], undefined], [[{ Index: 4, Type: 'Audio' }], -1]]) {
+    const silent = makePlayer();
+    const silentHost = makeHost(silent.player);
+    const silentSession = await adapter.load({
+      url: '/Videos/silent/master.m3u8', accessToken: 'token', mediaType: 'video',
+      item: { Id: 'silent' }, usesHls: true, streams, audioStreamIndex: selection,
+    }, silentHost);
+    assert.equal(silent.calls.find(([name]) => name === 'load')[4], '',
+      'silent sources and explicitly disabled audio do not enable a native audio track');
+    await adapter.stop(silentSession, silentHost);
+  }
 
   const fullTimeline = makePlayer();
   const fullTimelineHost = makeHost(fullTimeline.player);

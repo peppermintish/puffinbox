@@ -97,6 +97,17 @@
     return ordinal < 0 ? '' : `#${ordinal + 1}`;
   }
 
+  function audioArgument(streams, selectedIndex, usesHls) {
+    if (selectedIndex === -1) return '';
+    const choices = streams.filter((stream) => stream?.Type === 'Audio');
+    // Empty selectors disable native audio. HLS contains only the server's
+    // selected track, whose native ordinal is always one.
+    if (usesHls) return choices.length ? '#1' : '';
+    if (Number.isInteger(selectedIndex)) return streamIndex(streams, selectedIndex, 'Audio');
+    const preferred = choices.findIndex((stream) => stream.IsDefault === true);
+    return choices.length ? `#${Math.max(0, preferred) + 1}` : '';
+  }
+
   function isTextSubtitle(stream) {
     const format = String(stream?.Codec || stream?.Format || '').toLowerCase();
     return stream?.IsTextSubtitleStream === true || stream?.SupportsExternalStream === true
@@ -383,7 +394,7 @@
         media: {},
       };
       const tracksAlreadySelected = options.usesHls === true;
-      const audio = tracksAlreadySelected ? '' : streamIndex(streams, options.audioStreamIndex, 'Audio');
+      const audio = audioArgument(streams, options.audioStreamIndex, tracksAlreadySelected);
       const subtitle = tracksAlreadySelected && !options.subtitleDeliveryFormat ? '' : subtitleArgument({
         host,
         itemId: options.item?.Id,

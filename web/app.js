@@ -2213,7 +2213,8 @@
           startTimeMilliseconds: session.usesHls && !session.fullHlsTimeline ? 0 : session.startTimeTicks / 10_000,
           subtitleDeliveryFormat,
           subtitleStartTimeMilliseconds: session.positionOffsetTicks / 10_000,
-          audioStreamIndex: options.audioStreamIndex,
+          audioStreamIndex: Number.isInteger(options.audioStreamIndex)
+            ? options.audioStreamIndex : source.DefaultAudioStreamIndex,
           subtitleStreamIndex: options.subtitleStreamIndex,
           onEvent: (eventName, detail, bridgeSession) => {
             if (generation !== playbackGeneration || activePlayback !== session) return;
