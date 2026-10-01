@@ -66,6 +66,8 @@ pub(super) struct HlsOptions {
     play_session_id: Option<Uuid>,
     #[serde(default)]
     stream_copy: bool,
+    #[serde(default)]
+    full_timeline: bool,
     #[serde(alias = "StartTimeTicks")]
     start_time_ticks: Option<i64>,
     audio_stream_index: Option<i32>,
@@ -79,13 +81,13 @@ pub(super) struct HlsOptions {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MediaKind {
+pub(super) enum MediaKind {
     Video,
     Audio,
 }
 
 impl MediaKind {
-    fn route_prefix(self) -> &'static str {
+    pub(super) fn route_prefix(self) -> &'static str {
         match self {
             Self::Video => "Videos",
             Self::Audio => "Audio",
@@ -114,6 +116,7 @@ struct HlsSession {
     has_audio: bool,
     bandwidth: u64,
     options: HlsOptions,
+    vod: Option<Arc<super::vod_hls::VodSession>>,
 }
 
 struct HlsJob {
@@ -610,7 +613,16 @@ async fn start_hls(
         .unwrap_or_default()
         .saturating_div(10_000_000)
         .clamp(0, 14_399) as u32;
-    let duration_seconds = full_duration_seconds.saturating_sub(start_seconds).max(1);
+    let duration_seconds = if options.full_timeline {
+        full_duration_seconds
+    } else {
+        full_duration_seconds.saturating_sub(start_seconds).max(1)
+    };
+    if options.full_timeline && (options.stream_copy || source_duration.is_none()) {
+        return Err(ApiError::BadRequest(
+            "Full-timeline HLS requires transcoding and a known media duration".to_owned(),
+        ));
+    }
     let selected_video = if matches!(kind, MediaKind::Video) {
         probe::default_stream(&source_info.streams, "video")
     } else {
@@ -726,7 +738,11 @@ async fn start_hls(
                 &ffmpeg,
                 demuxer,
                 index,
-                options.start_time_ticks,
+                if options.full_timeline {
+                    None
+                } else {
+                    options.start_time_ticks
+                },
                 permit,
             )
             .await?;
@@ -739,8 +755,16 @@ async fn start_hls(
                         "SubtitleStreamIndex does not identify a subtitle stream".to_owned(),
                     )
                 })?;
-            let vtt =
-                subtitles::read_sidecar_vtt(&media, sidecar, options.start_time_ticks).await?;
+            let vtt = subtitles::read_sidecar_vtt(
+                &media,
+                sidecar,
+                if options.full_timeline {
+                    None
+                } else {
+                    options.start_time_ticks
+                },
+            )
+            .await?;
             fs::write(directory.join("subtitle.vtt"), vtt)
                 .await
                 .map_err(|_| ApiError::Unavailable)?;
@@ -753,6 +777,63 @@ async fn start_hls(
         return Err(ApiError::BadRequest(
             "startTimeTicks is beyond the media duration".to_owned(),
         ));
+    }
+    if options.full_timeline {
+        let last_accessed = Arc::new(AtomicU64::new(now_millis()));
+        let (vod, worker) = super::vod_hls::prepare_session(
+            super::vod_hls::VodPlan {
+                media: media.clone(),
+                ffmpeg,
+                demuxer: demuxer.to_owned(),
+                directory: directory.clone(),
+                duration_millis: (source_duration.ok_or(ApiError::Unavailable)? * 1000.0).ceil()
+                    as u64,
+                video_index: selected_video.map(|stream| stream.index),
+                audio_index: selected_audio.map(|stream| stream.index),
+                video_bitrate,
+                audio_bitrate,
+                output_channels,
+            },
+            last_accessed.clone(),
+            manager().permits.clone(),
+        )?;
+        let mut sessions = manager().sessions.lock().await;
+        if manager().shutting_down.load(Ordering::Acquire) {
+            return Err(ApiError::Unavailable);
+        }
+        if session_id_reserved(&sessions, session_id) {
+            return Err(ApiError::Conflict(
+                "PlaySessionId is already active".to_owned(),
+            ));
+        }
+        if sessions.len() >= MAX_SESSION_RECORDS {
+            return Err(ApiError::RateLimited);
+        }
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        sessions.insert(
+            session_id,
+            HlsSession {
+                generation,
+                item_id: media.item.id,
+                owner_id,
+                kind,
+                directory,
+                last_accessed,
+                cancel: Some(cancel_tx),
+                state: SessionState::Running,
+                duration_seconds,
+                has_subtitles: selected_subtitle.is_some(),
+                has_audio: selected_audio.is_some(),
+                bandwidth: max_bitrate,
+                options,
+                vod: Some(vod),
+            },
+        );
+        tokio::spawn(super::vod_hls::run_worker(
+            worker, session_id, generation, cancel_rx, permit,
+        ));
+        directory_guard.keep();
+        return Ok(session_id);
     }
     let source_file = super::secure_path::open_media(media.clone()).await?.file;
     let sandbox = MediaChildSandbox::prepare_bounded(
@@ -899,6 +980,7 @@ async fn start_hls(
         has_audio: selected_audio.is_some(),
         bandwidth: copy_bandwidth.unwrap_or(max_bitrate),
         options: options.clone(),
+        vod: None,
     };
     let job = HlsJob {
         session_id,
@@ -1290,7 +1372,7 @@ async fn run_hls_job(job: HlsJob) {
     }
 }
 
-async fn dir_size(directory: &Path) -> io::Result<u64> {
+pub(super) async fn dir_size(directory: &Path) -> io::Result<u64> {
     let mut entries = fs::read_dir(directory).await?;
     let mut total = 0_u64;
     let mut count = 0_usize;
@@ -1310,7 +1392,7 @@ async fn dir_size(directory: &Path) -> io::Result<u64> {
     Ok(total)
 }
 
-async fn remove_session(session_id: Uuid, generation: Uuid, directory: &Path) {
+pub(super) async fn remove_session(session_id: Uuid, generation: Uuid, directory: &Path) {
     {
         let mut sessions = manager().sessions.lock().await;
         if let Some(session) = sessions
@@ -1514,6 +1596,24 @@ async fn session_directory(
     ))
 }
 
+async fn session_vod(
+    item_id: Uuid,
+    owner_id: Uuid,
+    kind: MediaKind,
+    session_id: Uuid,
+) -> Result<Option<Arc<super::vod_hls::VodSession>>, ApiError> {
+    let mut sessions = manager().sessions.lock().await;
+    let session = sessions
+        .get_mut(&session_id)
+        .filter(|session| {
+            session_matches(session, owner_id, item_id, kind)
+                && session.state != SessionState::Stopping
+        })
+        .ok_or(ApiError::NotFound)?;
+    session.last_accessed.store(now_millis(), Ordering::Relaxed);
+    Ok(session.vod.clone())
+}
+
 pub(super) async fn video_playlist(
     State(state): State<AppState>,
     MediaUser(user): MediaUser,
@@ -1538,6 +1638,14 @@ async fn serve_playlist(
     kind: MediaKind,
 ) -> Result<Response, ApiError> {
     let _media = authorized_media(&state, &user, item_id).await?;
+    if let Some(vod) = session_vod(item_id, user.id, kind, session_id).await? {
+        let (_, _, _, api_key, _) = session_master_info(session_id, user.id, item_id, kind).await?;
+        return Ok(text_response(
+            super::vod_hls::playlist(&vod, item_id, session_id, kind, api_key.as_deref()),
+            "application/vnd.apple.mpegurl",
+            StatusCode::OK,
+        ));
+    }
     let (directory, _, _, _) = session_directory(item_id, user.id, kind, session_id).await?;
     let manifest = directory.join("stream.m3u8");
     let bytes = wait_for_file(&manifest, MAX_PLAYLIST_BYTES, Duration::from_secs(10)).await?;
@@ -1592,8 +1700,11 @@ async fn serve_segment(
     kind: MediaKind,
 ) -> Result<Response, ApiError> {
     let _media = authorized_media(&state, &user, item_id).await?;
-    let (directory, _, _, _) = session_directory(item_id, user.id, kind, session_id).await?;
     let index = parse_segment_name(&segment_name).ok_or(ApiError::NotFound)?;
+    if let Some(vod) = session_vod(item_id, user.id, kind, session_id).await? {
+        return super::vod_hls::segment(vod, index).await;
+    }
+    let (directory, _, _, _) = session_directory(item_id, user.id, kind, session_id).await?;
     let path = directory.join(format!("segment{index:06}.ts"));
     serve_generated_file(path, "video/mp2t", MAX_SEGMENT_BYTES).await
 }
@@ -1638,6 +1749,22 @@ pub(super) async fn subtitle_file(
         session_directory(item_id, user.id, MediaKind::Video, session_id).await?;
     if !has_subtitles {
         return Err(ApiError::NotFound);
+    }
+    if session_vod(item_id, user.id, MediaKind::Video, session_id)
+        .await?
+        .is_some()
+    {
+        let bytes = wait_for_file(
+            &directory.join("subtitle.vtt"),
+            MAX_SUBTITLE_BYTES as usize,
+            Duration::from_secs(10),
+        )
+        .await?;
+        return Ok(text_response(
+            add_hls_timestamp_map(&bytes, 0)?,
+            "text/vtt; charset=utf-8",
+            StatusCode::OK,
+        ));
     }
     let subtitle = read_hls_subtitle_with_timestamp_map(directory, MediaKind::Video).await?;
     Ok(text_response(
@@ -1917,7 +2044,7 @@ async fn stop_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn serve_generated_file(
+pub(super) async fn serve_generated_file(
     path: PathBuf,
     content_type: &'static str,
     max_bytes: u64,
@@ -2099,7 +2226,7 @@ fn text_response(body: String, content_type: &'static str, status: StatusCode) -
     response
 }
 
-fn now_millis() -> u64 {
+pub(super) fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -2306,6 +2433,7 @@ mod tests {
                 play_session_id: Some(session_id),
                 ..HlsOptions::default()
             },
+            vod: None,
         };
         let job = HlsJob {
             session_id,
@@ -2471,6 +2599,7 @@ mod tests {
                 play_session_id: Some(session_id),
                 ..HlsOptions::default()
             },
+            vod: None,
         };
         let mut sessions = HashMap::from([(session_id, session)]);
 
@@ -2550,6 +2679,7 @@ mod tests {
                 play_session_id: Some(session_id),
                 ..HlsOptions::default()
             },
+            vod: None,
         };
         let mut sessions = HashMap::from([(session_id, old)]);
         assert!(session_id_reserved(&sessions, session_id));
@@ -2583,6 +2713,7 @@ mod tests {
                 play_session_id: Some(session_id),
                 ..HlsOptions::default()
             },
+            vod: None,
         };
         sessions.insert(session_id, replacement);
 
@@ -2623,6 +2754,7 @@ mod tests {
                 play_session_id: Some(session_id),
                 ..HlsOptions::default()
             },
+            vod: None,
         };
         let mut sessions = HashMap::from([(session_id, session)]);
 

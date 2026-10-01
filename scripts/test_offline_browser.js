@@ -18,6 +18,7 @@ const SECOND_PACKAGE_ID = '108e5e60-d797-4dc8-a0c4-1a83cf5ad697';
 const ITEM_ID = 'eaf4d85d-307d-4b30-985f-32a763d6822c';
 const BOOK_ITEM_ID = 'c1e2e134-2dc4-40f3-a090-d14f4883db32';
 const PHOTO_ITEM_ID = '6548a8dc-219f-4d79-8da9-555268297c6a';
+const NATIVE_ITEM_ID = 'bf284644-104e-4e9c-8e51-fd39e8d94481';
 const PHOTO_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
 const PRIVATE_FAILURE_BODY = 'SENSITIVE_FIXTURE_BODY_9e43';
 const CHUNK_SIZE = 1024 * 1024;
@@ -62,6 +63,57 @@ const bookReaderRequests = [];
 const photoFileRequests = [];
 let userMeRequestCount = 0;
 let mediaAccessTokenRestoreCount = 0;
+const nativePlaybackRequests = [];
+const nativeSessionRequests = [];
+let nativeUserData = { Played: false, PlaybackPositionTicks: 1_600_000_000 };
+
+function nativePlayerFixture() {
+  // Simulate only the documented client bridge. Decoding and mpv seeking are
+  // covered separately with the installed Jellyfin Media Player.
+  return `(() => {
+    document.cookie = 'native-token-denied=; Max-Age=0; Path=/';
+    document.cookie = 'native-hls-test=1; Path=/; SameSite=Strict';
+    const signal = () => {
+      const listeners = new Set();
+      return { connect: (listener) => listeners.add(listener), disconnect: (listener) => listeners.delete(listener),
+        emit: (value) => { for (const listener of [...listeners]) listener(value); } };
+    };
+    const fixture = window.nativePlaybackFixture = { calls: [], position: 0, paused: false, generation: 0 };
+    const player = fixture.player = {
+      playing: signal(), paused: signal(), finished: signal(), canceled: signal(), error: signal(),
+      positionUpdate: signal(), updateDuration: signal(),
+      load(url, options, data, audio, subtitle, callback) {
+        fixture.calls.push(['load', url, options]);
+        fixture.position = 0; fixture.paused = !options.autoplay;
+        const generation = ++fixture.generation;
+        callback(true);
+        setTimeout(() => {
+          if (fixture.generation !== generation) return;
+          // A paused decoder may report position before duration. Neither
+          // loading nor a pause signal alone establishes a playback position.
+          player.positionUpdate.emit(0);
+          player.updateDuration.emit(650000);
+          (fixture.paused ? player.paused : player.playing).emit();
+        }, 0);
+      },
+      seekTo(position) {
+        fixture.calls.push(['seek', position]); fixture.position = position;
+        const generation = fixture.generation;
+        setTimeout(() => {
+          if (fixture.generation === generation) player.positionUpdate.emit(position);
+        }, 0);
+      },
+      getPosition(callback) { fixture.calls.push(['position']); callback(fixture.position / 1000); },
+      pause() { fixture.paused = true; player.paused.emit(); },
+      play() { fixture.paused = false; player.playing.emit(); },
+      stop() { fixture.calls.push(['stop']); fixture.generation += 1; fixture.position = 0; },
+    };
+    window.jmpInfo = {};
+    window.NativeShell = { AppHost: { getDeviceProfile: () => ({ DirectPlayProfiles: [],
+      TranscodingProfiles: [{ Type: 'Audio', Container: 'ts', Protocol: 'hls', AudioCodec: 'aac' }] }) } };
+    window.apiPromise = Promise.resolve({ player });
+  })();`;
+}
 
 function harnessHtml() {
   return `<!doctype html><meta charset="utf-8"><title>Offline browser checks</title>
@@ -234,6 +286,7 @@ function createTestServer() {
   const item = { Id: ITEM_ID, Name: 'Browser offline WAV fixture', Type: 'Audio', MediaType: 'Audio', Container: 'wav', RunTimeTicks: 6_500_000_000 };
   const bookItem = { Id: BOOK_ITEM_ID, Name: 'Reader route EPUB fixture', Type: 'EBook', MediaType: 'Book' };
   const photoItem = { Id: PHOTO_ITEM_ID, Name: 'Same-origin photo auth fixture', Type: 'Photo', MediaType: 'Photo' };
+  const nativeItem = { Id: NATIVE_ITEM_ID, Name: 'Native HLS resume fixture', Type: 'Audio', MediaType: 'Audio', RunTimeTicks: 6_500_000_000 };
   const user = { Id: ACCOUNT_ID, Name: 'Browser test', Policy: { EnableContentDownloading: true, EnableMediaPlayback: true, EnableRemoteAccess: true, EnableAllFolders: true, IsAdministrator: false, BlockUnratedItems: [] } };
   return http.createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
@@ -293,7 +346,41 @@ function createTestServer() {
     if (url.pathname === '/System/Info') { jsonResponse(response, 200, { ServerName: 'Offline browser test', Version: 'test', ItemCount: 1 }); return; }
     if (url.pathname === '/UserViews') { jsonResponse(response, 200, { Items: [] }); return; }
     if (url.pathname === '/Library/VirtualFolders' || url.pathname === '/Localization/ParentalRatings') { jsonResponse(response, 200, []); return; }
-    if (url.pathname === '/Items' && request.method === 'GET') { jsonResponse(response, 200, { Items: [item, bookItem, photoItem], TotalRecordCount: 3 }); return; }
+    if (url.pathname === '/Items' && request.method === 'GET') {
+      const items = [item, bookItem, photoItem];
+      if (/(?:^|;\s*)native-hls-test=1(?:;|$)/.test(request.headers.cookie || '')) items.push(nativeItem);
+      jsonResponse(response, 200, { Items: items, TotalRecordCount: items.length }); return;
+    }
+    if (url.pathname === `/Items/${NATIVE_ITEM_ID}` && request.method === 'GET') { jsonResponse(response, 200, nativeItem); return; }
+    if (url.pathname === `/Items/${NATIVE_ITEM_ID}/UserData` && request.method === 'GET') { jsonResponse(response, 200, nativeUserData); return; }
+    if (url.pathname === `/Items/${NATIVE_ITEM_ID}/PlaybackInfo` && request.method === 'POST') {
+      let body = '';
+      request.on('data', (chunk) => { body += chunk; });
+      request.on('end', () => {
+        nativePlaybackRequests.push(JSON.parse(body));
+        const sessionId = `c4dc3154-42f0-4ce9-8a17-${String(nativePlaybackRequests.length).padStart(12, '0')}`;
+        jsonResponse(response, 200, { PlaySessionId: sessionId, MediaSources: [{ Id: NATIVE_ITEM_ID,
+          SupportsDirectPlay: false, SupportsDirectStream: false, SupportsTranscoding: true,
+          TranscodingUrl: `/Audio/${NATIVE_ITEM_ID}/master.m3u8?fullTimeline=true&PlaySessionId=${sessionId}`,
+          TranscodingContainer: 'ts', TranscodingSubProtocol: 'hls',
+          MediaStreams: [{ Type: 'Audio', Index: 0, Codec: 'aac', IsDefault: true }],
+        }] });
+      });
+      return;
+    }
+    if (url.pathname.startsWith(`/Audio/${NATIVE_ITEM_ID}/hls/`)) { response.writeHead(204); response.end(); return; }
+    if (request.method === 'POST' && ['/Sessions/Playing', '/Sessions/Playing/Progress', '/Sessions/Playing/Stopped'].includes(url.pathname)) {
+      let body = '';
+      request.on('data', (chunk) => { body += chunk; });
+      request.on('end', () => {
+        const payload = JSON.parse(body);
+        assert.equal(payload.ItemId, NATIVE_ITEM_ID);
+        nativeSessionRequests.push({ path: url.pathname, ...payload });
+        nativeUserData = { Played: payload.PlayedToCompletion === true, PlaybackPositionTicks: payload.PositionTicks };
+        response.writeHead(204); response.end();
+      });
+      return;
+    }
     if (url.pathname === `/Items/${ITEM_ID}` && request.method === 'GET') { jsonResponse(response, 200, item); return; }
     if (url.pathname === `/Items/${BOOK_ITEM_ID}` && request.method === 'GET') { jsonResponse(response, 200, bookItem); return; }
     if (url.pathname === `/Items/${PHOTO_ITEM_ID}` && request.method === 'GET') { jsonResponse(response, 200, photoItem); return; }
@@ -545,6 +632,59 @@ async function main() {
     assert.equal(authorizationFailure.includes(PRIVATE_FAILURE_BODY), false, 'the native error exposed the endpoint response body');
     assert.equal(mediaAccessTokenRestoreCount, 3, 'the native failure test did not exercise startup and playback token exchanges');
     await cdp.send('Target.closeTarget', { targetId: nativeAuthFailurePage.targetId });
+
+    const nativePlaybackPage = await cdp.openPage(`${baseUrl}/web/`, nativePlayerFixture());
+    await cdp.waitFor(nativePlaybackPage, `document.querySelector('[data-item-id="${NATIVE_ITEM_ID}"]')`, Boolean, 'the native HLS fixture');
+    await cdp.evaluate(nativePlaybackPage.sessionId, `document.querySelector('[data-item-id="${NATIVE_ITEM_ID}"]').click(); true`);
+    await cdp.waitFor(nativePlaybackPage, 'document.querySelector("#item-dialog")?.open', Boolean, 'the native HLS details');
+    await cdp.evaluate(nativePlaybackPage.sessionId, `Array.from(document.querySelectorAll('#item-dialog button')).find((button) => button.textContent.trim() === 'Play').click(); true`);
+    await cdp.waitFor(nativePlaybackPage, '!document.querySelector("#player-resume-controls").hidden', Boolean, 'the native resume choice');
+    await cdp.evaluate(nativePlaybackPage.sessionId, 'document.querySelector("#player-resume").click(); true');
+    await cdp.waitFor(nativePlaybackPage, 'document.querySelector("#native-position")?.textContent', (value) => value === '2:40 / 10:50', 'the native source resume time');
+    await waitUntil(() => nativeSessionRequests.some((row) => row.path === '/Sessions/Playing'), 'the resumed native session');
+    assert.equal(nativeSessionRequests[0].PositionTicks, 1_600_000_000, 'startup at zero overwrote the saved resume position');
+    assert.equal(nativePlaybackRequests.at(-1).StartTimeTicks, 1_600_000_000);
+    assert.equal(await cdp.evaluate(nativePlaybackPage.sessionId, "nativePlaybackFixture.calls.find(([name]) => name === 'load')[2].startMilliseconds"), 0);
+
+    await cdp.evaluate(nativePlaybackPage.sessionId, `(() => {
+      const fixture = nativePlaybackFixture;
+      fixture.position = 220000; fixture.player.positionUpdate.emit(220000);
+      document.querySelector('#native-play-pause').click();
+      const seek = document.querySelector('#native-seek'); seek.value = '0'; seek.dispatchEvent(new Event('change'));
+      return true;
+    })()`);
+    await cdp.waitFor(nativePlaybackPage, 'document.querySelector("#native-position")?.textContent', (value) => value === '0:00 / 10:50', 'the paused stream reopening at zero');
+    await waitUntil(() => nativeSessionRequests.filter((row) => row.path === '/Sessions/Playing').length === 2, 'the decoded paused position to establish its session');
+    const stopped = () => nativeSessionRequests.filter((row) => row.path === '/Sessions/Playing/Stopped');
+    assert.equal(stopped()[0].PositionTicks, 2_200_000_000, 'the replaced session lost its final source position');
+    assert.equal(stopped()[0].PlayedToCompletion, false);
+    assert.equal(nativeSessionRequests.filter((row) => row.path === '/Sessions/Playing')[1].PositionTicks, 0,
+      'a paused decoded origin did not replace the previous resume position');
+    assert.equal(await cdp.evaluate(nativePlaybackPage.sessionId, "nativePlaybackFixture.calls.filter(([name]) => name === 'load').at(-1)[2].autoplay"), false,
+      'a backward seek resumed playback that the user had paused');
+
+    const seekNative = async (position) => cdp.evaluate(nativePlaybackPage.sessionId, `(() => {
+      const seek = document.querySelector('#native-seek'); seek.value = '${position}'; seek.dispatchEvent(new Event('change')); return true;
+    })()`);
+    await seekNative(120000);
+    await cdp.waitFor(nativePlaybackPage, 'document.querySelector("#native-position")?.textContent', (value) => value === '2:00 / 10:50', 'the native forward seek');
+    await seekNative(100000);
+    await cdp.waitFor(nativePlaybackPage, 'document.querySelector("#native-position")?.textContent', (value) => value === '1:40 / 10:50', 'the native nonzero backward seek');
+    await waitUntil(() => nativeSessionRequests.filter((row) => row.path === '/Sessions/Playing').length === 3, 'the nonzero paused native session');
+    assert.equal(nativePlaybackRequests.at(-1).StartTimeTicks, 1_000_000_000);
+    assert.equal(await cdp.evaluate(nativePlaybackPage.sessionId, "nativePlaybackFixture.calls.filter(([name]) => name === 'load').length"), 3,
+      'backward seeks must reopen the native HLS stream; forward seeks use the existing player');
+
+    // A decoder can report finished after a failed seek and then return zero
+    // from getPosition. Preserve the last decoded position and completion flag.
+    await cdp.evaluate(nativePlaybackPage.sessionId, 'nativePlaybackFixture.position = 0; nativePlaybackFixture.player.finished.emit(); true');
+    await waitUntil(() => stopped().length === 3, 'the early native finish report');
+    assert.equal(stopped().at(-1).PositionTicks, 1_000_000_000);
+    assert.equal(stopped().at(-1).PlayedToCompletion, false, 'an early native exit marked the item completed');
+    assert.equal(nativeUserData.Played, false);
+    await cdp.waitFor(nativePlaybackPage, 'document.querySelector("#player-note")?.textContent', (value) => value.includes('Playback ended early.'), 'the early finish recovery message');
+    await cdp.evaluate(nativePlaybackPage.sessionId, 'document.cookie = "native-hls-test=; Max-Age=0; Path=/"; true');
+    await cdp.send('Target.closeTarget', { targetId: nativePlaybackPage.targetId });
 
     const readerPolicyPage = await cdp.openPage(`${baseUrl}/web/`);
     await cdp.waitFor(readerPolicyPage, 'document.querySelectorAll("[data-item-id]").length', (value) => value > 0, 'the second signed-in media browser');
@@ -817,7 +957,7 @@ async function main() {
 
     const ranges = Object.fromEntries(contentRangeCounts);
     assert.deepEqual(ranges, { [`0-${CHUNK_SIZE - 1}`]: 1, [`${CHUNK_SIZE}-${audioBytes.byteLength - 1}`]: 4 });
-    process.stdout.write('Browser checks passed: stale-worker upgrade, JMP offline Blob playback without service workers with chunk-integrity rejection, standard-browser new-tab behavior, native-mode photo cookie auth with PNG decoding and no URL credentials, status-only native authorization errors, same-origin EBook reader action and download-policy gating, user-facing offline queue, interrupted resume, chunk and full-file SHA-256, quota messaging, IndexedDB removal, cross-tab account isolation, service-worker ranges and integrity, fresh-tab offline media navigation, offline WAV playback, and sign-out fallback.\n');
+    process.stdout.write('Browser checks passed: native HLS deferred resume, paused backward stream reopening, decoded paused progress and early-finish preservation; stale-worker upgrade, JMP offline Blob playback without service workers with chunk-integrity rejection, standard-browser new-tab behavior, native-mode photo cookie auth with PNG decoding and no URL credentials, status-only native authorization errors, same-origin EBook reader action and download-policy gating, user-facing offline queue, interrupted resume, chunk and full-file SHA-256, quota messaging, IndexedDB removal, cross-tab account isolation, service-worker ranges and integrity, fresh-tab offline media navigation, offline WAV playback, and sign-out fallback.\n');
   } catch (error) {
     const diagnostics = browserOutput.trim().slice(-3000);
     throw diagnostics ? new Error(`${error.message}\nChrome output:\n${diagnostics}`, { cause: error }) : error;

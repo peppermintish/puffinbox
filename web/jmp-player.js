@@ -262,6 +262,8 @@
     if (!options?.accessToken) throw new Error('Sign in again to use native playback.');
     const state = hostState(host);
     if (state.session) await stop(state.session, host);
+    const startMs = Math.max(0, Math.round(Number(options.startTimeMilliseconds) || 0));
+    const deferredStartMs = options.usesHls === true && options.fullHlsTimeline === true ? startMs : 0;
     const session = {
       api: null,
       host,
@@ -273,6 +275,9 @@
       loadAccepted: false,
       loadIssued: false,
       pendingEvents: [],
+      deferredStartMs,
+      resumeSeekSent: false,
+      deferredPlaybackState: null,
       listeners: [],
       onEvent: typeof options.onEvent === 'function' ? options.onEvent : () => {},
       signal: options.signal,
@@ -293,8 +298,37 @@
       const api = await bounded(withAbort(Promise.resolve(host.apiPromise), session.cancelController.signal), API_WAIT_MS, 'Native playback connection');
       if (!isCurrent(session) || session.signal?.aborted) throw abortError();
       if (!api?.player || typeof api.player.load !== 'function') throw new Error('The native player interface is unavailable.');
+      if (deferredStartMs > 0 && typeof api.player.seekTo !== 'function') throw new Error('The native player cannot resume this stream.');
       session.api = api;
 
+      const dispatch = (name, value, transform) => {
+        if (session.deferredStartMs > 0) {
+          if (name === 'playing' || name === 'paused') {
+            session.deferredPlaybackState = name;
+            return;
+          }
+          if (name === 'position') {
+            const position = Number(value);
+            if (!Number.isFinite(position) || position < 0) return;
+            if (!session.resumeSeekSent) {
+              // Wait for a decoded origin before resuming. The native load
+              // option can otherwise land at the next HLS segment boundary.
+              session.resumeSeekSent = true;
+              try { api.player.seekTo(session.deferredStartMs); }
+              catch (_) { session.onEvent('error', 'The native player could not resume this stream.', session); }
+              return;
+            }
+            if (position < session.deferredStartMs - 1_000) return;
+            session.deferredStartMs = 0;
+            session.onEvent(name, transform(value), session);
+            if (session.deferredPlaybackState && isCurrent(session)) {
+              session.onEvent(session.deferredPlaybackState, undefined, session);
+            }
+            return;
+          }
+        }
+        session.onEvent(name, transform(value), session);
+      };
       const connect = (event, name, transform = (value) => value) => {
         if (typeof event?.connect !== 'function') return;
         const listener = (value) => {
@@ -307,7 +341,7 @@
             else if (session.pendingEvents.length < 16) session.pendingEvents.push([name, value, transform]);
             return;
           }
-          session.onEvent(name, transform(value), session);
+          dispatch(name, value, transform);
         };
         event.connect(listener);
         session.listeners.push([event, listener]);
@@ -362,7 +396,7 @@
       });
       if (!isCurrent(session)) throw abortError();
       const position = {
-        startMilliseconds: Math.max(0, Math.round(Number(options.startTimeMilliseconds) || 0)),
+        startMilliseconds: deferredStartMs > 0 ? 0 : startMs,
         autoplay: options.autoplay !== false,
       };
       session.loadIssued = true;
@@ -372,7 +406,7 @@
       session.loadAccepted = true;
       for (const [name, value, transform] of session.pendingEvents.splice(0)) {
         if (!isCurrent(session)) break;
-        session.onEvent(name, transform(value), session);
+        dispatch(name, value, transform);
       }
       return session;
     } catch (error) {
@@ -449,5 +483,11 @@
     };
   }
 
-  return { isPresent, getDeviceProfile, externalSubtitleFormat, playbackInfoForSubtitle, formatPlaybackRouteDiagnostic, load, stop, control, seek, getPosition, timeline };
+  function reachedEnd(session) {
+    const position = timeline(session);
+    return session?.isLiveTv !== true && position.durationMs > 0
+      && position.positionMs >= position.durationMs * 0.95;
+  }
+
+  return { isPresent, getDeviceProfile, externalSubtitleFormat, playbackInfoForSubtitle, formatPlaybackRouteDiagnostic, load, stop, control, seek, getPosition, timeline, reachedEnd };
 });

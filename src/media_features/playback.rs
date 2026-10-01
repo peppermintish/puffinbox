@@ -436,6 +436,16 @@ pub(super) async fn negotiate(
                 .as_ref()
                 .is_some_and(hls_subtitle_profile_supported)
         });
+    let bounded_duration = metadata
+        .duration_seconds
+        .or_else(|| {
+            metadata
+                .catalog_identity_matches
+                .then_some(media.item.runtime_ticks)
+                .flatten()
+                .map(|ticks| ticks as f64 / 10_000_000.0)
+        })
+        .is_some_and(|duration| duration > 0.0 && duration <= 14_400.0);
     let transcode_preconditions = request.enable_transcoding.unwrap_or(true)
         && (video || output_audio)
         && !(audio && subtitle_selected)
@@ -505,6 +515,7 @@ pub(super) async fn negotiate(
                     output_audio,
                     output_channels: requested_channel_limit,
                     stream_copy: true,
+                    full_timeline: false,
                     max_streaming_bitrate,
                 })
             })
@@ -518,6 +529,7 @@ pub(super) async fn negotiate(
             output_audio,
             output_channels: Some(hls_output_channels),
             stream_copy: false,
+            full_timeline: bounded_duration,
             max_streaming_bitrate,
         })
     });
@@ -1149,6 +1161,7 @@ struct HlsUrlOptions<'a> {
     output_audio: bool,
     output_channels: Option<u32>,
     stream_copy: bool,
+    full_timeline: bool,
     max_streaming_bitrate: Option<u64>,
 }
 
@@ -1161,6 +1174,7 @@ fn build_hls_url(options: HlsUrlOptions<'_>) -> String {
         output_audio,
         output_channels,
         stream_copy,
+        full_timeline,
         max_streaming_bitrate,
     } = options;
     let path = if video {
@@ -1171,8 +1185,9 @@ fn build_hls_url(options: HlsUrlOptions<'_>) -> String {
     let mut query = vec![format!("playSessionId={play_session_id}")];
     if stream_copy {
         query.push("streamCopy=true".to_owned());
+    } else if full_timeline {
+        query.push("fullTimeline=true".to_owned());
     } else if let Some(ticks) = request.start_time_ticks.filter(|ticks| *ticks > 0) {
-        // Keep the resume argument in the spelling used by PlaybackInfo requests.
         query.push(format!("StartTimeTicks={ticks}"));
     }
     if let Some(index) = request.audio_stream_index.filter(|_| output_audio) {
@@ -1706,6 +1721,7 @@ mod tests {
             output_audio: false,
             output_channels: None,
             stream_copy: true,
+            full_timeline: false,
             max_streaming_bitrate: Some(1_000_000),
         });
         assert_eq!(
@@ -1726,9 +1742,11 @@ mod tests {
             output_audio: true,
             output_channels: Some(1),
             stream_copy: false,
+            full_timeline: true,
             max_streaming_bitrate: Some(800_000),
         });
-        assert!(transcoded.contains("StartTimeTicks=12345678"));
+        assert!(transcoded.contains("fullTimeline=true"));
+        assert!(!transcoded.contains("StartTimeTicks="));
         assert!(transcoded.contains("audioStreamIndex=2"));
         assert!(transcoded.contains("maxAudioChannels=1"));
         assert!(transcoded.ends_with("ApiKey=token%2B%2F%3D"));

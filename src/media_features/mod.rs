@@ -17,6 +17,7 @@ mod process_limits;
 pub mod range;
 mod secure_path;
 mod subtitles;
+mod vod_hls;
 
 use std::{
     io::{self, Read, Seek, SeekFrom},

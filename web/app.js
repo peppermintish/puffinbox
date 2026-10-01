@@ -1758,6 +1758,13 @@
     });
   }
 
+  function observeNativePlayback(session) {
+    session.activitySeen = true;
+    session.nativeActivitySeen = true;
+    window.PuffinboxPlaybackHeartbeat.stopNativeStartupWatchdog(session);
+    void beginPlaybackSession(session);
+  }
+
   function refreshPlaybackLease(session) {
     if (session.stopping || activePlayback !== session || session.generation !== playbackGeneration) return;
     const action = window.PuffinboxPlaybackHeartbeat.nextHeartbeatAction(session);
@@ -1847,10 +1854,13 @@
     window.PuffinboxPlaybackHeartbeat.stop(session);
     window.PuffinboxPlaybackHeartbeat.stopNativeStartupWatchdog(session);
     let nativePositionPromise = null;
-    if (session.isNative && session.nativePlayer) {
+    if (session.isNative && session.nativePlayer && !session.nativeFinished) {
       nativePositionPromise = window.PuffinboxJmpPlayer.getPosition(session.nativePlayer, 1_500)
         .then((position) => { session.nativePositionMs = position; })
         .catch(() => { /* Keep the last position update received from the player. */ });
+      session.nativeStopPromise = window.PuffinboxJmpPlayer.stop(session.nativePlayer);
+    }
+    if (session.isNative && session.nativePlayer && session.nativeFinished) {
       session.nativeStopPromise = window.PuffinboxJmpPlayer.stop(session.nativePlayer);
     }
     if (session.isNative) setNativePlayerSurface(false);
@@ -2098,12 +2108,16 @@
         item, media, mediaType: type, mode: playbackMode,
         isLiveTv: item.Type === 'LiveTvChannel',
         isNative: profile.native, nativePlayer: null, nativePositionMs: 0, nativeDurationMs: 0,
+        nativeConfirmedPositionMs: 0, nativeFinished: false,
         nativePositionInitialized: false,
         nativeAbortController: profile.native ? new AbortController() : null,
         playSessionId: String(playback?.PlaySessionId || ''),
         startTimeTicks: Number.isInteger(options.startTimeTicks) ? options.startTimeTicks : 0,
         usesHls: mediaUrl.pathname.toLowerCase().endsWith('/master.m3u8'),
+        fullHlsTimeline: mediaUrl.pathname.toLowerCase().endsWith('/master.m3u8')
+          && mediaUrl.searchParams.get('fullTimeline') === 'true',
         positionOffsetTicks: mediaUrl.pathname.toLowerCase().endsWith('/master.m3u8')
+          && mediaUrl.searchParams.get('fullTimeline') !== 'true'
           && Number.isInteger(options.startTimeTicks) ? options.startTimeTicks : 0,
         started: false, activitySeen: false, startPromise: null, stopPromise: null, stopping: false, hls: null,
         isPaused: !shouldAutoplay,
@@ -2133,7 +2147,7 @@
         if (session.usesHls) {
           media.addEventListener('loadedmetadata', () => startPreparedHlsLease(session), { once: true });
         }
-        if (session.startTimeTicks > 0 && !session.usesHls) {
+        if (session.startTimeTicks > 0 && (!session.usesHls || session.fullHlsTimeline)) {
           media.addEventListener('loadedmetadata', () => {
             const seconds = session.startTimeTicks / 10_000_000;
             if (Number.isFinite(seconds) && seconds > 0 && Number.isFinite(media.duration) && seconds < media.duration) media.currentTime = seconds;
@@ -2194,10 +2208,11 @@
           streams,
           signal: session.nativeAbortController?.signal,
           usesHls: session.usesHls,
+          fullHlsTimeline: session.fullHlsTimeline,
           autoplay: shouldAutoplay,
-          startTimeMilliseconds: session.usesHls ? 0 : session.startTimeTicks / 10_000,
+          startTimeMilliseconds: session.usesHls && !session.fullHlsTimeline ? 0 : session.startTimeTicks / 10_000,
           subtitleDeliveryFormat,
-          subtitleStartTimeMilliseconds: session.usesHls ? session.startTimeTicks / 10_000 : 0,
+          subtitleStartTimeMilliseconds: session.positionOffsetTicks / 10_000,
           audioStreamIndex: options.audioStreamIndex,
           subtitleStreamIndex: options.subtitleStreamIndex,
           onEvent: (eventName, detail, bridgeSession) => {
@@ -2205,30 +2220,33 @@
             session.nativePlayer = bridgeSession;
             if (eventName === 'playing') {
               session.isPaused = false;
-              session.activitySeen = true;
-              session.nativeActivitySeen = true;
-              window.PuffinboxPlaybackHeartbeat.stopNativeStartupWatchdog(session);
               nativePlayPauseButton.textContent = 'Pause';
-              void beginPlaybackSession(session);
+              observeNativePlayback(session);
             } else if (eventName === 'paused') {
               session.isPaused = true;
               nativePlayPauseButton.textContent = 'Play';
+              if (session.nativePositionInitialized && session.nativeDurationMs > 0) observeNativePlayback(session);
               void reportPlaybackProgress(session, true);
             } else if (eventName === 'position') {
               const advanced = window.PuffinboxPlaybackHeartbeat.recordNativePosition(session, detail);
+              session.nativeConfirmedPositionMs = session.nativePositionMs;
               renderNativePosition(session);
-              if (advanced) {
-                session.activitySeen = true;
-                session.nativeActivitySeen = true;
-                window.PuffinboxPlaybackHeartbeat.stopNativeStartupWatchdog(session);
-                void beginPlaybackSession(session);
+              if (advanced || (session.isPaused && session.nativeDurationMs > 0)) {
+                observeNativePlayback(session);
                 void reportPlaybackProgress(session);
               } else if (session.started) void reportPlaybackProgress(session);
             } else if (eventName === 'duration') {
               session.nativeDurationMs = detail;
               renderNativePosition(session);
+              if (session.isPaused && session.nativePositionInitialized && detail > 0) observeNativePlayback(session);
             } else if (eventName === 'finished') {
-              void finishPlayback(session);
+              session.nativeFinished = true;
+              session.nativePositionMs = session.nativeConfirmedPositionMs;
+              if (native.reachedEnd(session)) void finishPlayback(session);
+              else {
+                note.textContent = 'Playback ended early. Reopen the item to continue.';
+                void stopPlaybackSession(session, false);
+              }
             } else if (eventName === 'canceled') {
               void stopPlaybackSession(session, false);
             } else if (eventName === 'error') {
@@ -2252,7 +2270,9 @@
             });
         }
       } else if (session.usesHls && profile.hlsJs) {
-        const hls = new window.Hls({ enableWorker: true });
+        const hls = new window.Hls({ enableWorker: true,
+          startPosition: session.fullHlsTimeline && session.startTimeTicks > 0 ? session.startTimeTicks / 10_000_000 : -1,
+        });
         session.hls = hls;
         hls.on(window.Hls.Events.ERROR, (_event, data) => {
           if (generation !== playbackGeneration || session.hls !== hls || session.stopping || session.naturalEnded) return;
@@ -2676,6 +2696,12 @@
     if (!activePlayback?.isNative || !activePlayback.nativePlayer) return;
     const timeline = window.PuffinboxJmpPlayer.timeline(activePlayback);
     const position = Math.max(0, Math.min(Number(nativeSeek.value), timeline.seekMaximumMs) - timeline.seekMinimumMs);
+    if (activePlayback.fullHlsTimeline && position <= timeline.positionMs) {
+      const session = activePlayback;
+      void playItem(session.item, { ...selectedTrackOptions(), startTimeTicks: Math.round(position * 10_000),
+        offerResume: false, autoplay: !session.isPaused, preserveQueue: !!playbackQueue });
+      return;
+    }
     if (!window.PuffinboxJmpPlayer.seek(activePlayback.nativePlayer, position)) {
       setPlaybackNote(activePlayback, 'Seeking is unavailable in the native player.');
       return;

@@ -79,6 +79,11 @@ async function main() {
   }, 'direct playback already uses source-relative positions');
   assert.equal(adapter.timeline({ ...resumed, isLiveTv: true }).canSeek, false);
   assert.equal(adapter.timeline({ ...resumed, nativeDurationMs: 0 }).canSeek, false);
+  assert.equal(adapter.reachedEnd({ ...resumed, nativePositionMs: 0 }), false,
+    'an early native finished event must not mark the whole item played');
+  assert.equal(adapter.reachedEnd({ ...resumed, nativePositionMs: 214_000 }), true,
+    'the end of a resumed clip reaches the end of the source item');
+  assert.equal(adapter.reachedEnd({ ...resumed, nativePositionMs: 214_000, isLiveTv: true }), false);
   const calls = [];
   const player = {
     playing: event(), paused: event(), finished: event(), canceled: event(), error: event(),
@@ -417,6 +422,33 @@ async function main() {
   assert.equal(transcodedLoad[5], '', 'HLS subtitle selection is already applied and offset by the server');
   assert.deepEqual(transcodedLoad[3].headers, {}, 'HLS token is not exposed in a native authorization header');
   await adapter.stop(transcodedSession, transcodedHost);
+
+  const fullTimeline = makePlayer();
+  const fullTimelineHost = makeHost(fullTimeline.player);
+  const fullTimelineEvents = [];
+  const fullTimelineSession = await adapter.load({
+    url: '/Videos/full/master.m3u8?fullTimeline=true', accessToken: 'token', mediaType: 'video',
+    item: { Id: 'full' }, usesHls: true, fullHlsTimeline: true, startTimeMilliseconds: 160_213,
+    onEvent: (name, value) => fullTimelineEvents.push([name, value]),
+  }, fullTimelineHost);
+  assert.equal(fullTimeline.calls.find(([name]) => name === 'load')[2].startMilliseconds, 0,
+    'the HLS origin is established before a native resume seek');
+  assert.equal(fullTimeline.calls.some(([name]) => name === 'seek'), false,
+    'acknowledging a load does not establish a decoded origin');
+  fullTimeline.player.playing.emit();
+  fullTimeline.player.positionUpdate.emit(500);
+  assert.deepEqual(fullTimelineEvents, [], 'startup at zero must not overwrite the saved resume position');
+  assert.deepEqual(fullTimeline.calls.at(-1), ['seek', 160_213]);
+  fullTimeline.player.positionUpdate.emit(750);
+  assert.equal(fullTimeline.calls.filter(([name]) => name === 'seek').length, 1);
+  assert.deepEqual(fullTimelineEvents, [], 'old position updates are ignored while the resume seek is pending');
+  fullTimeline.player.positionUpdate.emit(160_213);
+  assert.deepEqual(fullTimelineEvents, [['position', 160_213], ['playing', undefined]],
+    'playback is reported only after the native player reaches the resumed source time');
+  assert.equal(adapter.seek(fullTimelineSession, 0), true);
+  fullTimeline.player.positionUpdate.emit(0);
+  assert.deepEqual(fullTimelineEvents.at(-1), ['position', 0], 'later backward seeks use the full source timeline');
+  await adapter.stop(fullTimelineSession, fullTimelineHost);
 
   const externalHls = makePlayer();
   const externalHlsHost = makeHost(externalHls.player);

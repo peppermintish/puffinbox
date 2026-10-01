@@ -8,6 +8,7 @@ from http import cookiejar
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -473,6 +474,17 @@ def verify_container_restart(
         for volume in named_volumes:
             volume_project = subprocess.run(["docker", "volume", "inspect", "--format", "{{index .Labels \"com.docker.compose.project\"}}", volume], check=True, capture_output=True, text=True, timeout=20).stdout.strip()
             require(volume_project == project_name, f"refusing a restart because volume {volume!r} belongs to project {project_name!r}")
+    # Prepare a previously unrequested batch after the persistence-volume checks.
+    # Its first segment becomes readable while the rest is still being encoded.
+    # This keeps the shutdown assertion about an active child, even when earlier
+    # demand-driven batches have already finished on a fast machine.
+    encoding_client = HttpClient(base_url)
+    login(encoding_client, admin_username, admin_password)
+    encoding_status, _, encoding_segment = encoding_client.request(
+        "GET", f"/Videos/{urllib.parse.quote(item_id)}/hls/{urllib.parse.quote(active_play_session_id)}/segment000032.ts"
+    )
+    require(encoding_status == 200 and len(encoding_segment) > 188,
+            "a fresh HLS batch did not produce its first segment before shutdown")
     process_table = subprocess.run(["docker", "top", container], check=True, capture_output=True, text=True, timeout=20).stdout
     require(any("ffmpeg" in line.casefold() for line in process_table.splitlines()), "no external FFmpeg process was active immediately before server shutdown")
     report("Server shutdown requested while an HLS FFmpeg process was active", True)
@@ -530,6 +542,54 @@ def login(client: HttpClient, username: str, password: str, headers: dict[str, s
     _, _, result = client.json("POST", "/Users/AuthenticateByName", payload, headers=headers)
     require(isinstance(result, dict) and isinstance(result.get("User"), dict) and isinstance(result.get("AccessToken"), str), "authentication returned an invalid user/token payload")
     return result["User"], result["AccessToken"]
+
+
+def verify_hls_timeline(client: HttpClient, item_id: str, profile: dict, fixture_root: Path, ffprobe: str) -> None:
+    playback = client.json("POST", f"/Items/{urllib.parse.quote(item_id)}/PlaybackInfo", {
+        "DeviceProfile": profile, "StartTimeTicks": 1_231_855_880,
+        "EnableDirectPlay": False, "EnableDirectStream": False,
+    })[2]
+    source = (playback.get("MediaSources") or [{}])[0]
+    url = source.get("TranscodingUrl")
+    require(source.get("SupportsTranscoding") is True and isinstance(url, str),
+            "resume did not negotiate a full-timeline HLS stream")
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    require(query.get("fullTimeline") == ["true"] and not any(key.casefold() == "starttimeticks" for key in query),
+            "resume URL still describes an offset clip rather than the full movie")
+    status, _, master = client.request("GET", url)
+    require(status == 200 and b"#EXTM3U" in master, "resume master playlist was unavailable")
+    session_id = str(uuid.UUID(str(playback.get("PlaySessionId") or "")))
+    session_path = f"/Videos/{urllib.parse.quote(item_id)}/hls/{session_id}"
+    status, _, playlist = client.request("GET", session_path + "/playlist.m3u8")
+    require(status == 200 and b"#EXT-X-PLAYLIST-TYPE:VOD" in playlist and b"#EXT-X-ENDLIST" in playlist,
+            "resume playlist does not describe the complete on-demand movie")
+    durations = [float(value) for value in re.findall(rb"#EXTINF:([0-9.]+),", playlist)]
+    runtime = float(source.get("RunTimeTicks", 0)) / 10_000_000
+    require(299.9 <= runtime <= 300.1, "the long fixture has no trustworthy 300-second runtime")
+    count = math.ceil(runtime / 4)
+    require(len(durations) == count and abs(sum(durations) - runtime) < 0.01,
+            "the source runtime is not represented by its complete HLS playlist")
+    with tempfile.TemporaryDirectory(prefix="puffinbox-hls-timeline-", dir=fixture_root) as scratch:
+        for index in (30, 2, count - 1):
+            status, headers, segment = client.request("GET", session_path + f"/segment{index:06}.ts")
+            require(status == 200 and len(segment) > 188 and headers.get("Content-Type") == "video/mp2t",
+                    f"HLS seek segment {index} was unavailable")
+            path = Path(scratch) / f"segment{index:06}.ts"
+            path.write_bytes(segment)
+            result = subprocess.run([ffprobe, "-v", "error", "-show_entries", "stream=codec_name,start_time,duration",
+                                     "-of", "json", str(path)], check=True, capture_output=True, text=True, timeout=20)
+            streams = json.loads(result.stdout).get("streams", [])
+            video = next((stream for stream in streams if stream.get("codec_name") == "h264"), None)
+            require(video is not None and abs(float(video.get("start_time", -1)) - index * 4) < 0.05,
+                    f"HLS segment {index} does not carry its source-time video timestamp")
+            require(abs(float(video.get("duration", -1)) - durations[index]) < 0.05,
+                    f"HLS segment {index} does not have the advertised duration")
+    status, _, _ = client.request("GET", session_path + f"/segment{count:06}.ts")
+    require(status == 404, "HLS accepted a segment beyond the movie duration")
+    status, _, _ = client.request("DELETE", session_path)
+    require(status == 204, "full-timeline HLS session cancellation failed")
+    report("Full-duration HLS resume, forward/backward segment requests, source timestamps, and end boundary", True,
+           f"{count} segments cover the {runtime:.3f}-second source; video timestamps matched 120, 8, and {(count - 1) * 4} seconds")
 
 
 def ensure_user(admin: HttpClient, username: str, password: str, library_id: str | None, *, playback: bool, blocked_categories: list[str] | None = None) -> dict:
@@ -932,6 +992,7 @@ def run(args: argparse.Namespace) -> int:
         return 2
     shutdown_item_id = str(shutdown_item.get("Id") or "")
     require(bool(shutdown_item_id), "long synthetic HLS fixture has no catalog identifier")
+    verify_hls_timeline(client, shutdown_item_id, playback_payload["DeviceProfile"], fixture_root, ffprobe)
     active_playback = client.json("POST", f"/Items/{urllib.parse.quote(shutdown_item_id)}/PlaybackInfo", {
         "DeviceProfile": playback_payload["DeviceProfile"],
     })[2]

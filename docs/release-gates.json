@@ -7,7 +7,7 @@
     },
     "jellyfin_12_behavior": {
       "passed": false,
-      "detail": "81 of 364 operation declarations match. Official web resume has a timeline mismatch; full behavioral compatibility has not been validated."
+      "detail": "81 of 364 operation declarations match. Fresh-navigation web resume and bounded full-source HLS seeking passed for a synthetic movie; cached user-data refresh and full behavioral compatibility remain incomplete."
     },
     "feature_acceptance": {
       "passed": false,
