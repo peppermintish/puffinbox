@@ -1373,6 +1373,14 @@ async fn run_hls_job(job: HlsJob) {
 }
 
 pub(super) async fn dir_size(directory: &Path) -> io::Result<u64> {
+    dir_size_with(directory, |entry| async move { entry.metadata().await }).await
+}
+
+async fn dir_size_with<F, Fut>(directory: &Path, mut metadata_for: F) -> io::Result<u64>
+where
+    F: FnMut(fs::DirEntry) -> Fut,
+    Fut: std::future::Future<Output = io::Result<std::fs::Metadata>>,
+{
     let mut entries = fs::read_dir(directory).await?;
     let mut total = 0_u64;
     let mut count = 0_usize;
@@ -1381,7 +1389,13 @@ pub(super) async fn dir_size(directory: &Path) -> io::Result<u64> {
         if count > MAX_HLS_SEGMENTS + 16 {
             return Ok(MAX_HLS_OUTPUT_BYTES + 1);
         }
-        let metadata = entry.metadata().await?;
+        let metadata = match metadata_for(entry).await {
+            Ok(metadata) => metadata,
+            // FFmpeg publishes segments and playlists by renaming temporary files.
+            // A listed entry can disappear before stat without exceeding any budget.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
         if metadata.is_file() {
             total = total.saturating_add(metadata.len());
             if total > MAX_HLS_OUTPUT_BYTES {
@@ -2268,6 +2282,68 @@ mod tests {
         time::sleep,
     };
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn output_size_scan_tolerates_atomic_segment_publish() {
+        let directory = std::env::temp_dir().join(format!("puffinbox-hls-size-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let temporary = directory.join("segment000001.ts.tmp");
+        let published = directory.join("segment000001.ts");
+        let stable = directory.join("segment000000.ts");
+        fs::write(&temporary, [0_u8; 512]).unwrap();
+        fs::write(&stable, [0_u8; 40]).unwrap();
+        let result = super::dir_size_with(&directory, |entry| async move {
+            if entry.file_name() == "segment000001.ts.tmp" {
+                // Publish after enumeration and before stat, exactly as FFmpeg can.
+                tokio::fs::rename(
+                    entry.path(),
+                    entry.path().with_file_name("segment000001.ts"),
+                )
+                .await?;
+            }
+            entry.metadata().await
+        })
+        .await;
+        let complete = super::dir_size(&directory).await;
+        fs::remove_file(temporary).ok();
+        fs::remove_file(published).unwrap();
+        fs::remove_file(stable).unwrap();
+        fs::remove_dir(directory).unwrap();
+        assert!(
+            result
+                .as_ref()
+                .is_ok_and(|bytes| (40..=552).contains(bytes)),
+            "an atomic segment publish must not fail the output-budget scan: {result:?}"
+        );
+        assert_eq!(
+            complete.unwrap(),
+            552,
+            "the next scan includes the published segment"
+        );
+    }
+
+    #[tokio::test]
+    async fn output_size_scan_propagates_access_and_directory_errors() {
+        let directory = std::env::temp_dir().join(format!("puffinbox-hls-size-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let file = directory.join("segment000000.ts");
+        fs::write(&file, [0_u8; 16]).unwrap();
+        let denied = super::dir_size_with(&directory, |_| async {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .await;
+        fs::remove_file(file).unwrap();
+        fs::remove_dir(&directory).unwrap();
+        assert_eq!(
+            denied.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            super::dir_size(&directory).await.unwrap_err().kind(),
+            std::io::ErrorKind::NotFound,
+            "a vanished output directory must still stop the job"
+        );
+    }
 
     #[test]
     fn hls_resume_queries_accept_client_and_legacy_spelling() {

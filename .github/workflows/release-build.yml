@@ -85,6 +85,8 @@ jobs:
         run: node scripts/test_offline_browser.js
       - name: Check Live TV behavior in Chromium
         timeout-minutes: 5
+        env:
+          PUFFINBOX_BROWSER_BODY_DELAY_MS: '60'
         run: node scripts/test_livetv_browser.js
       - name: Check playlists in Chromium
         timeout-minutes: 5

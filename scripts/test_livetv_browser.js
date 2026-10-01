@@ -31,6 +31,9 @@ const TIMER_END = new Date(nextMinute + 90 * 60_000).toISOString();
 const SERIES_START = new Date(nextMinute + 3 * 60 * 60_000).toISOString();
 const SERIES_END = new Date(nextMinute + 4 * 60 * 60_000).toISOString();
 const apiRequests = [];
+const BODY_DELAY_MS = Number(process.env.PUFFINBOX_BROWSER_BODY_DELAY_MS || 0);
+assert.ok(Number.isInteger(BODY_DELAY_MS) && BODY_DELAY_MS >= 0 && BODY_DELAY_MS <= 1000,
+  'synthetic response body delay must be between 0 and 1000 milliseconds');
 const timers = [
   {
     Id: INITIAL_TIMER_ID, Name: 'Existing <img id="timer-injected" src=x>', ChannelId: CHANNEL_ID, ChannelName: CHANNEL_NAME,
@@ -79,7 +82,10 @@ async function holdGuideResponse(channelId) {
 function jsonResponse(response, status, value) {
   const body = Buffer.from(JSON.stringify(value));
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
-  response.end(body);
+  if (BODY_DELAY_MS) {
+    response.flushHeaders();
+    setTimeout(() => response.end(body), BODY_DELAY_MS);
+  } else response.end(body);
 }
 
 function emptyResponse(response, status = 204) {
@@ -470,7 +476,7 @@ function browserTestScript() {
     '  const headers = new Headers(init.headers || {});',
     '  headers.set("X-Test-Profile", profile);',
     '  const result = originalFetch(input, { ...init, headers });',
-    '  return tracked ? result.finally(() => { window.__liveTvPending -= 1; }) : result;',
+    '  return tracked ? result.then(async (response) => { await response.clone().arrayBuffer(); return response; }).finally(() => { window.__liveTvPending -= 1; }) : result;',
     '};',
   ].join('\n');
 }
@@ -684,7 +690,7 @@ async function main() {
     await cdp.waitFor(admin, 'document.querySelector("#live-tv-source-form") !== null && document.querySelector("[data-live-tv-refresh-source]") !== null', Boolean, 'administrator source controls');
     assert.equal(await cdp.evaluate(admin.sessionId, 'document.querySelector("#source-injected") !== null'), false, 'source name was inserted as markup');
     await cdp.evaluate(admin.sessionId, 'document.querySelector("[data-live-tv-refresh-source=\\"' + SOURCE_ID + '\\"]").click(); true');
-    await cdp.waitFor(admin, 'window.__liveTvPending === 0', Boolean, 'source refresh completion');
+    await cdp.waitFor(admin, 'window.__liveTvPending === 0 && !document.querySelector(".live-tv-refreshing") && document.querySelector("[data-live-tv-refresh-source=\\"' + SOURCE_ID + '\\"]")?.disabled === false', Boolean, 'source refresh completion and restored controls');
     assert.ok(apiRequests.some((entry) => entry.profile === 'admin' && entry.method === 'POST' && entry.pathname === '/Admin/LiveTv/Sources/' + SOURCE_ID + '/Refresh'), 'administrator source refresh did not use the supported route');
     await cdp.evaluate(admin.sessionId, '(() => { const form = document.querySelector("#live-tv-source-form"); form.elements.Name.value = "Synthetic M3U source"; form.elements.LibraryId.value = "' + LIBRARY_ID + '"; form.elements.PlaylistUrl.value = "https://tv.example/channels.m3u"; form.elements.GuideUrl.value = "https://tv.example/guide.xml"; form.elements.Origin.value = "https://tv.example/"; form.elements.Addresses.value = "203.0.113.12\\n2001:db8::12"; form.requestSubmit(); return true; })()');
     await cdp.waitFor(admin, 'Array.from(document.querySelectorAll(".data-row strong"), (node) => node.textContent).includes("Synthetic M3U source")', Boolean, 'the created IPTV source');
@@ -698,7 +704,7 @@ async function main() {
     }, 'source payload should use the API casing and understood origin pin shape');
     const newSourceId = sourcePost.createdId;
     await cdp.evaluate(admin.sessionId, 'document.querySelector("[data-live-tv-refresh-source=\\"' + newSourceId + '\\"]").click(); true');
-    await cdp.waitFor(admin, 'window.__liveTvPending === 0', Boolean, 'new source refresh completion');
+    await cdp.waitFor(admin, 'window.__liveTvPending === 0 && !document.querySelector(".live-tv-refreshing") && document.querySelector("[data-live-tv-refresh-source=\\"' + newSourceId + '\\"]")?.disabled === false && document.querySelector("[data-live-tv-edit-source=\\"' + newSourceId + '\\"]") !== null', Boolean, 'new source refresh completion and edit control');
     assert.ok(apiRequests.some((entry) => entry.profile === 'admin' && entry.method === 'POST' && entry.pathname === '/Admin/LiveTv/Sources/' + newSourceId + '/Refresh'), 'new source could not be refreshed');
 
     await cdp.evaluate(admin.sessionId, 'document.querySelector("[data-live-tv-edit-source=\\"' + newSourceId + '\\"]").click(); true');
@@ -721,7 +727,7 @@ async function main() {
     await cdp.evaluate(admin.sessionId, 'document.querySelector("[data-live-tv-edit-source=\\"' + newSourceId + '\\"]").click(); true');
     await cdp.waitFor(admin, 'document.querySelector("#live-tv-source-edit-form") !== null', Boolean, 'source edit form for guide clearing');
     await cdp.evaluate(admin.sessionId, '(() => { const form = document.querySelector("#live-tv-source-edit-form"); form.elements.ClearGuideUrl.checked = true; form.requestSubmit(); return true; })()');
-    await cdp.waitFor(admin, 'window.__liveTvPending === 0', Boolean, 'source guide clear and reload');
+    await cdp.waitFor(admin, 'window.__liveTvPending === 0 && !document.querySelector(".live-tv-refreshing") && !document.querySelector("#live-tv-source-edit-form") && document.querySelector("[data-live-tv-delete-source=\\"' + newSourceId + '\\"]") !== null', Boolean, 'source guide clear and restored delete control');
     const sourceGuideClear = apiRequests.find((entry) => entry.profile === 'admin' && entry.method === 'POST' && entry.pathname === '/Admin/LiveTv/Sources/' + newSourceId && entry.body?.GuideUrl === null);
     assert.ok(sourceGuideClear, 'clearing the guide did not send an explicit null value');
     assert.deepEqual(sourceGuideClear.configAfter, {

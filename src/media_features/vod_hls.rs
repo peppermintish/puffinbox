@@ -290,9 +290,20 @@ async fn run_batch(
                 return BatchResult::Stopped;
             },
             _ = ticker.tick() => {
-                let size = hls::dir_size(&directory).await.unwrap_or(MAX_OUTPUT_BYTES + 1);
+                let size = match hls::dir_size(&directory).await {
+                    Ok(size) => size,
+                    Err(error) => {
+                        tracing::warn!(batch, error_kind = ?error.kind(), "HLS output size scan failed");
+                        let _ = stop_child(&mut child).await;
+                        return BatchResult::Stopped;
+                    }
+                };
                 if expired(session) || started.elapsed() > BATCH_TIMEOUT
                     || size > MAX_BATCH_BYTES || session.output_bytes.load(Ordering::Relaxed).saturating_add(size) > MAX_OUTPUT_BYTES {
+                    let reason = if expired(session) { "idle" }
+                        else if started.elapsed() > BATCH_TIMEOUT { "timeout" }
+                        else { "output_budget" };
+                    tracing::warn!(batch, reason, "HLS transcode batch stopped by a resource limit");
                     let _ = stop_child(&mut child).await;
                     return BatchResult::Stopped;
                 }

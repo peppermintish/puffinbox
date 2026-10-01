@@ -149,6 +149,7 @@ class Fixture:
         else:
             raise AssertionError("isolated database did not become ready")
         proxy = self.create("proxy", self.images["tools"], [
+            "--user", f"{os.getuid()}:{os.getgid()}",
             "--publish", "127.0.0.1::8443", "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges:true", "--pids-limit", "64",
             "--mount", f"type=bind,source={self.root},target=/fixture,readonly",
@@ -157,6 +158,7 @@ class Fixture:
         ], ["/proxy.py"], network=self.frontend)
         self.docker("network", "connect", self.owner, proxy)
         self.docker("start", proxy)
+        self.proxy = proxy
         info = json.loads(self.docker("inspect", proxy))[0]
         if not info["State"]["Running"]:
             write_new(self.root / "proxy-error.log", self.docker("logs", proxy))
@@ -196,11 +198,14 @@ class Fixture:
             except (OSError, AssertionError) as error:
                 if isinstance(error, ssl.SSLCertVerificationError):
                     raise AssertionError(f"TLS fixture certificate rejected: {error}") from error
+                if not json.loads(self.docker("inspect", proxy))[0]["State"]["Running"]:
+                    raise AssertionError("TLS fixture process exited before backend readiness") from error
                 last_error = str(error)
                 time.sleep(1)
         else:
             raise AssertionError(f"isolated HTTPS backend did not become ready: {last_error}")
         caller = self.docker("create", "--name", self.owner + "-caller", "--label", self.label,
+                             "--user", f"{os.getuid()}:{os.getgid()}",
                              "--network", self.owner, "--read-only", "--cap-drop", "ALL",
                              "--security-opt", "no-new-privileges:true", "--entrypoint", "python3",
                              self.images["tools"], "-c", "import time; time.sleep(600)")
