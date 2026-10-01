@@ -15,7 +15,7 @@ COPY vendor ./vendor
 COPY src ./src
 COPY migrations ./migrations
 
-RUN cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
+RUN CARGO_BUILD_JOBS=2 cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
 
 COPY web ./web
 COPY docs ./docs

@@ -100,6 +100,7 @@ jobs:
           cargo test --locked --test postgres_websocket -- --ignored --nocapture
           cargo test --locked --test postgres_user_preferences -- --ignored --nocapture
           cargo test --locked --test postgres_catalog_navigation -- --ignored --nocapture
+          cargo test --locked --test postgres_catalog_filters -- --ignored --nocapture
           cargo test --locked --test postgres_media_access_tokens -- --ignored --nocapture
           cargo test --locked --test postgres_metadata_schema -- --ignored --nocapture
           cargo test --locked --test postgres_offline_packages -- --ignored --nocapture

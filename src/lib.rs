@@ -1,5 +1,6 @@
 pub mod api;
 pub mod auth;
+pub(crate) mod catalog_filters;
 pub(crate) mod catalog_navigation;
 pub mod client_connection;
 pub mod config;

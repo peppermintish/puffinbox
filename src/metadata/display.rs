@@ -6,6 +6,7 @@ use serde_json::Value;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use super::catalog_sql;
 use crate::ApiError;
 
 const MAX_DISPLAY_ITEMS: usize = 10_000;
@@ -19,6 +20,8 @@ pub struct DisplayMetadata {
     pub overview: Option<String>,
     pub premiere_date: Option<NaiveDate>,
     pub genres: Vec<String>,
+    pub tags: Vec<String>,
+    pub production_year: Option<i32>,
     /// The original provider label. This is not a numeric policy threshold.
     pub official_rating: Option<String>,
     /// TVMaze's community score, kept separate from official/classification labels.
@@ -60,10 +63,30 @@ pub async fn load_display_metadata(
     }
     let mut result = HashMap::with_capacity(item_ids.len());
     for chunk in item_ids.chunks(DISPLAY_CHUNK) {
-        let rows = sqlx::query("SELECT requested.item_id,(SELECT m.title FROM item_metadata m WHERE m.item_id=requested.item_id AND m.title IS NOT NULL AND (m.provider_key IN ('local-nfo','tvmaze') OR (m.provider_key LIKE 'plugin:%' AND EXISTS (SELECT 1 FROM trusted_plugins p WHERE p.plugin_id=substring(m.provider_key FROM 8) AND p.enabled=TRUE AND p.status='enabled' AND m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND m.metadata_json->>'moduleSha256'=p.binary_sha256))) ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'tvmaze' THEN 2 ELSE 1 END,m.provider_key LIMIT 1) AS title,(SELECT m.overview FROM item_metadata m WHERE m.item_id=requested.item_id AND m.overview IS NOT NULL AND (m.provider_key IN ('local-nfo','tvmaze') OR (m.provider_key LIKE 'plugin:%' AND EXISTS (SELECT 1 FROM trusted_plugins p WHERE p.plugin_id=substring(m.provider_key FROM 8) AND p.enabled=TRUE AND p.status='enabled' AND m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND m.metadata_json->>'moduleSha256'=p.binary_sha256))) ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'tvmaze' THEN 2 ELSE 1 END,m.provider_key LIMIT 1) AS overview,(SELECT m.premiere_date FROM item_metadata m WHERE m.item_id=requested.item_id AND m.premiere_date IS NOT NULL AND (m.provider_key IN ('local-nfo','tvmaze') OR (m.provider_key LIKE 'plugin:%' AND EXISTS (SELECT 1 FROM trusted_plugins p WHERE p.plugin_id=substring(m.provider_key FROM 8) AND p.enabled=TRUE AND p.status='enabled' AND m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND m.metadata_json->>'moduleSha256'=p.binary_sha256))) ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'tvmaze' THEN 2 ELSE 1 END,m.provider_key LIMIT 1) AS premiere_date,(SELECT m.genres FROM item_metadata m WHERE m.item_id=requested.item_id AND jsonb_array_length(m.genres)>0 AND (m.provider_key IN ('local-nfo','tvmaze') OR (m.provider_key LIKE 'plugin:%' AND EXISTS (SELECT 1 FROM trusted_plugins p WHERE p.plugin_id=substring(m.provider_key FROM 8) AND p.enabled=TRUE AND p.status='enabled' AND m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND m.metadata_json->>'moduleSha256'=p.binary_sha256))) ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'tvmaze' THEN 2 ELSE 1 END,m.provider_key LIMIT 1) AS genres,(SELECT m.content_rating FROM item_metadata m WHERE m.item_id=requested.item_id AND m.provider_key='local-nfo' LIMIT 1) AS official_rating,(SELECT m.metadata_json->>'communityScore' FROM item_metadata m WHERE m.item_id=requested.item_id AND m.provider_key='tvmaze' LIMIT 1) AS community_score,(SELECT m.artwork_sha256 FROM item_metadata m WHERE m.item_id=requested.item_id AND m.artwork_size IS NOT NULL AND (m.provider_key IN ('local-nfo','tvmaze') OR (m.provider_key LIKE 'plugin:%' AND EXISTS (SELECT 1 FROM trusted_plugins p WHERE p.plugin_id=substring(m.provider_key FROM 8) AND p.enabled=TRUE AND p.status='enabled' AND m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND m.metadata_json->>'moduleSha256'=p.binary_sha256))) ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'tvmaze' THEN 2 ELSE 1 END,m.provider_key LIMIT 1) AS primary_image_tag FROM unnest($1::uuid[]) AS requested(item_id)")
-            .bind(chunk)
-            .fetch_all(pool)
-            .await?;
+        let projection = format!(
+            "SELECT requested.item_id, {} AS title, {} AS overview, {} AS premiere_date, \
+             {} AS genres, {} AS official_rating, {} AS tags, {} AS production_year, \
+             (SELECT m.metadata_json->>'communityScore' FROM item_metadata m \
+              WHERE m.item_id=requested.item_id AND m.provider_key='tvmaze') AS community_score, \
+             {} AS primary_image_tag FROM unnest($1::uuid[]) AS requested(item_id)",
+            catalog_sql::preferred("requested.item_id", "m.title", "m.title IS NOT NULL"),
+            catalog_sql::preferred("requested.item_id", "m.overview", "m.overview IS NOT NULL"),
+            catalog_sql::preferred(
+                "requested.item_id",
+                "m.premiere_date",
+                "m.premiere_date IS NOT NULL"
+            ),
+            catalog_sql::genres("requested.item_id"),
+            catalog_sql::rating("requested.item_id"),
+            catalog_sql::tags("requested.item_id"),
+            catalog_sql::year("requested.item_id"),
+            catalog_sql::preferred(
+                "requested.item_id",
+                "m.artwork_sha256",
+                "m.artwork_size IS NOT NULL"
+            ),
+        );
+        let rows = sqlx::query(&projection).bind(chunk).fetch_all(pool).await?;
         for row in rows {
             let item_id: Uuid = row.try_get("item_id")?;
             let mut display = DisplayMetadata {
@@ -71,11 +94,19 @@ pub async fn load_display_metadata(
                 overview: row.try_get("overview")?,
                 premiere_date: row.try_get("premiere_date")?,
                 official_rating: row.try_get("official_rating")?,
+                production_year: row.try_get("production_year")?,
                 ..DisplayMetadata::default()
             };
             let genres: Option<Value> = row.try_get("genres")?;
             display.genres = genres
                 .and_then(|value| value.as_array().cloned())
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect();
+            let tags: Value = row.try_get("tags")?;
+            display.tags = tags
+                .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|value| value.as_str().map(str::to_owned))

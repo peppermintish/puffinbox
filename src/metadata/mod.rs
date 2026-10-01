@@ -26,6 +26,7 @@ use crate::{
 };
 
 pub use display::{DisplayMetadata, load_display_metadata};
+pub(crate) mod catalog_sql;
 use display::{ProviderMetadata, load_provider_details};
 
 /// Register Puffinbox metadata extension routes. External-provider refreshes

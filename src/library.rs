@@ -68,6 +68,16 @@ pub struct ItemQuery {
     pub is_played: Option<bool>,
     pub is_favorite: bool,
     pub is_resumable: bool,
+    pub facets: ItemFacetFilters,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ItemFacetFilters {
+    pub genres: Vec<String>,
+    pub genre_ids: Vec<Uuid>,
+    pub tags: Vec<String>,
+    pub official_ratings: Vec<String>,
+    pub years: Vec<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

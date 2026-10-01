@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder, Row, types::Json};
 use uuid::Uuid;
 
+mod catalog_filters;
+pub(crate) use catalog_filters::{CatalogFacets, GenreFacet, catalog_facets};
+
 use crate::{
     auth::UserRecord,
     library::{ItemQuery, ItemRecord, LibraryRecord},
@@ -1993,7 +1996,24 @@ pub async fn browse_items(
 ) -> Result<(Vec<ItemRecord>, Option<i64>), sqlx::Error> {
     query.start_index = query.start_index.max(0);
     query.limit = query.limit.clamp(1, 10_000);
-    let parent = if let Some(parent_id) = query.parent_id {
+    let parent = item_query_parent(pool, query.parent_id).await?;
+    if query.parent_id.is_some() && parent.is_none() {
+        return Ok((Vec::new(), Some(0)));
+    }
+    let total = if query.enable_total_record_count {
+        Some(run_item_count(pool, user, &query, parent).await?)
+    } else {
+        None
+    };
+    let items = run_item_page(pool, user, &query, parent).await?;
+    Ok((items, total))
+}
+
+async fn item_query_parent(
+    pool: &PgPool,
+    parent_id: Option<Uuid>,
+) -> Result<Option<(Uuid, Option<Uuid>)>, sqlx::Error> {
+    Ok(if let Some(parent_id) = parent_id {
         if let Some(library) = get_library(pool, parent_id).await? {
             Some((library.id, None))
         } else {
@@ -2009,17 +2029,7 @@ pub async fn browse_items(
         }
     } else {
         None
-    };
-    if query.parent_id.is_some() && parent.is_none() {
-        return Ok((Vec::new(), Some(0)));
-    }
-    let total = if query.enable_total_record_count {
-        Some(run_item_count(pool, user, &query, parent).await?)
-    } else {
-        None
-    };
-    let items = run_item_page(pool, user, &query, parent).await?;
-    Ok((items, total))
+    })
 }
 
 fn item_cte(parent: Option<(Uuid, Option<Uuid>)>, recursive: bool) -> bool {
@@ -2136,6 +2146,7 @@ fn push_item_conditions(
             .push_bind(user.id)
             .push(" AND ud.item_id=i.id AND ud.is_favorite=TRUE) ");
     }
+    catalog_filters::push_selections(builder, &query.facets);
 }
 
 fn push_user_visibility_filters(builder: &mut QueryBuilder<'_, Postgres>, user: &UserRecord) {

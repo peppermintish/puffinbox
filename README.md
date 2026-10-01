@@ -47,6 +47,6 @@ Puffinbox code is offered under either the MIT License or Apache License 2.0; th
 
 The default image includes the Cargo dependency license bundle, Rust standard-library and toolchain notices, musl attribution, and the project notices. PostgreSQL is supplied by a separate Compose image. FFmpeg/ffprobe and any associated codec or runtime components are supplied and licensed separately by the operator.
 
-The strict Cargo audit passes. The linked Rust Unicode tables and musl components
-still prevent a claim that the entire server image meets the MIT/Apache-2.0-only
+The strict Cargo audit passes. Linked Rust Unicode tables are outside the allowlist, and the runtime audit is incomplete. These
+prevent a claim that the entire server image meets the MIT/Apache-2.0-only
 boundary. This blocks release packaging; see [the licensing inventory](docs/licensing.md).

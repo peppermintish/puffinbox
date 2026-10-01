@@ -9,7 +9,7 @@ hints expose the supported display fields directly on each item.
 For each display field, Puffinbox prefers local NFO data, then enabled plugins
 whose installed module and manifest hashes still match, then TVMaze data.
 Metadata can override an item's displayed name and overview. Genre, premiere
-date, official content label, and community score are included when present.
+date, production year, tags, official content label, and community score are included when present.
 TVMaze's community score is display-only. It is not an age classification and
 does not affect parental policy. Parental policy reads only recognized local
 NFO labels under `US-MPAA-v1`; unknown labels remain unrated.
@@ -35,3 +35,34 @@ If a poster is unreadable but its NFO is valid, the metadata and policy label
 are still saved while the prior artwork is retained.
 If the NFO is missing while a poster cannot be safely read, stale NFO display
 fields and policy labels are cleared while previously stored artwork is kept.
+
+## Catalog filters
+
+`GET /Items/Filters` returns distinct genre names, tags, official ratings, and
+production years. `GET /Items/Filters2` returns genre names with opaque IDs
+and tags. Both routes require authentication, use `no-store`, and apply the
+selected user's current library, path, and parental restrictions. An
+administrator can select another user; an ordinary user cannot.
+
+The scope accepts `userId`, `parentId`, `includeItemTypes`, `mediaTypes`, and
+`recursive`, with PascalCase aliases. Recursion defaults to true. Choices
+come from the full authorized scope before item pagination. More than 4,096
+distinct choices in a category returns 503 rather than a truncated menu.
+
+Item browsing accepts pipe-separated `Genres`, `GenreIds`, `Tags`, and
+`OfficialRatings`, plus comma-separated `Years`. Values within a category
+are alternatives; different categories are combined. Genre names and IDs
+can be used together. Name matching ignores case in PostgreSQL. An unknown
+genre ID returns no items. Each selection accepts at most 32 values, and
+names are limited to 128 bytes. Years must be between 1800 and 2300.
+
+Genres use the same provider precedence as item display metadata. Tags and
+official ratings come from local NFO data. A preferred premiere date supplies
+the production year; the local NFO `<year>` is the fallback. Movie sidecars
+can include repeated `<genre>` and `<tag>` elements. Tags are decoded,
+bounded, and deduplicated during import.
+
+Audio and subtitle language choices are empty because stream languages are
+not yet stored in the catalog. Nonempty language selections return 400.
+The filter routes also reject Live TV classification selectors such as
+`isAiring` and `isSports`; their behavior remains unsupported here.

@@ -3,11 +3,11 @@
   "gates": {
     "runtime_license_boundary": {
       "passed": false,
-      "detail": "The Cargo graph passes. Rust core Unicode tables and non-MIT musl components still require a complete linked-runtime audit or replacement."
+      "detail": "The Cargo graph passes. Linked Rust core Unicode tables remain outside the allowlist. Libc, unwind, compiler-builtins, and startup objects still require exact provenance and a complete retained-section audit or replacement."
     },
     "jellyfin_12_behavior": {
       "passed": false,
-      "detail": "81 of 364 operation declarations match. Bounded full-source HLS seeking and authenticated notifications for fresh and cached resume positions passed for a synthetic movie. A transient web playback notice and full behavioral compatibility remain unresolved."
+      "detail": "83 of 364 operation declarations match. Bounded full-source HLS seeking, resume notifications, and permission-aware catalog filters have local coverage. A transient web playback notice and full behavioral compatibility remain unresolved."
     },
     "feature_acceptance": {
       "passed": false,

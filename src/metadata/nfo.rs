@@ -22,6 +22,7 @@ pub(super) struct LocalNfo {
     pub premiere_date: Option<NaiveDate>,
     pub year: Option<i32>,
     pub genres: Vec<String>,
+    pub tags: Vec<String>,
     pub content_rating: Option<String>,
     pub policy_rating_value: Option<i16>,
     /// An explicit TVMaze series choice supplied by the library operator.
@@ -232,6 +233,7 @@ fn is_supported_field(name: &str) -> bool {
             | "year"
             | "mpaa"
             | "genre"
+            | "tag"
             | "tvmazeid"
     )
 }
@@ -282,6 +284,17 @@ fn apply_field(fields: &mut LocalNfo, name: &str, raw: &str) -> Result<(), &'sta
             }
         }
         "genre" => return Err("nfo-too-many-genres"),
+        "tag" if fields.tags.len() < MAX_GENRES => {
+            let tag = bound(value, 128)?;
+            if !fields
+                .tags
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&tag))
+            {
+                fields.tags.push(tag);
+            }
+        }
+        "tag" => return Err("nfo-too-many-tags"),
         _ => {}
     }
     Ok(())
@@ -352,6 +365,21 @@ mod tests {
                 "unexpected mapping for {unknown}"
             );
         }
+    }
+
+    #[test]
+    fn tags_are_bounded_decoded_and_deduplicated() {
+        let parsed = parse(b"<movie><tag> Weekend </tag><tag>weekend</tag><tag>Sea &amp; Sky</tag><nested><tag>ignored</tag></nested></movie>").unwrap();
+        assert_eq!(parsed.tags, ["Weekend", "Sea & Sky"]);
+        let oversized = format!("<movie><tag>{}</tag></movie>", "x".repeat(129));
+        assert_eq!(parse(oversized.as_bytes()), Err("nfo-field-too-large"));
+        let tags = (0..129)
+            .map(|index| format!("<tag>tag{index}</tag>"))
+            .collect::<String>();
+        assert_eq!(
+            parse(format!("<movie>{tags}</movie>").as_bytes()),
+            Err("nfo-too-many-tags")
+        );
     }
 
     #[test]

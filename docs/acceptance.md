@@ -1,20 +1,22 @@
 # Acceptance testing
 
-Puffinbox is partial and unreleased. The checks below passed locally on 2026-10-01.
+Puffinbox is partial and unreleased. The source and container checks below passed locally on 2026-10-02. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
 | Check | Result |
 | --- | --- |
 | Rust formatting and strict workspace Clippy | Passed |
-| Standard Rust workspace suite | 219 passed, 0 failed; 22 database cases skipped by default |
-| Disposable PostgreSQL regression suite | 21 integration cases and 1 database-backed unit test passed |
+| Standard Rust workspace suite | 220 passed, 0 failed; 23 database cases skipped by default |
+| Disposable PostgreSQL regression suite | 22 integration cases and 1 database-backed unit test passed |
 | Python acceptance and route-report tests | 23 passed |
 | Browser helpers, playlists, Live TV, offline cache, and book reader | Passed; book reader has 8 Node cases |
 | Strict Cargo dependency audit and full notices | Passed with MIT and Apache-2.0 as the only allowed licenses |
 | Static Linux server and scratch image build | Passed |
 | Outbound HTTPS verification | Trusted CA accepted; wrong CA and wrong host rejected in both the source process and scratch container |
-| Isolated container acceptance | 23 passed, 0 failed |
+| Isolated container acceptance | 24 passed, 0 failed |
 
-The container result applies to operator test image `sha256:60ac63362067f38aebd49ca9bbd38e821c93c8d426af9f1da56a5a17f797fa19`. It was built from the working tree at `a52ef31`, including authenticated socket notifications. The run finished at 12:02 UTC on 2026-10-01. The server used its bundled web files; no source overlay was mounted. Its FFmpeg tools are supplied separately from the server image. The generated ledger, `acceptance-socket-results.json`, is kept in ignored local storage, alongside synthetic fixtures and credentials. The ledger records a dirty working tree and no commit build label. The earlier 21-check HLS ledger remains preserved separately.
+The container result applies to operator test image `sha256:90ca0933f76ab4fa01acbe6701d8bdfd3a603120a838aa8ed8d29ea1c5386152`, assembled from core image `sha256:f4d534f217a3dddb5ea7eaffad0fc35ad9b08a3ee7e637f02ea4afd314919d42`. It was built from the working tree at `f33c138`, including catalog filters and their cache-header fix. The run finished at 20:24 UTC on 2026-10-01 (2026-10-02 locally). The server used its bundled web files; no source overlay was mounted. Its FFmpeg tools are supplied separately from the server image. The generated ledger, `acceptance-filters-cache-20261002-results.json`, is kept in ignored local storage, alongside synthetic fixtures and credentials. The ledger records a dirty working tree and no commit build label. Earlier HLS and socket ledgers remain preserved. The first filter run failed on a missing cache header; its result is preserved separately, and the rebuilt image passed the unchanged assertion.
+
+Catalog filters have a real PostgreSQL regression for NFO tags and years, preferred provider fields, stable genre IDs, category combinations, pagination/counts, private and disabled libraries, hidden paths, parental policy, changed permissions, plugin disablement, invalid input, and the 4,096-choice bound. The container check verifies both public DTO shapes, private cache headers, a known genre selection, unknown IDs, and invalid years. A synthetic movie sidecar supplied `Documentary`, `Clock test`, and `2020`. Official Jellyfin web displayed these choices; selecting all three narrowed three movies to that one item. After container restart and a fresh login, the selected filters still returned the same item. The screenshot and unchanged-response proxy trace are preserved locally. Stream-language choices and Live TV classification selectors remain unsupported.
 
 The restart check starts a 300-second HLS fixture, serves a playlist and segment, commits its playback position, and requests a fresh transcode batch before stopping the container while FFmpeg is active. It requires an exit code of zero, no forced decoder termination, and confirmation that all media children drained. After restart it checks catalog persistence, playback-row closure, the committed resume position, and rejection of the old HLS session. This run passed all those assertions. Unit tests also cover a cooperating child and a child that ignores termination, including reaping and the bounded forced-stop fallback.
 
@@ -34,13 +36,17 @@ The installed Jellyfin Media Player authenticated, browsed the library, decoded 
 
 After container restart, the installed desktop player offered the saved 48-second position and resumed playback from it using the rebuilt image's bundled interface.
 
+Those native-player observations apply to the earlier full-duration HLS image. The 2026-10-02 desktop attempt exposed accessibility controls but captured a blank player window. Trying the documented display preference and a localhost official-web connection did not produce a usable result; the original configuration was restored. There is no new native-player pass for the filter image or the desktop client's usual Jellyfin interface.
+
+A separate timestamp probe against the socket image checked three 64-second HLS batch boundaries. Adjacent video packets had no timestamp gap. AAC packets overlapped by about 21–24 milliseconds at each checked boundary. This records packet timing only; audible continuity and its relationship to the client's nonfatal HLS warnings remain unresolved.
+
 The browser regression suite simulates the documented native bridge to check deferred resume, backward stream replacement, pause preservation, position-before-duration event ordering, and progress saved after an early native finish. These checks do not simulate decoding or establish mpv compatibility. An early finish below the end of the source no longer marks the item complete or replaces the last observed position with a post-finish zero.
 
 Full-duration transcoding applies to trusted source durations up to four hours. It generates 64-second batches on demand, using the existing two-encoder limit and 32-session bound. Each session has a 2 GiB output limit and a 60-second idle timeout. There is no cache eviction yet, so a long or high-bitrate movie can exhaust that limit. Unknown-duration and stream-copy paths retain their existing bounded HLS behavior. These limits do not support the requested production stream count.
 
 The demo server reports version 12.1.0, while the route comparison stays pinned to 12.0.0. The proxy forwards API response bodies unchanged and fetches only compiled web assets from the official demo. Public demo PlaybackInfo responses were also compared without reading the server or client implementation. Earlier client observations are [historical](validation-history.md).
 
-The source is published at [peppermintish/puffinbox](https://github.com/peppermintish/puffinbox). [Cloud CI passed at `a52ef31`](https://github.com/peppermintish/puffinbox/actions/runs/36854813552), including the full-duration HLS source/static-build checks and isolated container acceptance. Socket changes await their own cloud pass. Release packaging is blocked by [the release gates](release-gates.json): the Cargo audit does not cover Rust's linked Unicode tables or musl, and full API behavior, features, external clients, remote access, and scale still need validation.
+The source is published at [peppermintish/puffinbox](https://github.com/peppermintish/puffinbox). [Cloud CI passed at `a52ef31`](https://github.com/peppermintish/puffinbox/actions/runs/36854813552). At [`f33c138`](https://github.com/peppermintish/puffinbox/actions/runs/36909587357), isolated container acceptance passed, but the source job failed in the Live TV browser check while accessing a missing channel control. The test now waits for the retry and refreshed controls to finish; ordinary and throttled local runs passed. The older test also passed when throttled locally, so the cloud failure has not been conclusively reproduced. Filters and the synchronization fix await a complete cloud pass. Release packaging is blocked by [the release gates](release-gates.json): the Cargo audit does not cover the complete linked runtime, and full API behavior, features, external clients, remote access, and scale still need validation.
 
 ## Requirements
 

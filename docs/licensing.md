@@ -28,7 +28,7 @@ Vendored MIT/Apache sources retain their upstream notices. Exact tarball checksu
 
 Cargo auditing does not cover the prebuilt Rust standard library or libc. The current unstripped static server contains `core::unicode::unicode_data` symbols for alphabetic, whitespace, case conversion, and related tables. Rust's `COPYRIGHT-library.html` assigns Unicode-3.0 to `library/core/src/unicode` data. That is outside the requested MIT/Apache-2.0 boundary.
 
-Musl's copyright record also includes components under BSD, ISC, and other terms alongside its main MIT license. The exact linked subset needs an audit or replacement. Keeping notices does not turn those components into MIT/Apache code. The build bundle retains the Rust and musl notices, but the whole binary/image is not claimed to meet the requested boundary.
+The [static link audit](runtime-link-audit.md) identifies 389 selected libc archive members, five unwind members, and the target's startup objects. Musl's source notices include other terms alongside its main MIT license; the limited math-file review does not clear the whole selected subset. The unwind, compiler-builtins, and startup inputs also need exact provenance and retained-section review. Keeping notices does not change a component's license. The build bundle retains Rust and builder-musl notices, but the whole binary/image is not claimed to meet the requested boundary.
 
 Release packaging remains blocked in [release-gates.json](release-gates.json). Validation images can be built locally; no release image or archive has been published.
 

@@ -61,7 +61,7 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     fs::write(&classified_path, b"movie fixture").unwrap();
     fs::write(
         root_dir.join("Classified Movie.nfo"),
-        b"<movie><title>Classified Provider Title</title><plot>Policy description</plot><mpaa>PG-13</mpaa><genre>Drama</genre></movie>",
+        b"<movie><title>Classified Provider Title</title><plot>Policy description</plot><mpaa>PG-13</mpaa><genre>Drama</genre><tag>Sidecar tag</tag><year>2020</year></movie>",
     )
     .unwrap();
     // A generated, valid 1x1 RGBA PNG keeps the transport/ETag assertion
@@ -336,7 +336,19 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     assert_eq!(classified_body["Name"], "Classified Provider Title");
     assert_eq!(classified_body["Overview"], "Policy description");
     assert_eq!(classified_body["Genres"][0], "Drama");
+    assert_eq!(classified_body["Tags"], json!(["Sidecar tag"]));
+    assert_eq!(classified_body["ProductionYear"], 2020);
     assert_eq!(classified_body["OfficialRating"], "PG-13");
+    let (filters_status, filters_body) =
+        call_json(&router, "GET", "/Items/Filters", &token, None, None).await;
+    assert_eq!(filters_status, StatusCode::OK);
+    assert_eq!(filters_body["Tags"], json!(["Sidecar tag"]));
+    assert!(
+        filters_body["Years"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(2020))
+    );
     let (hints_status, hints_body) = call_json(
         &router,
         "GET",

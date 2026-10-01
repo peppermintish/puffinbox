@@ -134,6 +134,7 @@ pub fn router(state: AppState) -> Router {
     });
     core.merge(crate::media_features::router(state.clone()))
         .merge(crate::catalog_navigation::router(state.clone()))
+        .merge(crate::catalog_filters::router(state.clone()))
         .merge(crate::client_connection::router(state.clone()))
         .merge(crate::user_settings::router(state.clone()))
         .merge(crate::playlists::router(state.clone()))
@@ -192,6 +193,7 @@ async fn add_response_security_headers(
 ) -> Response {
     let is_web_asset = request.uri().path() == "/web" || request.uri().path().starts_with("/web/");
     let is_media_token_exchange = request.uri().path() == "/Users/Me/MediaAccessToken";
+    let is_catalog_filter = matches!(request.uri().path(), "/Items/Filters" | "/Items/Filters2");
     let is_media_token_exchange_post =
         is_media_token_exchange && request.method() == axum::http::Method::POST;
     let (parts, body) = request.into_parts();
@@ -224,13 +226,15 @@ async fn add_response_security_headers(
             HeaderValue::from_static("no-cache, must-revalidate"),
         );
     }
-    if is_media_token_exchange {
+    if is_media_token_exchange || is_catalog_filter {
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         response
             .headers_mut()
             .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    }
+    if is_media_token_exchange {
         response
             .headers_mut()
             .remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
@@ -2226,7 +2230,7 @@ mod library_request_tests {
 }
 
 #[derive(Deserialize, Default)]
-struct ItemsQueryParams {
+pub(crate) struct ItemsQueryParams {
     #[serde(default, rename = "ParentId", alias = "parentId")]
     parent_id: Option<Uuid>,
     #[serde(default, rename = "SearchTerm", alias = "searchTerm")]
@@ -2257,10 +2261,41 @@ struct ItemsQueryParams {
     filters: Option<String>,
     #[serde(default, rename = "UserId", alias = "userId")]
     user_id: Option<Uuid>,
+    #[serde(default, rename = "Genres", alias = "genres")]
+    genres: Option<String>,
+    #[serde(default, rename = "GenreIds", alias = "genreIds")]
+    genre_ids: Option<String>,
+    #[serde(default, rename = "Tags", alias = "tags")]
+    tags: Option<String>,
+    #[serde(default, rename = "OfficialRatings", alias = "officialRatings")]
+    official_ratings: Option<String>,
+    #[serde(default, rename = "Years", alias = "years")]
+    years: Option<String>,
+    #[serde(default, rename = "AudioLanguages", alias = "audioLanguages")]
+    audio_languages: Option<String>,
+    #[serde(default, rename = "SubtitleLanguages", alias = "subtitleLanguages")]
+    subtitle_languages: Option<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+impl ItemsQueryParams {
+    pub(crate) fn facet_scope(
+        parent_id: Option<Uuid>,
+        include_item_types: Option<String>,
+        media_types: Option<String>,
+        recursive: bool,
+    ) -> Self {
+        Self {
+            parent_id,
+            include_item_types,
+            media_types,
+            recursive: Some(recursive),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Default, Serialize)]
@@ -2295,6 +2330,10 @@ pub(crate) struct BaseItemDto {
     overview: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     genres: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    production_year: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     official_rating: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2378,6 +2417,10 @@ fn item_dto(
         genres: metadata
             .map(|metadata| metadata.genres.clone())
             .unwrap_or_default(),
+        tags: metadata
+            .map(|metadata| metadata.tags.clone())
+            .unwrap_or_default(),
+        production_year: metadata.and_then(|metadata| metadata.production_year),
         official_rating: metadata.and_then(|metadata| metadata.official_rating.clone()),
         community_rating: metadata.and_then(|metadata| metadata.community_score),
         premiere_date: metadata
@@ -2417,7 +2460,22 @@ struct ItemsResultDto {
     start_index: i64,
 }
 
-fn item_query(params: ItemsQueryParams, state: &AppState) -> Result<ItemQuery, ApiError> {
+pub(crate) fn item_query(
+    params: ItemsQueryParams,
+    state: &AppState,
+) -> Result<ItemQuery, ApiError> {
+    if [
+        params.audio_languages.as_deref(),
+        params.subtitle_languages.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| !value.trim().is_empty())
+    {
+        return Err(ApiError::BadRequest(
+            "Catalog language filters are not available yet".to_owned(),
+        ));
+    }
     let start_index = params.start_index.unwrap_or(0);
     if start_index < 0 {
         return Err(ApiError::BadRequest(
@@ -2540,6 +2598,13 @@ fn item_query(params: ItemsQueryParams, state: &AppState) -> Result<ItemQuery, A
         is_played,
         is_favorite,
         is_resumable,
+        facets: crate::catalog_filters::selections(
+            params.genres.as_deref(),
+            params.genre_ids.as_deref(),
+            params.tags.as_deref(),
+            params.official_ratings.as_deref(),
+            params.years.as_deref(),
+        )?,
     })
 }
 
@@ -2633,7 +2698,7 @@ pub(crate) async fn selected_user(
     }
 }
 
-async fn ensure_parent_visible(
+pub(crate) async fn ensure_parent_visible(
     state: &AppState,
     user: &UserRecord,
     parent_id: Option<Uuid>,
@@ -2764,6 +2829,7 @@ async fn latest_items(
         is_played: params.is_played,
         is_favorite: false,
         is_resumable: false,
+        facets: Default::default(),
     };
     let result = item_query_result(&state, &user, query).await?;
     Ok(Json(result.items))
@@ -2811,6 +2877,7 @@ async fn resume_items(
         is_played: None,
         is_favorite: false,
         is_resumable: true,
+        facets: Default::default(),
     };
     Ok(Json(item_query_result(&state, &user, query).await?))
 }
@@ -2857,6 +2924,7 @@ async fn show_seasons(
         is_played: None,
         is_favorite: false,
         is_resumable: false,
+        facets: Default::default(),
     };
     Ok(Json(item_query_result(&state, &user, query).await?))
 }
@@ -2894,6 +2962,7 @@ async fn show_episodes(
         is_played: None,
         is_favorite: false,
         is_resumable: false,
+        facets: Default::default(),
     };
     Ok(Json(item_query_result(&state, &user, query).await?))
 }
@@ -3055,6 +3124,7 @@ async fn list_music_persons(
         is_played: None,
         is_favorite: false,
         is_resumable: false,
+        facets: Default::default(),
     };
     let mut result = item_query_result(&state, &user, query).await?;
     for item in &mut result.items {
@@ -3267,6 +3337,7 @@ async fn list_music_artists(
         is_played: None,
         is_favorite: false,
         is_resumable: false,
+        facets: Default::default(),
     };
     Ok(Json(item_query_result(&state, &user, query).await?))
 }
@@ -3502,6 +3573,7 @@ async fn search_hints(
         is_played: None,
         is_favorite: false,
         is_resumable: false,
+        facets: Default::default(),
     };
     let (items, total) = db::browse_items(&state.db, &user, query).await?;
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
@@ -3855,6 +3927,8 @@ mod item_dto_tests {
             date_modified: None,
             overview: None,
             genres: Vec::new(),
+            tags: Vec::new(),
+            production_year: None,
             official_rating: None,
             community_rating: None,
             premiere_date: None,
@@ -3952,6 +4026,8 @@ mod item_dto_tests {
             overview: Some("Provider description".to_owned()),
             premiere_date: Some(chrono::NaiveDate::from_ymd_opt(2022, 3, 4).unwrap()),
             genres: vec!["Drama".to_owned()],
+            tags: vec!["Family night".to_owned()],
+            production_year: Some(2022),
             official_rating: Some("PG-13".to_owned()),
             community_score: Some(8.2),
             artwork_url: Some(format!("/Items/{}/Images/Primary", item.id)),

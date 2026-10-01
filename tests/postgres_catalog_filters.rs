@@ -1,0 +1,671 @@
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
+
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    extract::connect_info::ConnectInfo,
+    http::{Request, StatusCode},
+    response::Response,
+};
+use puffinbox::{AppState, Config, api, auth, db};
+use serde_json::{Value, json};
+use sqlx::{PgPool, postgres::PgPoolOptions, types::Json};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+mod common;
+
+#[tokio::test]
+#[ignore = "requires a disposable PostgreSQL database via PUFFINBOX_TEST_DATABASE_URL"]
+async fn facets_and_selections_share_metadata_and_current_user_boundaries() {
+    let database_url = env::var("PUFFINBOX_TEST_DATABASE_URL")
+        .expect("set PUFFINBOX_TEST_DATABASE_URL to a disposable PostgreSQL database");
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("puffinbox_filters_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    let selected_schema = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(Duration::from_secs(5))
+        .after_connect(move |connection, _| {
+            let schema = selected_schema.clone();
+            Box::pin(async move {
+                sqlx::query(&format!("SET search_path TO \"{schema}\""))
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&database_url)
+        .await
+        .unwrap();
+    common::apply_migrations(&pool).await.unwrap();
+    let run = Uuid::new_v4();
+    db::activate_run(&pool, run).await.unwrap();
+    let owner = Uuid::new_v4();
+    let peer = Uuid::new_v4();
+    let admin = Uuid::new_v4();
+    for (id, name, administrator) in [
+        (owner, "facets-owner", false),
+        (peer, "facets-peer", false),
+        (admin, "facets-admin", true),
+    ] {
+        sqlx::query("INSERT INTO users(id,username,username_norm,password_hash,is_admin,enable_remote_access,restrict_libraries,max_parental_rating,enable_live_tv_access) VALUES ($1,$2,$2,'unused-synthetic-hash',$3,TRUE,TRUE,50,FALSE)")
+            .bind(id).bind(name).bind(administrator).execute(&pool).await.unwrap();
+    }
+    let library = Uuid::new_v4();
+    let private = Uuid::new_v4();
+    let disabled = Uuid::new_v4();
+    for (id, name) in [
+        (library, "Visible facets"),
+        (private, "Private facets"),
+        (disabled, "Disabled facets"),
+    ] {
+        db::insert_library(
+            &pool,
+            run,
+            id,
+            name,
+            "movies",
+            &[PathBuf::from("/media")],
+            true,
+        )
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(disabled)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (user, id) in [(owner, library), (peer, private)] {
+        sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES ($1,$2)")
+            .bind(user)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let folder = item(&pool, library, None, "Folder", "/media/films").await;
+    let nested = item(
+        &pool,
+        library,
+        Some(folder),
+        "Folder",
+        "/media/films/nested",
+    )
+    .await;
+    let first = item(
+        &pool,
+        library,
+        Some(folder),
+        "Movie",
+        "/media/films/first.mkv",
+    )
+    .await;
+    let second = item(
+        &pool,
+        library,
+        Some(folder),
+        "Movie",
+        "/media/films/second.mkv",
+    )
+    .await;
+    let comedy = item(
+        &pool,
+        library,
+        Some(nested),
+        "Movie",
+        "/media/films/nested/comedy.mkv",
+    )
+    .await;
+    let audio = item(
+        &pool,
+        library,
+        Some(nested),
+        "Audio",
+        "/media/films/nested/song.flac",
+    )
+    .await;
+    for id in [first, second] {
+        metadata(
+            &pool,
+            id,
+            "local-nfo",
+            json!(["Drama", "Français"]),
+            json!({"year":2020,"tags":["Weekend"]}),
+            Some("PG-13"),
+            Some(50),
+        )
+        .await;
+        // A lower-priority result must not supply extra filter choices.
+        metadata(
+            &pool,
+            id,
+            "tvmaze",
+            json!(["LowerPriority"]),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    }
+    metadata(
+        &pool,
+        comedy,
+        "local-nfo",
+        json!(["Comedy"]),
+        json!({"year":2010,"tags":["Weekend","Short"]}),
+        Some("G"),
+        Some(0),
+    )
+    .await;
+    metadata(
+        &pool,
+        audio,
+        "local-nfo",
+        json!(["Jazz"]),
+        json!({"year":2022}),
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE item_metadata SET premiere_date='2021-04-02' WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(second).execute(&pool).await.unwrap();
+    let fallback = item(
+        &pool,
+        library,
+        Some(folder),
+        "Movie",
+        "/media/films/fallback.mkv",
+    )
+    .await;
+    metadata(
+        &pool,
+        fallback,
+        "local-nfo",
+        json!([]),
+        json!({"year":"bad","tags":"malformed"}),
+        Some("PG"),
+        Some(25),
+    )
+    .await;
+    metadata(
+        &pool,
+        fallback,
+        "tvmaze",
+        json!(["Culture"]),
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE item_metadata SET premiere_date='2004-03-02' WHERE item_id=$1 AND provider_key='tvmaze'")
+        .bind(fallback).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO trusted_plugins(plugin_id,name,version,api_version,manifest_sha256,binary_sha256,declared_license,declared_provenance,enabled,status) VALUES ('facet-test','Facet test','1',1,$1,$2,'MIT','Synthetic fixture',TRUE,'enabled')")
+        .bind("a".repeat(64)).bind("b".repeat(64)).execute(&pool).await.unwrap();
+    metadata(
+        &pool,
+        fallback,
+        "plugin:facet-test",
+        json!(["PluginGenre"]),
+        json!({"manifestSha256":"a".repeat(64),"moduleSha256":"b".repeat(64)}),
+        None,
+        None,
+    )
+    .await;
+
+    let rated = item(
+        &pool,
+        library,
+        Some(folder),
+        "Movie",
+        "/media/films/adult.mkv",
+    )
+    .await;
+    metadata(
+        &pool,
+        rated,
+        "local-nfo",
+        json!(["Restricted"]),
+        json!({"year":1999,"tags":["RestrictedTag"]}),
+        Some("R"),
+        Some(75),
+    )
+    .await;
+    let private_item = item(&pool, private, None, "Movie", "/media/private.mkv").await;
+    metadata(
+        &pool,
+        private_item,
+        "local-nfo",
+        json!(["PrivateGenre"]),
+        json!({"year":2001,"tags":["PrivateTag"]}),
+        Some("G"),
+        Some(0),
+    )
+    .await;
+    for (lib, path, kind, label) in [
+        (disabled, "/media/disabled.mkv", "Movie", "DisabledGenre"),
+        (library, "/media/.hidden/movie.mkv", "Movie", "HiddenGenre"),
+        (library, "/media/opaque.bin", "File", "FileGenre"),
+    ] {
+        let id = item(&pool, lib, None, kind, path).await;
+        metadata(
+            &pool,
+            id,
+            "local-nfo",
+            json!([label]),
+            json!({}),
+            Some("G"),
+            Some(0),
+        )
+        .await;
+    }
+    let recorded = item(&pool, library, None, "Movie", "/media/recorded.mkv").await;
+    metadata(
+        &pool,
+        recorded,
+        "local-nfo",
+        json!(["RecordingGenre"]),
+        json!({}),
+        Some("G"),
+        Some(0),
+    )
+    .await;
+    sqlx::query("UPDATE items SET metadata_json='{\"LiveTvRecording\":true}' WHERE id=$1")
+        .bind(recorded)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let config = Config {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        public_base_url: None,
+        database_url,
+        server_name: "Facet fixture".to_owned(),
+        web_root: PathBuf::from("web"),
+        data_dir: env::temp_dir().join(format!("puffinbox-facets-{schema}")),
+        ffmpeg_path: None,
+        max_scan_workers: 1,
+        max_page_size: 100,
+        access_token_lifetime_hours: 24,
+        cookie_secure: false,
+        cors_origins: Vec::new(),
+        trusted_proxies: Vec::new(),
+        local_networks: vec!["127.0.0.0/8".parse().unwrap()],
+        setup_token: None,
+        bootstrap_admin_username: None,
+        bootstrap_admin_password: None,
+    };
+    let state = AppState::new_for_run(pool.clone(), Arc::new(config), Uuid::new_v4(), run, None);
+    let mut tokens = Vec::new();
+    for user in [owner, peer, admin] {
+        tokens.push(
+            auth::issue_token(
+                &state,
+                &db::get_user(&pool, user).await.unwrap().unwrap(),
+                "facet-fixture",
+                "fixture",
+                "facet-client",
+            )
+            .await
+            .unwrap()
+            .token,
+        );
+    }
+    let router = api::router(state);
+    let owner_token = &tokens[0];
+    let legacy_response = call(&router, "/Items/Filters", Some(owner_token)).await;
+    assert_eq!(legacy_response.headers()["cache-control"], "no-store");
+    assert_eq!(legacy_response.headers()["pragma"], "no-cache");
+    let legacy = json_body(legacy_response).await;
+    assert_eq!(
+        legacy["Genres"],
+        json!(["Comedy", "Drama", "Français", "Jazz", "PluginGenre"])
+    );
+    assert_eq!(legacy["Tags"], json!(["Short", "Weekend"]));
+    assert_eq!(legacy["OfficialRatings"], json!(["G", "PG", "PG-13"]));
+    assert_eq!(legacy["Years"], json!([2004, 2010, 2020, 2021, 2022]));
+    let modern_response = call(&router, "/Items/Filters2", Some(owner_token)).await;
+    assert_eq!(modern_response.headers()["cache-control"], "no-store");
+    let modern = json_body(modern_response).await;
+    assert_eq!(modern["Tags"], legacy["Tags"]);
+    assert_eq!(modern["AudioLanguages"], json!([]));
+    assert_eq!(modern["SubtitleLanguages"], json!([]));
+    let genres = modern["Genres"].as_array().unwrap();
+    let id_for = |name: &str| {
+        genres.iter().find(|row| row["Name"] == name).unwrap()["Id"]
+            .as_str()
+            .unwrap()
+    };
+    for row in genres {
+        Uuid::parse_str(row["Id"].as_str().unwrap()).unwrap();
+    }
+    let repeated = json_body(call(&router, "/Items/Filters2", Some(owner_token)).await).await;
+    assert_eq!(repeated, modern);
+    let drama = json_body(
+        call(
+            &router,
+            &format!("/Items?Recursive=true&GenreIds={}", id_for("Drama")),
+            Some(owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(drama["TotalRecordCount"], 2);
+    let combined = json_body(call(&router,&format!("/Items?Recursive=true&GenreIds={}|{}&Tags=Weekend&Years=2010,2020&OfficialRatings=G|PG-13&Limit=1&StartIndex=1",id_for("Drama"),id_for("Comedy")),Some(owner_token)).await).await;
+    assert_eq!(combined["TotalRecordCount"], 2);
+    assert_eq!(combined["StartIndex"], 1);
+    assert_eq!(combined["Items"].as_array().unwrap().len(), 1);
+    let named = json_body(
+        call(
+            &router,
+            "/Items?Recursive=true&Genres=drama&Tags=weekend&Years=2021&OfficialRatings=pg-13",
+            Some(owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(named["TotalRecordCount"], 1);
+    assert_eq!(named["Items"][0]["Id"], second.to_string());
+    assert_eq!(named["Items"][0]["ProductionYear"], 2021);
+    assert_eq!(named["Items"][0]["Tags"], json!(["Weekend"]));
+    let unknown = json_body(
+        call(
+            &router,
+            &format!("/Items?Recursive=true&GenreIds={}", Uuid::new_v4()),
+            Some(owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(unknown["TotalRecordCount"], 0);
+    let direct = json_body(
+        call(
+            &router,
+            &format!("/Items/Filters?parentId={folder}&recursive=false&includeItemTypes=Movie"),
+            Some(owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        direct["Genres"],
+        json!(["Drama", "Français", "PluginGenre"])
+    );
+    let recursive = json_body(
+        call(
+            &router,
+            &format!("/Items/Filters?ParentId={folder}&Recursive=true&IncludeItemTypes=Movie"),
+            Some(owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        recursive["Genres"],
+        json!(["Comedy", "Drama", "Français", "PluginGenre"])
+    );
+    let music = json_body(
+        call(
+            &router,
+            "/Items/Filters?mediaTypes=Audio",
+            Some(owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(music["Genres"], json!(["Jazz"]));
+    let peer_facets = json_body(call(&router, "/Items/Filters", Some(&tokens[1])).await).await;
+    assert_eq!(peer_facets["Genres"], json!(["PrivateGenre"]));
+    let selected = json_body(
+        call(
+            &router,
+            &format!("/Items/Filters?userId={owner}"),
+            Some(&tokens[2]),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(selected, legacy);
+    let admin_facets = json_body(call(&router, "/Items/Filters", Some(&tokens[2])).await).await;
+    assert!(
+        admin_facets["Genres"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Restricted"))
+    );
+    assert!(
+        admin_facets["Genres"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PrivateGenre"))
+    );
+    assert!(
+        !admin_facets["Genres"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("DisabledGenre"))
+    );
+    for path in [
+        format!("/Items/Filters?userId={peer}"),
+        format!("/Items/Filters2?userId={peer}"),
+    ] {
+        assert_eq!(
+            call(&router, &path, Some(owner_token)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    for path in [
+        format!("/Items/Filters?parentId={private}"),
+        format!("/Items/Filters2?parentId={rated}"),
+        format!("/Items/Filters?parentId={disabled}"),
+        format!("/Items/Filters2?parentId={}", Uuid::new_v4()),
+    ] {
+        assert_eq!(
+            call(&router, &path, Some(owner_token)).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    for path in ["/Items/Filters", "/Items/Filters2"] {
+        let response = call(&router, path, None).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+    for path in [
+        "/Items?GenreIds=bad",
+        "/Items?Years=1799",
+        "/Items?Years=99999999999999999999",
+        "/Items/Filters?mediaTypes=invalid",
+        "/Items/Filters2?recursive=invalid",
+        "/Items/Filters2?isAiring=false",
+        "/Items/Filters2?isSports=true",
+    ] {
+        assert_eq!(
+            call(&router, path, Some(owner_token)).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+    // Disabling a trusted provider changes both the visible facet and its item selection.
+    sqlx::query(
+        "UPDATE trusted_plugins SET enabled=FALSE,status='disabled' WHERE plugin_id='facet-test'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let after = json_body(call(&router, "/Items/Filters", Some(owner_token)).await).await;
+    assert!(
+        after["Genres"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Culture"))
+    );
+    assert!(
+        !after["Genres"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PluginGenre"))
+    );
+    let old_id = json_body(
+        call(
+            &router,
+            &format!("/Items?Recursive=true&GenreIds={}", id_for("PluginGenre")),
+            Some(owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(old_id["TotalRecordCount"], 0);
+    sqlx::query("UPDATE users SET block_unrated_items=ARRAY['Music'] WHERE id=$1")
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let blocked = json_body(call(&router, "/Items/Filters", Some(owner_token)).await).await;
+    assert!(
+        !blocked["Genres"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Jazz"))
+    );
+    sqlx::query("DELETE FROM user_library_access WHERE user_id=$1")
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let revoked = json_body(call(&router, "/Items/Filters2", Some(owner_token)).await).await;
+    assert_eq!(revoked["Genres"], json!([]));
+    assert_eq!(revoked["Tags"], json!([]));
+    assert_eq!(
+        call(
+            &router,
+            &format!("/Items/Filters?parentId={library}"),
+            Some(owner_token)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // More distinct choices than the response bound must fail rather than return
+    // a misleading partial menu. This uses 33 rows of bounded metadata arrays.
+    let capped = Uuid::new_v4();
+    db::insert_library(
+        &pool,
+        run,
+        capped,
+        "Facet bound",
+        "movies",
+        &[PathBuf::from("/facet-bound")],
+        true,
+    )
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES ($1,$2)")
+        .bind(owner)
+        .bind(capped)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for chunk in 0..33 {
+        let id = item(
+            &pool,
+            capped,
+            None,
+            "Movie",
+            &format!("/facet-bound/{chunk}.mkv"),
+        )
+        .await;
+        let count = if chunk == 32 { 1 } else { 128 };
+        let labels = (0..count)
+            .map(|offset| format!("Genre{:04}", chunk * 128 + offset))
+            .collect::<Vec<_>>();
+        metadata(
+            &pool,
+            id,
+            "local-nfo",
+            json!(labels),
+            json!({}),
+            Some("G"),
+            Some(0),
+        )
+        .await;
+    }
+    assert_eq!(
+        call(&router, "/Items/Filters2", Some(owner_token))
+            .await
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let filtered = json_body(
+        call(
+            &router,
+            "/Items?Recursive=true&Genres=Genre4096",
+            Some(owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(filtered["TotalRecordCount"], 1);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+}
+
+async fn item(pool: &PgPool, library: Uuid, parent: Option<Uuid>, kind: &str, path: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO items(id,library_id,parent_id,name,sort_name,item_type,path,path_hash) VALUES ($1,$2,$3,$4,$4,$5,$4,$6)")
+        .bind(id).bind(library).bind(parent).bind(path).bind(kind).bind(db::path_hash(path))
+        .execute(pool).await.unwrap();
+    id
+}
+
+async fn metadata(
+    pool: &PgPool,
+    id: Uuid,
+    provider: &str,
+    genres: Value,
+    metadata: Value,
+    label: Option<&str>,
+    policy: Option<i16>,
+) {
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,genres,metadata_json,content_rating,policy_rating_scale,policy_rating_value) VALUES ($1,$2,$3,$4,$5,CASE WHEN $6::smallint IS NOT NULL THEN 'US-MPAA-v1' END,$6)")
+        .bind(id).bind(provider).bind(Json(genres)).bind(Json(metadata)).bind(label).bind(policy)
+        .execute(pool).await.unwrap();
+}
+
+async fn call(router: &Router, path: &str, token: Option<&str>) -> Response {
+    let mut request = Request::builder().uri(path).extension(ConnectInfo(
+        "127.0.0.1:30000".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    if let Some(token) = token {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    router
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn json_body(response: Response) -> Value {
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).unwrap()
+}

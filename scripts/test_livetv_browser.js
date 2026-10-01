@@ -411,7 +411,10 @@ class DevTools {
   }
   async evaluate(sessionId, expression) {
     const response = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
-    if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'Browser evaluation failed.');
+    if (response.exceptionDetails) {
+      const detail = response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'Browser evaluation failed.';
+      throw new Error(detail + '\nSynthetic browser step: ' + expression.slice(0, 200));
+    }
     return response.result?.value;
   }
   async openPage(url, script) {
@@ -615,7 +618,7 @@ async function main() {
     assert.equal(await cdp.evaluate(manager.sessionId, 'document.querySelector("#error-injected") !== null'), false, 'guide errors inserted server text as markup');
     assert.ok(await cdp.evaluate(manager.sessionId, 'document.querySelector(".live-tv-grid").textContent.includes(\'Guide request <img id="error-injected" src=x>\')'), 'guide error details were not shown as text');
     await cdp.evaluate(manager.sessionId, 'document.querySelector(".live-tv-grid [data-live-tv-refresh]").click(); true');
-    await cdp.waitFor(manager, 'document.querySelector(".live-tv-program .data-row-main strong")?.textContent', (value) => value === 'Second synthetic programme', 'the guide retry');
+    await cdp.waitFor(manager, 'window.__liveTvPending === 0 && !document.querySelector(".live-tv-refreshing") && document.querySelector("[data-live-tv-channel=\\"' + CHANNEL_ID + '\\"]") !== null && document.querySelector(".live-tv-program .data-row-main strong")?.textContent === "Second synthetic programme"', Boolean, 'the completed guide retry and refreshed channel controls');
 
     await cdp.evaluate(manager.sessionId, 'document.querySelector("[data-live-tv-channel=\\"' + CHANNEL_ID + '\\"]").click(); true');
     await cdp.waitFor(manager, 'document.querySelector(".live-tv-program .data-row-main strong")?.textContent', (value) => value === PROGRAM_NAME, 'the first channel guide again');

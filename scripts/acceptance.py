@@ -570,6 +570,29 @@ def login(client: HttpClient, username: str, password: str, headers: dict[str, s
     return result["User"], result["AccessToken"]
 
 
+def verify_catalog_filters(client: HttpClient, library_id: str) -> None:
+    scope = "?parentId=" + urllib.parse.quote(library_id) + "&includeItemTypes=Movie"
+    _, legacy_headers, legacy = client.json("GET", "/Items/Filters" + scope)
+    _, _, modern = client.json("GET", "/Items/Filters2" + scope)
+    require(set(legacy) == {"Genres", "Tags", "OfficialRatings", "Years"}, "legacy filter DTO fields differ from the public schema")
+    require(set(modern) == {"Genres", "Tags", "AudioLanguages", "SubtitleLanguages"}, "filter DTO fields differ from the public schema")
+    require(all(isinstance(value, list) for value in [*legacy.values(), *modern.values()]), "filter choices are not arrays")
+    require(modern["Tags"] == legacy["Tags"], "filter routes disagree on visible tags")
+    require([entry.get("Name") for entry in modern["Genres"]] == legacy["Genres"], "filter routes disagree on visible genres")
+    require(legacy_headers.get("Cache-Control") == "no-store", "private catalog filter choices can be cached")
+    for entry in modern["Genres"]:
+        genre_id = str(uuid.UUID(entry["Id"]))
+        _, _, selected = client.json("GET", f"/Items?ParentId={library_id}&Recursive=true&GenreIds={genre_id}&IncludeItemTypes=Movie")
+        require(selected["TotalRecordCount"] > 0, "an advertised genre ID cannot select its items")
+    unknown = uuid.uuid4()
+    _, _, empty = client.json("GET", f"/Items?ParentId={library_id}&Recursive=true&GenreIds={unknown}&Limit=1")
+    require(empty["TotalRecordCount"] == 0 and empty["Items"] == [], "an unknown genre ID was silently ignored")
+    invalid, _, _ = client.request("GET", "/Items?Years=not-a-year")
+    require(invalid == 400, "an invalid production year was silently ignored")
+    report("Authenticated catalog filter DTOs, private cache headers, genre selection, and invalid-filter rejection", True,
+           "Known genre round trips run when the fixture catalog has genres; real NFO values and provider/policy boundaries have separate PostgreSQL coverage")
+
+
 def verify_hls_timeline(client: HttpClient, item_id: str, profile: dict, fixture_root: Path, ffprobe: str) -> None:
     playback = client.json("POST", f"/Items/{urllib.parse.quote(item_id)}/PlaybackInfo", {
         "DeviceProfile": profile, "StartTimeTicks": 1_231_855_880,
@@ -850,6 +873,7 @@ def run(args: argparse.Namespace) -> int:
     report("Synthetic media discovered by a completed, error-free catalog scan", True)
     verify_direct_play_acceptance(client, direct_play_fixture_path, args.scan_timeout)
     verify_scan_lifecycle(client, library_id, fixture_path.parent, args.scan_timeout)
+    verify_catalog_filters(client, library_id)
     verify_scanner_root_identity(
         client,
         args.scan_timeout,

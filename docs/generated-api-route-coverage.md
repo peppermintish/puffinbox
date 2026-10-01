@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-01T12:01:07.638734+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-01T19:52:11.013738+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `168`
-- Declared pairs matching a schema method/path: `81`
+- Unique declared server method/path pairs: `170`
+- Declared pairs matching a schema method/path: `83`
 - Declared pairs outside the schema: `87`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -79,6 +79,8 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /Sessions/Playing` | `src/api.rs` | match |
 | `POST /Sessions/Playing/Progress` | `src/api.rs` | match |
 | `POST /Sessions/Playing/Stopped` | `src/api.rs` | match |
+| `GET /Items/Filters` | `src/catalog_filters.rs` | match |
+| `GET /Items/Filters2` | `src/catalog_filters.rs` | match |
 | `GET /Items/{item_id}/Ancestors` | `src/catalog_navigation.rs` | match |
 | `GET /Items/{item_id}/ThemeMedia` | `src/catalog_navigation.rs` | match |
 | `GET /System/Endpoint` | `src/client_connection.rs` | match |
