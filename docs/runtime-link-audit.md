@@ -14,9 +14,11 @@ The binary, map, linker trace, symbols, ELF headers, archive inventory, and noti
 
 ## Inputs found
 
-The linker's archive-inclusion section names 389 selected members of Rust's bundled `self-contained/libc.a` and five members of `self-contained/libunwind.a`. Selection does not prove that every section of a member survived garbage collection. Counts use complete archive/member header lines before `Discarded input sections`; cross references and later section entries are excluded.
+The linker's archive-inclusion section names 389 selected members of Rust's bundled `self-contained/libc.a` and five members of `self-contained/libunwind.a`. There are 387 distinct libc member names; `free.lo` and `realloc.lo` each occur twice. Count names case-sensitively: `_Exit.lo` and `_exit.lo` are different inputs. Selection does not prove that every section of a member survived garbage collection. Counts use complete archive/member header lines before `Discarded input sections`; cross references and later section entries are excluded.
 
-The startup inputs include `rcrt1.o`, `crti.o`, `crtbeginS.o`, `crtendS.o`, and `crtn.o` from the target's self-contained directory. Their exact binary provenance and retained sections need review. Rust's [musl toolchain script for 1.98.1](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/src/ci/docker/scripts/musl-toolchain.sh) pins a musl-cross-make revision, GCC 9.2.0, musl 1.2.5, and two musl security patches. GCC's [startup source license header](https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-9.2.0/libgcc/crtstuff.c) specifies GPL with the GCC Runtime Library Exception. A runtime exception is not an MIT or Apache-2.0 license; matching that source to the shipped objects remains part of the audit.
+The startup inputs include `rcrt1.o`, `crti.o`, `crtbeginS.o`, `crtendS.o`, and `crtn.o` from the target's self-contained directory. Rust's [musl toolchain script for 1.98.1](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/src/ci/docker/scripts/musl-toolchain.sh) pins a musl-cross-make revision, musl 1.2.5, and two musl security patches. Its introductory comment lists GCC 9.2.0 and Binutils 2.31.1, but debug metadata in the actual `rcrt1.o` reports GCC 9.4.0; `crti.o` and `crtn.o` report GNU AS 2.44. The comment does not establish the shipped compiler version.
+
+`crtbeginS.o` and `crtendS.o` contain no debug source identity in this probe. Their SHA-256 values are `297960e338581a38bbfcbee45169a847bcdc5527ccaf68abe95b72b3b0856bed` and `0d11009c048ae289cdf184d726b767debc2972321e143838d28d7b6802b69c7c`. GCC's [9.4 startup source license header](https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-9.4.0/libgcc/crtstuff.c) specifies GPL with the GCC Runtime Library Exception. A runtime exception is not an MIT or Apache-2.0 license; matching that source to the shipped objects and checking retained sections remain part of the audit.
 
 The unstripped server contains `core::unicode::unicode_data` symbols. The compiler's `COPYRIGHT-library.html` assigns Unicode-3.0 to the corresponding data. The current binary therefore cannot be described as meeting the requested boundary.
 
@@ -26,9 +28,15 @@ The selected unwind members include `UnwindLevel1`, register save/restore, and `
 
 The official [musl 1.2.5 archive](https://musl.libc.org/releases/musl-1.2.5.tar.gz) was downloaded for its notices. Its SHA-256 is `a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4`. No implementation was copied into Puffinbox.
 
-Leading license comments were checked for the selected math members `ceil`, `ceilf`, `floor`, `floorf`, `pow`, `pow_data`, `rint`, `rintf`, `round`, `trunc`, `truncf`, `exp_data`, and `frexpl`. The power and exponential data files identify MIT; the other checked files have no separate leading copyright notice and fall under the archive's stated default notice. This limited review does not clear all 389 selected libc members or prove their exact relationship to the patched compiler archive.
+An initial review checked 13 math members. A broader name-based inventory then matched 385 of the 387 distinct selected member names to source candidates, preferring x86-64 files over generic names. Six candidates have explicit leading notices: `__set_thread_area`, `__unmapself`, `exp_data`, `pow`, `pow_data`, and `qsort`; all six identify MIT. Debug metadata identifies the two previously unmatched names, `malloc` and `aligned_alloc`, as files under `src/malloc/mallocng`, built with GCC 9.4.0.
+
+This inventory is not complete license clearance. Name matching does not establish exact source identity, and leading comments do not account for included headers, patches, or every retained section. The duplicate allocator members need separate extraction; concatenating same-named archive members can conceal their individual provenance. These gaps remain open.
 
 The builder's Debian musl copyright file and Rust's bundled libc are separate evidence. A notice for the builder package does not identify the target archive's version or clear its linked subset.
+
+## Panic-abort probe
+
+A separate build used `CARGO_PROFILE_RELEASE_PANIC=abort` in the same isolated builder. It succeeded with binary SHA-256 `73d023b8be6cf52ae447f658a0cc2f4ff703d2198b706235d79294e098298936`. Its map still selects 389 libc members and five unwind members; its symbols still include core Unicode tables and unwind functions. Changing this profile alone does not remove the identified blockers. No production panic setting was changed. Cargo also [ignores this setting for ordinary tests](https://doc.rust-lang.org/cargo/reference/profiles.html#panic), so passing the standard suite would not validate an aborting production build.
 
 ## Reproducing the link inventory
 

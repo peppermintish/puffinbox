@@ -15,7 +15,7 @@
     },
     "external_client_and_remote_security": {
       "passed": false,
-      "detail": "Broader external client, reverse-proxy, and remote-network acceptance remains incomplete."
+      "detail": "29 local HTTPS proxy checks passed with synthetic remote addresses. Internet deployment, broader external-client behavior, proxy configurations, and external security review remain incomplete."
     },
     "operational_scale": {
       "passed": false,

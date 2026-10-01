@@ -12,9 +12,12 @@ Puffinbox is partial and unreleased. The source and container checks below passe
 | Strict Cargo dependency audit and full notices | Passed with MIT and Apache-2.0 as the only allowed licenses |
 | Static Linux server and scratch image build | Passed |
 | Outbound HTTPS verification | Trusted CA accepted; wrong CA and wrong host rejected in both the source process and scratch container |
+| HTTPS proxy and remote-access policy | 29 local checks passed in an isolated Docker fixture |
 | Isolated container acceptance | 24 passed, 0 failed |
 
 The container result applies to operator test image `sha256:90ca0933f76ab4fa01acbe6701d8bdfd3a603120a838aa8ed8d29ea1c5386152`, assembled from core image `sha256:f4d534f217a3dddb5ea7eaffad0fc35ad9b08a3ee7e637f02ea4afd314919d42`. It was built from the working tree at `f33c138`, including catalog filters and their cache-header fix. The run finished at 20:24 UTC on 2026-10-01 (2026-10-02 locally). The server used its bundled web files; no source overlay was mounted. Its FFmpeg tools are supplied separately from the server image. The generated ledger, `acceptance-filters-cache-20261002-results.json`, is kept in ignored local storage, alongside synthetic fixtures and credentials. The ledger records a dirty working tree and no commit build label. Earlier HLS and socket ledgers remain preserved. The first filter run failed on a missing cache header; its result is preserved separately, and the rebuilt image passed the unchanged assertion.
+
+The same core image passed 29 HTTPS proxy checks using a separate database, accounts, private backend network, and loopback TLS listener. The external Python test image was pinned by digest. Certificate verification accepted the fixture CA and rejected a different CA and hostname. The checks covered the advertised HTTPS origin, secure cookies, local and remote login, active-session policy changes, spoofed forwarding headers, untrusted peers, same-origin token exchange, CORS and fetch-metadata restrictions, and logout. The passing ledger is preserved at `.local/remote-access-20261002-f/results.json`; the fixture removed only resources carrying its own ownership label. Earlier fixture setup failures are preserved separately. This is a local proxy test with synthetic remote addresses, not an Internet-facing deployment or comprehensive security review.
 
 Catalog filters have a real PostgreSQL regression for NFO tags and years, preferred provider fields, stable genre IDs, category combinations, pagination/counts, private and disabled libraries, hidden paths, parental policy, changed permissions, plugin disablement, invalid input, and the 4,096-choice bound. The container check verifies both public DTO shapes, private cache headers, a known genre selection, unknown IDs, and invalid years. A synthetic movie sidecar supplied `Documentary`, `Clock test`, and `2020`. Official Jellyfin web displayed these choices; selecting all three narrowed three movies to that one item. After container restart and a fresh login, the selected filters still returned the same item. The screenshot and unchanged-response proxy trace are preserved locally. Stream-language choices and Live TV classification selectors remain unsupported.
 
@@ -46,7 +49,7 @@ Full-duration transcoding applies to trusted source durations up to four hours. 
 
 The demo server reports version 12.1.0, while the route comparison stays pinned to 12.0.0. The proxy forwards API response bodies unchanged and fetches only compiled web assets from the official demo. Public demo PlaybackInfo responses were also compared without reading the server or client implementation. Earlier client observations are [historical](validation-history.md).
 
-The source is published at [peppermintish/puffinbox](https://github.com/peppermintish/puffinbox). [Cloud CI passed at `a52ef31`](https://github.com/peppermintish/puffinbox/actions/runs/36854813552). At [`f33c138`](https://github.com/peppermintish/puffinbox/actions/runs/36909587357), isolated container acceptance passed, but the source job failed in the Live TV browser check while accessing a missing channel control. The test now waits for the retry and refreshed controls to finish; ordinary and throttled local runs passed. The older test also passed when throttled locally, so the cloud failure has not been conclusively reproduced. Filters and the synchronization fix await a complete cloud pass. Release packaging is blocked by [the release gates](release-gates.json): the Cargo audit does not cover the complete linked runtime, and full API behavior, features, external clients, remote access, and scale still need validation.
+The source is published at [peppermintish/puffinbox](https://github.com/peppermintish/puffinbox). [Both cloud CI jobs passed at `b179b9d`](https://github.com/peppermintish/puffinbox/actions/runs/36922094308), covering source, browser, dependency notices, static build, TLS verification, and isolated container acceptance. At [`f33c138`](https://github.com/peppermintish/puffinbox/actions/runs/36909587357), isolated container acceptance passed, but the source job failed in the Live TV browser check while accessing a missing channel control. The test now waits for the retry and refreshed controls to finish; ordinary and throttled local runs and the current cloud run passed. The older test also passed when throttled locally, so the earlier failure has not been conclusively reproduced. Release packaging is blocked by [the release gates](release-gates.json): the Cargo audit does not cover the complete linked runtime, and full API behavior, features, external clients, remote access, and scale still need validation.
 
 ## Requirements
 
@@ -60,6 +63,18 @@ The service listens on `http://127.0.0.1:18096` and PostgreSQL is published only
 For wildcard binds behind a reverse proxy, set `PUFFINBOX_PUBLIC_BASE_URL` to the public HTTP(S) origin (for example `https://media.example.net`, without a path, credentials, query, or fragment). An HTTPS origin requires `PUFFINBOX_TRUSTED_PROXIES` to contain the proxy's actual CIDR and `PUFFINBOX_COOKIE_SECURE=true`. The trusted proxy CIDR lets the server evaluate remote-access policy against the client address forwarded by that proxy. `System/Info.LocalAddress` stays null when a wildcard bind has no configured public origin.
 
 PostgreSQL integration targets annotated with `#[ignore]` are intentional: they create isolated schemas or exercise destructive state and require an explicitly disposable database. The source and release workflows configure an explicit list of these targets for a temporary PostgreSQL service, with cloud results tracked separately from local results. Add each new ignored PostgreSQL target to both workflow lists when it is introduced; `cargo test --all-targets` alone does not execute ignored tests.
+
+To repeat the HTTPS proxy check on Linux, use an already-built core image and a fresh output directory:
+
+```sh
+docker pull postgres:18.6-alpine
+docker pull python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+python3 scripts/check_remote_access.py --image puffinbox:local \
+  --tools-image python@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b \
+  --output-dir .local/remote-access-new-run
+```
+
+The host needs Docker, Python 3.13 or later, and OpenSSL. The proxy script is a bounded test fixture, including a synthetic-address selector; it must not be deployed as a public reverse proxy. Its runtime and PostgreSQL are external test inputs and are not added to the project release image. Both CI workflows run this check and retain only the sanitized result ledger as an artifact. A complete cloud result for this newly added check is still pending.
 
 The Live TV source/guide/policy/timer regression is available locally as `tests/postgres_livetv.rs`. Run it only against a disposable PostgreSQL database by setting `PUFFINBOX_TEST_DATABASE_URL` in the environment; the test creates and drops its own random schema and does not print the connection string:
 
