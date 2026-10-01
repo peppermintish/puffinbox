@@ -34,6 +34,8 @@ An initial review checked 13 math members. A broader name-based inventory then m
 
 The duplicate allocator members were extracted separately with `ar xN`, preserving each occurrence. Debug metadata identifies the first `free.lo` as `src/malloc/free.c` and the second as `src/malloc/mallocng/free.c`; the first `realloc.lo` is `src/malloc/mallocng/realloc.c` and the second is `src/malloc/realloc.c`. All four identify GCC 9.4.0. Object hashes and metadata are preserved with the audit.
 
+Separate extraction of all 389 selected libc objects then found source-path metadata for 378. Every identified path exists in the official musl 1.2.5 archive; the join records candidate source hashes beside object hashes. Eleven objects lack that source-path metadata. These path matches improve the inventory without proving that the shipped objects were built from those exact source bytes.
+
 This inventory is not complete license clearance. Source-path metadata does not establish exact source bytes, and leading comments do not account for included headers, patches, or every retained section. These gaps remain open.
 
 The builder's Debian musl copyright file and Rust's bundled libc are separate evidence. A notice for the builder package does not identify the target archive's version or clear its linked subset.

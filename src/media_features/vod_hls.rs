@@ -421,7 +421,8 @@ async fn prepare_command(
             "-muxpreload",
             "0",
             "-hls_segment_options",
-            "mpegts_copyts=1",
+            // Each batch starts a new muxer and resets transport packet counters.
+            "mpegts_copyts=1:mpegts_flags=+initial_discontinuity",
             "-hls_flags",
             "independent_segments+temp_file",
             "-hls_segment_filename",

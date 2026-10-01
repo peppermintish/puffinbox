@@ -619,13 +619,13 @@ def verify_hls_timeline(client: HttpClient, item_id: str, profile: dict, fixture
     require(len(durations) == count and abs(sum(durations) - runtime) < 0.01,
             "the source runtime is not represented by its complete HLS playlist")
     with tempfile.TemporaryDirectory(prefix="puffinbox-hls-timeline-", dir=fixture_root) as scratch:
-        for index in (30, 2, count - 1):
+        for index in (30, 2, count - 1, 16, 48, 64):
             status, headers, segment = client.request("GET", session_path + f"/segment{index:06}.ts")
             require(status == 200 and len(segment) > 188 and headers.get("Content-Type") == "video/mp2t",
                     f"HLS seek segment {index} was unavailable")
             path = Path(scratch) / f"segment{index:06}.ts"
             path.write_bytes(segment)
-            result = subprocess.run([ffprobe, "-v", "error", "-show_entries", "stream=codec_name,start_time,duration",
+            result = subprocess.run([ffprobe, "-v", "error", "-show_entries", "stream=codec_name,id,start_time,duration",
                                      "-of", "json", str(path)], check=True, capture_output=True, text=True, timeout=20)
             streams = json.loads(result.stdout).get("streams", [])
             video = next((stream for stream in streams if stream.get("codec_name") == "h264"), None)
@@ -633,12 +633,29 @@ def verify_hls_timeline(client: HttpClient, item_id: str, profile: dict, fixture
                     f"HLS segment {index} does not carry its source-time video timestamp")
             require(abs(float(video.get("duration", -1)) - durations[index]) < 0.05,
                     f"HLS segment {index} does not have the advertised duration")
+            if index in (16, 48, 64):
+                first_packets = {}
+                require(len(segment) % 188 == 0, "HLS transport data is not packet aligned")
+                for offset in range(0, len(segment), 188):
+                    packet = segment[offset:offset + 188]
+                    require(packet[0] == 0x47, "HLS transport packet lost its sync byte")
+                    pid = ((packet[1] & 0x1F) << 8) | packet[2]
+                    first_packets.setdefault(pid, packet)
+                for stream in streams:
+                    if stream.get("codec_name") not in {"h264", "aac"}:
+                        continue
+                    pid = int(stream["id"], 0)
+                    packet = first_packets.get(pid)
+                    require(packet is not None, "HLS media stream has no transport packet")
+                    adaptation = (packet[3] >> 4) & 3
+                    require(adaptation in (2, 3) and packet[4] > 0 and bool(packet[5] & 0x80),
+                            f"HLS batch beginning at segment {index} does not signal the packet-counter reset for {stream['codec_name']}")
     status, _, _ = client.request("GET", session_path + f"/segment{count:06}.ts")
     require(status == 404, "HLS accepted a segment beyond the movie duration")
     status, _, _ = client.request("DELETE", session_path)
     require(status == 204, "full-timeline HLS session cancellation failed")
     report("Full-duration HLS resume, forward/backward segment requests, source timestamps, and end boundary", True,
-           f"{count} segments cover the {runtime:.3f}-second source; video timestamps matched 120, 8, and {(count - 1) * 4} seconds")
+           f"{count} segments cover the {runtime:.3f}-second source; video timestamps matched nonsequential requests and three batch starts signaled transport-counter resets")
 
 
 def ensure_user(admin: HttpClient, username: str, password: str, library_id: str | None, *, playback: bool, blocked_categories: list[str] | None = None) -> dict:
