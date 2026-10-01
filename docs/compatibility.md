@@ -4,13 +4,13 @@ Puffinbox is partial and unreleased. Local checks on 2026-10-01 passed; their sc
 
 ## Current-source gates
 
-The Rust workspace passes formatting, strict Clippy, and 211 standard tests. All 20 PostgreSQL integration cases and the database-backed recorder unit test passed against a disposable database. Python, browser, and book-reader checks passed. The current static container passed all 20 HTTP and restart acceptance checks. Source and scratch-container TLS checks passed.
+The Rust workspace passes formatting, strict Clippy, and 214 standard tests. All 20 PostgreSQL integration cases and the database-backed recorder unit test passed against a disposable database. Python, browser, and book-reader checks passed. The current static container passed all 20 HTTP and restart acceptance checks. Source and scratch-container TLS checks passed.
 
-The MIT/Apache-2.0 Cargo allowlist passes without exceptions. The linked Rust Unicode tables carry Unicode-3.0, and musl has additional component licenses. The runtime boundary is still open; see [licensing.md](licensing.md). No release tag or archive has been created. [Cloud CI passed at `fe76ccc`](https://github.com/peppermintish/puffinbox/actions/runs/36780885839); the newer preference and catalog changes await their own cloud result.
+The MIT/Apache-2.0 Cargo allowlist passes without exceptions. The linked Rust Unicode tables carry Unicode-3.0, and musl has additional component licenses. The runtime boundary is still open; see [licensing.md](licensing.md). No release tag or archive has been created. [Cloud CI passed at `11b531d`](https://github.com/peppermintish/puffinbox/actions/runs/36785032446); the navigation and playback fixes await their own cloud result.
 
 ## Jellyfin API target
 
-The target is the public [Jellyfin 12.0.0 OpenAPI document](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json). The [route report](generated-api-route-coverage.md) finds 79 exact method/path declarations among 364 operations. This counts declarations, not compatible behavior. Response semantics, query combinations, errors, and client expectations must be tested separately.
+The target is the public [Jellyfin 12.0.0 OpenAPI document](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json). The [route report](generated-api-route-coverage.md) finds 81 exact method/path declarations among 364 operations. This counts declarations, not compatible behavior. Response semantics, query combinations, errors, and client expectations must be tested separately.
 
 ## Requested scope
 
@@ -29,7 +29,7 @@ The target is the public [Jellyfin 12.0.0 OpenAPI document](https://repo.jellyfi
 | Books | A bounded PDF/EPUB reader with library, parental, and download policy checks; 8 Node reader cases pass. | PDF assets exclude non-allowlisted CMaps/fonts/decoders. Some PDFs cannot render fully. EPUB media, annotations, DRM, conversion, and broad client support are incomplete. |
 | Offline sync | Browser-origin IndexedDB transfers with chunk and whole-file SHA-256, interrupted resume, cached streaming, ranges, and account-change handling. | Copies belong to the browser/site origin. Real storage pressure, eviction, cross-device sync, and external clients need acceptance. Server deletion does not erase a downloaded copy. |
 | Deployment | A static Linux server image, external PostgreSQL, and a separately assembled FFmpeg test runtime. Active HLS shutdown and resume passed on the current image. | Whole-runtime license closure and production operations remain open. |
-| Official clients | Official Jellyfin web authenticated, registered session capabilities, and listed three synthetic movies through a localhost proxy. The installed player exposed Puffinbox's login form. The original Puffinbox web client completed a synthetic MP4. | Official web details and playback remain incomplete. The installed player's captured display was blank; native playback is unvalidated. |
+| Official clients | Official Jellyfin web authenticated, browsed movie details, decoded HLS video in Edge, paused, and stopped. The installed desktop player browsed Puffinbox's original interface and decoded HLS through its native player. The original web client completed a synthetic MP4. | Official web resume has a timeline mismatch. General seeking, track changes, codecs, and the desktop client's usual Jellyfin interface need acceptance. |
 | Scale | An earlier bounded [2,048-file scanner benchmark](scanner-scale.md) measured about 4,567 rows per second. | No result supports a 1 PB library, billions of files, or thousands of concurrent streams. |
 
 ## Licensing closure

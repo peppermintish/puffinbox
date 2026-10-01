@@ -66,6 +66,7 @@ pub(super) struct HlsOptions {
     play_session_id: Option<Uuid>,
     #[serde(default)]
     stream_copy: bool,
+    #[serde(alias = "StartTimeTicks")]
     start_time_ticks: Option<i64>,
     audio_stream_index: Option<i32>,
     subtitle_stream_index: Option<i32>,
@@ -2142,6 +2143,30 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
+    fn hls_resume_queries_accept_client_and_legacy_spelling() {
+        let client = axum::extract::Query::<HlsOptions>::try_from_uri(
+            &"/master.m3u8?StartTimeTicks=123456789".parse().unwrap(),
+        )
+        .unwrap()
+        .0;
+        let legacy = axum::extract::Query::<HlsOptions>::try_from_uri(
+            &"/master.m3u8?startTimeTicks=123456789".parse().unwrap(),
+        )
+        .unwrap()
+        .0;
+        assert_eq!(client.start_time_ticks, Some(123_456_789));
+        assert_eq!(client, legacy);
+        assert!(
+            axum::extract::Query::<HlsOptions>::try_from_uri(
+                &"/master.m3u8?StartTimeTicks=123456789&startTimeTicks=0"
+                    .parse()
+                    .unwrap(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn playlist_rewriter_accepts_only_safe_hls_tags_and_session_segments() {
         let item = Uuid::nil();
         let session = Uuid::new_v4();
@@ -2969,6 +2994,13 @@ mod tests {
         assert_eq!(negotiated_source["SupportsDirectPlay"], false);
         assert_eq!(negotiated_source["SupportsDirectStream"], true);
         assert_eq!(negotiated_source["SupportsTranscoding"], true);
+        assert_eq!(negotiated_source["TranscodingSubProtocol"], "hls");
+        assert_eq!(negotiated_source["TranscodingContainer"], "ts");
+        assert_eq!(negotiated_source["DefaultAudioStreamIndex"], audio_index);
+        assert_eq!(
+            negotiated_source["DefaultSubtitleStreamIndex"],
+            subtitle_index
+        );
         let negotiated_url = negotiated_source["DirectStreamUrl"].as_str().unwrap();
         assert!(negotiated_url.starts_with(&format!("/Videos/{video_id}/master.m3u8?")));
         assert!(negotiated_url.contains("streamCopy=true"));

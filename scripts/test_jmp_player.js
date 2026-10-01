@@ -33,7 +33,7 @@ function makePlayer(onLoad = (args) => args.at(-1)(true)) {
     pause() { calls.push(['pause']); },
     play() { calls.push(['play']); },
     seekTo(value) { calls.push(['seek', value]); },
-    getPosition(callback) { callback(12_345); },
+    getPosition(callback) { callback(12.345); },
   };
   return { player, calls };
 }
@@ -71,7 +71,7 @@ async function main() {
     pause() { calls.push(['pause']); },
     play() { calls.push(['play']); },
     seekTo(value) { calls.push(['seek', value]); },
-    getPosition(callback) { callback(12_345); },
+    getPosition(callback) { callback(12.345); },
   };
   const nativeProfile = { DirectPlayProfiles: [{ Type: 'Video', Container: 'mkv' }], TranscodingProfiles: [] };
   const stage = { getBoundingClientRect: () => ({ left: 8, top: 30, width: 800, height: 450 }) };
@@ -262,7 +262,8 @@ async function main() {
   player.positionUpdate.emit(25_000);
   player.updateDuration.emit(90_000);
   assert.deepEqual(events.slice(-3), [['playing', undefined], ['position', 25_000], ['duration', 90_000]]);
-  assert.equal(await adapter.getPosition(session), 12_345);
+  assert.equal(await adapter.getPosition(session), 12_345,
+    'native stop callbacks return seconds and must preserve millisecond progress');
   assert.equal(adapter.seek(session, 40_000), true);
   assert.ok(calls.some((entry) => entry[0] === 'seek' && entry[1] === 40_000));
   assert.equal(adapter.control(session, 'pause'), true);

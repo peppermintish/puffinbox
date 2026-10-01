@@ -18,7 +18,9 @@ use super::{
 pub(super) struct PlaybackInfoRequest {
     pub device_profile: Option<DeviceProfile>,
     pub start_time_ticks: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_stream_index")]
     pub audio_stream_index: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_stream_index")]
     pub subtitle_stream_index: Option<i32>,
     pub max_streaming_bitrate: Option<u64>,
     pub max_audio_channels: Option<u32>,
@@ -30,6 +32,44 @@ pub(super) struct PlaybackInfoRequest {
     pub always_burn_in_subtitle_when_transcoding: Option<bool>,
     #[serde(rename = "ApiKey")]
     pub(super) api_key: Option<String>,
+}
+
+fn deserialize_stream_index<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct StreamIndex;
+
+    impl<'de> serde::de::Visitor<'de> for StreamIndex {
+        type Value = Option<i32>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a stream index, null, or an empty string")
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+            i32::try_from(value).map(Some).map_err(E::custom)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+            i32::try_from(value).map(Some).map_err(E::custom)
+        }
+
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            // The official web client uses an empty string when no subtitle is selected.
+            if value.is_empty() {
+                Ok(None)
+            } else {
+                value.parse::<i32>().map(Some).map_err(E::custom)
+            }
+        }
+    }
+
+    deserializer.deserialize_any(StreamIndex)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -112,12 +152,18 @@ pub(super) struct MediaSource {
     supports_direct_play: bool,
     supports_direct_stream: bool,
     supports_transcoding: bool,
+    default_audio_stream_index: Option<i32>,
+    default_subtitle_stream_index: Option<i32>,
     media_streams: Vec<MediaStream>,
     formats: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     direct_stream_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcoding_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcoding_sub_protocol: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcoding_container: Option<&'static str>,
 }
 
 /// Build a deliberately conservative Live TV response. A tuner/IPTV source
@@ -188,10 +234,14 @@ pub(super) fn live_playback_info(
             supports_direct_play: false,
             supports_direct_stream: false,
             supports_transcoding: transcode,
+            default_audio_stream_index: None,
+            default_subtitle_stream_index: None,
             media_streams: Vec::new(),
             formats: vec!["m3u8".to_owned()],
             direct_stream_url: None,
             transcoding_url,
+            transcoding_sub_protocol: transcode.then_some("hls"),
+            transcoding_container: transcode.then_some("ts"),
         }],
     })
 }
@@ -542,10 +592,18 @@ pub(super) async fn negotiate(
             supports_direct_play: direct,
             supports_direct_stream: direct_stream_supported,
             supports_transcoding: transcode_supported,
+            default_audio_stream_index: selected_audio
+                .and_then(|stream| i32::try_from(stream.index).ok()),
+            default_subtitle_stream_index: request
+                .subtitle_stream_index
+                .filter(|index| *index >= 0),
             media_streams: streams,
             formats,
             direct_stream_url,
             transcoding_url,
+            transcoding_sub_protocol: (transcode_supported || direct_stream_supported)
+                .then_some("hls"),
+            transcoding_container: (transcode_supported || direct_stream_supported).then_some("ts"),
         }],
     };
     let facts = PlaybackProfileFacts::for_negotiation(
@@ -1072,10 +1130,14 @@ fn fallback_source(media: &ResolvedMedia, _play_session_id: &str) -> MediaSource
         supports_direct_play: false,
         supports_direct_stream: false,
         supports_transcoding: false,
+        default_audio_stream_index: None,
+        default_subtitle_stream_index: None,
         media_streams: Vec::new(),
         formats: Vec::new(),
         direct_stream_url: None,
         transcoding_url: None,
+        transcoding_sub_protocol: None,
+        transcoding_container: None,
     }
 }
 
@@ -1110,7 +1172,8 @@ fn build_hls_url(options: HlsUrlOptions<'_>) -> String {
     if stream_copy {
         query.push("streamCopy=true".to_owned());
     } else if let Some(ticks) = request.start_time_ticks.filter(|ticks| *ticks > 0) {
-        query.push(format!("startTimeTicks={ticks}"));
+        // Keep the resume argument in the spelling used by PlaybackInfo requests.
+        query.push(format!("StartTimeTicks={ticks}"));
     }
     if let Some(index) = request.audio_stream_index.filter(|_| output_audio) {
         query.push(format!("audioStreamIndex={index}"));
@@ -1529,6 +1592,77 @@ mod tests {
         profile_matches, total_bit_rate,
     };
 
+    #[test]
+    fn playback_stream_indices_accept_web_client_empty_and_query_values() {
+        for (wire, expected) in [
+            (serde_json::json!(null), None),
+            (serde_json::json!(""), None),
+            (serde_json::json!("-1"), Some(-1)),
+            (serde_json::json!("2"), Some(2)),
+            (serde_json::json!(3), Some(3)),
+        ] {
+            let request: PlaybackInfoRequest = serde_json::from_value(serde_json::json!({
+                "AudioStreamIndex": wire,
+                "SubtitleStreamIndex": wire
+            }))
+            .unwrap();
+            assert_eq!(request.audio_stream_index, expected);
+            assert_eq!(request.subtitle_stream_index, expected);
+        }
+        for wire in [
+            serde_json::json!(false),
+            serde_json::json!(1.5),
+            serde_json::json!(2147483648_u64),
+            serde_json::json!("2147483648"),
+            serde_json::json!("invalid"),
+        ] {
+            assert!(
+                serde_json::from_value::<PlaybackInfoRequest>(serde_json::json!({
+                    "SubtitleStreamIndex": wire
+                }))
+                .is_err()
+            );
+        }
+        let uri = "/Items/fixture/PlaybackInfo?AudioStreamIndex=2&SubtitleStreamIndex="
+            .parse()
+            .unwrap();
+        let request = axum::extract::Query::<PlaybackInfoRequest>::try_from_uri(&uri).unwrap();
+        assert_eq!(request.audio_stream_index, Some(2));
+        assert_eq!(request.subtitle_stream_index, None);
+    }
+
+    #[test]
+    fn live_playback_identifies_the_offered_streaming_protocol() {
+        for available in [true, false] {
+            let response = super::live_playback_info(
+                uuid::Uuid::new_v4(),
+                "Synthetic channel".to_owned(),
+                &PlaybackInfoRequest::default(),
+                available,
+            )
+            .unwrap();
+            let wire = serde_json::to_value(response).unwrap();
+            let source = &wire["MediaSources"][0];
+            assert_eq!(source["SupportsTranscoding"], available);
+            assert!(source["DefaultAudioStreamIndex"].is_null());
+            assert!(source["DefaultSubtitleStreamIndex"].is_null());
+            if available {
+                assert_eq!(source["TranscodingSubProtocol"], "hls");
+                assert_eq!(source["TranscodingContainer"], "ts");
+                assert!(
+                    source["TranscodingUrl"]
+                        .as_str()
+                        .unwrap()
+                        .contains("/master.m3u8?")
+                );
+            } else {
+                assert!(source.get("TranscodingSubProtocol").is_none());
+                assert!(source.get("TranscodingContainer").is_none());
+                assert!(source.get("TranscodingUrl").is_none());
+            }
+        }
+    }
+
     fn audio_probe(codec: Option<&str>, format: &str) -> ProbeInfo {
         ProbeInfo {
             format_names: vec![format.to_owned()],
@@ -1594,11 +1728,11 @@ mod tests {
             stream_copy: false,
             max_streaming_bitrate: Some(800_000),
         });
-        assert!(transcoded.contains("startTimeTicks=12345678"));
+        assert!(transcoded.contains("StartTimeTicks=12345678"));
         assert!(transcoded.contains("audioStreamIndex=2"));
         assert!(transcoded.contains("maxAudioChannels=1"));
         assert!(transcoded.ends_with("ApiKey=token%2B%2F%3D"));
-        assert!(!copied.contains("startTimeTicks="));
+        assert!(!copied.contains("StartTimeTicks="));
     }
 
     #[test]
@@ -2284,10 +2418,14 @@ mod tests {
             supports_direct_play: false,
             supports_direct_stream: false,
             supports_transcoding: false,
+            default_audio_stream_index: None,
+            default_subtitle_stream_index: None,
             media_streams: vec![extractable_text_subtitle],
             formats: Vec::new(),
             direct_stream_url: Some("fixture-direct-url-with-secret".to_owned()),
             transcoding_url: Some("fixture-transcode-url-with-secret".to_owned()),
+            transcoding_sub_protocol: Some("hls"),
+            transcoding_container: Some("ts"),
         };
         let response = PlaybackInfoResponse {
             play_session_id: "fixture-session-id".to_owned(),

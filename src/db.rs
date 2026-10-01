@@ -853,6 +853,74 @@ pub async fn get_item(pool: &PgPool, id: Uuid) -> Result<Option<ItemRecord>, sql
     row.as_ref().map(item_from_row).transpose()
 }
 
+pub(crate) async fn item_ancestors(
+    pool: &PgPool,
+    item: &ItemRecord,
+) -> Result<Vec<ItemRecord>, sqlx::Error> {
+    let rating = policy_rating_sql("i");
+    let rows = sqlx::query(&format!(
+        "WITH RECURSIVE lineage(id,parent_id,depth,visited) AS (\
+         SELECT id,parent_id,0,ARRAY[id] FROM items WHERE id=$1 AND library_id=$2 \
+         UNION ALL SELECT parent.id,parent.parent_id,lineage.depth+1,lineage.visited || parent.id \
+         FROM items parent JOIN lineage ON parent.id=lineage.parent_id \
+         WHERE parent.library_id=$2 AND lineage.depth<256 AND NOT parent.id=ANY(lineage.visited)) \
+         SELECT i.id,i.library_id,i.parent_id,i.name,i.sort_name,i.item_type,i.path,i.container,\
+         i.size_bytes,i.runtime_ticks,i.date_added,i.date_modified,{rating} AS rating,i.overview,i.metadata_json \
+         FROM lineage JOIN items i ON i.id=lineage.id WHERE lineage.depth>0 ORDER BY lineage.depth"
+    ))
+    .bind(item.id)
+    .bind(item.library_id)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(item_from_row).collect()
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ThemeMediaSort {
+    SortName,
+    Name,
+    Random,
+}
+
+pub(crate) async fn theme_media_items(
+    pool: &PgPool,
+    user: &UserRecord,
+    library_id: Uuid,
+    directory: &std::path::Path,
+    sort: ThemeMediaSort,
+    descending: bool,
+) -> Result<Vec<ItemRecord>, sqlx::Error> {
+    let Some(directory_text) = directory.to_str() else {
+        return Ok(Vec::new());
+    };
+    let rating = policy_rating_sql("i");
+    let mut query = QueryBuilder::<Postgres>::new(format!(
+        "SELECT i.id,i.library_id,i.parent_id,i.name,i.sort_name,i.item_type,i.path,i.container,\
+         i.size_bytes,i.runtime_ticks,i.date_added,i.date_modified,{rating} AS rating,i.overview,i.metadata_json \
+         FROM items i JOIN libraries l ON l.id=i.library_id \
+         WHERE l.enabled=TRUE AND i.path !~ '(^|/)[.]' AND i.library_id="
+    ));
+    query
+        .push_bind(library_id)
+        .push(" AND i.item_type IN ('Audio','Movie','Video','Episode','Trailer','MusicVideo') ");
+    push_user_visibility_filters(&mut query, user);
+    query.push(" AND ((regexp_replace(i.path,'/[^/]*$','')=").push_bind(directory_text.to_owned())
+        .push(" AND regexp_replace(i.path,'^.*/','') ~* '^theme[.]') OR (i.item_type='Audio' AND regexp_replace(i.path,'/[^/]*$','') IN (")
+        .push_bind(directory.join("theme-music").to_string_lossy().into_owned()).push(",")
+        .push_bind(directory.join("soundtracks").to_string_lossy().into_owned()).push(")) OR (i.item_type<>'Audio' AND regexp_replace(i.path,'/[^/]*$','')=")
+        .push_bind(directory.join("backdrops").to_string_lossy().into_owned()).push(")) ORDER BY ");
+    query.push(match sort {
+        ThemeMediaSort::Name => "i.name",
+        ThemeMediaSort::SortName => "i.sort_name",
+        ThemeMediaSort::Random => "random()",
+    });
+    query
+        .push(if descending { " DESC" } else { " ASC" })
+        .push(",i.id LIMIT 257");
+    let rows = query.build().fetch_all(pool).await?;
+    rows.iter().map(item_from_row).collect()
+}
+
 pub async fn item_navigation_links(
     pool: &PgPool,
     item_ids: &[Uuid],

@@ -1,13 +1,13 @@
 # Generated route declaration comparison
 
-Generated at 2026-09-30T21:51:53.601938+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-09-30T23:01:47.716814+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `164`
-- Declared pairs matching a schema method/path: `79`
-- Declared pairs outside the schema: `85`
+- Unique declared server method/path pairs: `167`
+- Declared pairs matching a schema method/path: `81`
+- Declared pairs outside the schema: `86`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
 
@@ -60,6 +60,7 @@ This is a source declaration comparison only. It does not establish that a match
 | `GET /Items` | `src/api.rs` | match |
 | `GET /Items/Counts` | `src/api.rs` | match |
 | `GET /Items/{item_id}` | `src/api.rs` | match |
+| `GET /Users/{user_id}/Items/{item_id}` | `src/api.rs` | custom / not in target schema |
 | `GET /Items/{item_id}/UserData` | `src/api.rs` | custom / not in target schema |
 | `POST /Items/{item_id}/UserData` | `src/api.rs` | custom / not in target schema |
 | `GET /UserItems/{item_id}` | `src/api.rs` | custom / not in target schema |
@@ -77,6 +78,8 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /Sessions/Playing` | `src/api.rs` | match |
 | `POST /Sessions/Playing/Progress` | `src/api.rs` | match |
 | `POST /Sessions/Playing/Stopped` | `src/api.rs` | match |
+| `GET /Items/{item_id}/Ancestors` | `src/catalog_navigation.rs` | match |
+| `GET /Items/{item_id}/ThemeMedia` | `src/catalog_navigation.rs` | match |
 | `GET /System/Endpoint` | `src/client_connection.rs` | match |
 | `GET /Playback/BitrateTest` | `src/client_connection.rs` | match |
 | `GET /Books/{item_id}/Reader` | `src/media_features/books.rs` | custom / not in target schema |

@@ -96,6 +96,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Items", get(browse_items))
         .route("/Items/Counts", get(item_counts))
         .route("/Items/{item_id}", get(get_item))
+        .route("/Users/{user_id}/Items/{item_id}", get(get_user_item))
         .route(
             "/Items/{item_id}/UserData",
             get(get_user_item_data).post(update_user_item_data),
@@ -131,6 +132,7 @@ pub fn router(state: AppState) -> Router {
         tracing::info_span!("http_request", method = %request.method(), path = %request.uri().path())
     });
     core.merge(crate::media_features::router(state.clone()))
+        .merge(crate::catalog_navigation::router(state.clone()))
         .merge(crate::client_connection::router(state.clone()))
         .merge(crate::user_settings::router(state.clone()))
         .merge(crate::playlists::router(state.clone()))
@@ -2271,7 +2273,7 @@ struct UserDataDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
-struct BaseItemDto {
+pub(crate) struct BaseItemDto {
     id: Uuid,
     server_id: Uuid,
     name: String,
@@ -2547,7 +2549,7 @@ struct UserViewsParams {
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
-struct LibraryViewDto {
+pub(crate) struct LibraryViewDto {
     id: Uuid,
     server_id: Uuid,
     name: String,
@@ -2567,7 +2569,7 @@ struct LibraryViewsResultDto {
     start_index: i64,
 }
 
-fn library_view_dto(library: &LibraryRecord, server_id: Uuid) -> LibraryViewDto {
+pub(crate) fn library_view_dto(library: &LibraryRecord, server_id: Uuid) -> LibraryViewDto {
     LibraryViewDto {
         id: library.id,
         server_id,
@@ -2615,7 +2617,7 @@ async fn browse_items(
     Ok(Json(item_query_result(&state, &selected, query).await?))
 }
 
-async fn selected_user(
+pub(crate) async fn selected_user(
     state: &AppState,
     current: &UserRecord,
     selected_id: Option<Uuid>,
@@ -3313,8 +3315,31 @@ async fn get_item(
     Query(params): Query<UserViewsParams>,
 ) -> Result<Response, ApiError> {
     let user = selected_user(&state, &current, params.user_id).await?;
+    catalog_item_response(&state, &user, item_id).await
+}
+
+async fn get_user_item(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(params): Query<UserViewsParams>,
+) -> Result<Response, ApiError> {
+    if params.user_id.is_some_and(|requested| requested != user_id) {
+        return Err(ApiError::BadRequest(
+            "Conflicting user identifiers".to_owned(),
+        ));
+    }
+    let user = selected_user(&state, &current, Some(user_id)).await?;
+    catalog_item_response(&state, &user, item_id).await
+}
+
+async fn catalog_item_response(
+    state: &AppState,
+    user: &UserRecord,
+    item_id: Uuid,
+) -> Result<Response, ApiError> {
     if let Some(library) = db::get_library(&state.db, item_id).await? {
-        if !db::library_visible_to_user(&state.db, &user, library.id).await? {
+        if !db::library_visible_to_user(&state.db, user, library.id).await? {
             return Err(ApiError::NotFound);
         }
         return Ok(Json(library_view_dto(&library, state.server_id)).into_response());
@@ -3322,13 +3347,13 @@ async fn get_item(
     let item = db::get_item(&state.db, item_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    if !db::item_visible_to_user(&state.db, &user, &item).await? {
+    if !db::item_visible_to_user(&state.db, user, &item).await? {
         return Err(ApiError::NotFound);
     }
-    Ok(Json(item_dto_for_user(&state, &user, &item).await?).into_response())
+    Ok(Json(item_dto_for_user(state, user, &item).await?).into_response())
 }
 
-async fn item_dto_for_user(
+pub(crate) async fn item_dto_for_user(
     state: &AppState,
     user: &UserRecord,
     item: &ItemRecord,

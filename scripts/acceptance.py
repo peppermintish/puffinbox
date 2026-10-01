@@ -876,6 +876,11 @@ def run(args: argparse.Namespace) -> int:
         report("Incompatible-media FFmpeg HLS playback", None, detail)
         return 2
 
+    require(source.get("TranscodingSubProtocol") == "hls", "PlaybackInfo does not identify its HLS streaming protocol")
+    require(source.get("TranscodingContainer") == "ts", "PlaybackInfo does not identify its MPEG-TS HLS segments")
+    require(source.get("DefaultAudioStreamIndex") == audio_index, "PlaybackInfo does not preserve the selected audio track")
+    require(source.get("DefaultSubtitleStreamIndex") == subtitle_index, "PlaybackInfo does not preserve the selected subtitle track")
+
     master_url = urllib.parse.urljoin(base_url + "/", transcode_url.lstrip("/"))
     status, _, master = client.request("GET", urllib.parse.urlsplit(master_url).path + ("?" + urllib.parse.urlsplit(master_url).query if urllib.parse.urlsplit(master_url).query else ""))
     require(status == 200 and b"#EXTM3U" in master, "transcoding master playlist was not returned")

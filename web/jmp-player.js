@@ -427,7 +427,8 @@
     }
     return callbackCommand(session.api.player, 'getPosition', [], timeout)
       .then((value) => {
-        session.positionMs = Math.max(0, Number(value) || 0);
+        // getPosition returns seconds; positionUpdate and the adapter use milliseconds.
+        session.positionMs = Math.max(0, (Number(value) || 0) * 1_000);
         return session.positionMs;
       });
   }
