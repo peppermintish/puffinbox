@@ -36,6 +36,7 @@ pub fn router(state: AppState) -> Router {
     let core = Router::new()
         .route("/", get(root_redirect))
         .route("/health", get(health))
+        .route("/socket", get(crate::websocket::connect))
         .route("/health/ready", get(ready))
         .route("/System/Info/Public", get(public_system_info))
         .route("/Branding/Configuration", get(branding_configuration))
@@ -1304,6 +1305,7 @@ async fn start_playback(
         }
         db::PlaybackStartResult::StaleRun => return Err(ApiError::Unavailable),
     }
+    state.user_events.publish(user.id, item_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1348,6 +1350,7 @@ async fn progress_playback(
     .await?
     .ok_or(ApiError::NotFound)?;
     let _ = crate::media_features::touch_playback_session(user.id, item_id, active.id).await;
+    state.user_events.publish(user.id, item_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1392,6 +1395,7 @@ async fn stop_playback(
         return Err(ApiError::Forbidden);
     }
     let _item = item.ok_or(ApiError::NotFound)?;
+    state.user_events.publish(user.id, item_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2261,7 +2265,7 @@ fn default_true() -> bool {
 
 #[derive(Default, Serialize)]
 #[serde(rename_all = "PascalCase")]
-struct UserDataDto {
+pub(crate) struct UserDataDto {
     played: bool,
     play_count: i32,
     is_favorite: bool,
@@ -3641,6 +3645,7 @@ async fn update_user_item_data(
         position_ticks,
     )
     .await?;
+    state.user_events.publish(user.id, item_id);
     let data = db::item_user_data(&state.db, user.id, &[item_id])
         .await?
         .remove(&item_id);
@@ -3692,6 +3697,7 @@ async fn update_item_played(
         params.date_played,
     )
     .await?;
+    state.user_events.publish(user.id, item_id);
     Ok(Json(
         user_item_data_dto(state, user.id, item_id, item.runtime_ticks).await?,
     ))
@@ -3730,6 +3736,7 @@ async fn update_item_favorite(
         return Err(ApiError::NotFound);
     }
     db::set_item_favorite(&state.db, state.run_id, user.id, item_id, favorite).await?;
+    state.user_events.publish(user.id, item_id);
     Ok(Json(
         user_item_data_dto(state, user.id, item_id, item.runtime_ticks).await?,
     ))
@@ -3748,6 +3755,22 @@ async fn user_item_data_dto(
         .as_ref()
         .map(|data| user_data_dto(data, item_id, runtime_ticks))
         .unwrap_or_else(|| empty_user_data(item_id)))
+}
+
+pub(crate) async fn socket_user_data(
+    state: &AppState,
+    user: &UserRecord,
+    item_id: Uuid,
+) -> Result<Option<UserDataDto>, ApiError> {
+    let Some(item) = db::get_item(&state.db, item_id).await? else {
+        return Ok(None);
+    };
+    if !db::item_visible_to_user(&state.db, user, &item).await? {
+        return Ok(None);
+    }
+    Ok(Some(
+        user_item_data_dto(state, user.id, item_id, item.runtime_ticks).await?,
+    ))
 }
 
 #[cfg(test)]

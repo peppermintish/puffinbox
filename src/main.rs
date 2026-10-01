@@ -134,6 +134,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     puffinbox::offline::start_worker(state.clone());
     puffinbox::metadata::start_worker(state.clone());
     let shutdown_requested = state.shutdown_requested.clone();
+    let socket_state = state.clone();
     let scan_slots = state.scan_slots.clone();
     let scan_worker_count = config.max_scan_workers;
     let address: SocketAddr = config.bind;
@@ -227,6 +228,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
     drop(lock_monitor);
     if force_stop {
         drop(serve);
+    }
+    if !socket_state.drain_user_sockets().await {
+        tracing::warn!(
+            "socket shutdown exceeded 5 seconds; remaining connections will be terminated"
+        );
     }
     match tokio::time::timeout(
         Duration::from_secs(5),

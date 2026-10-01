@@ -46,6 +46,58 @@ pub struct CurrentUser(pub UserRecord);
 #[derive(Clone, Debug)]
 pub struct MediaUser(pub UserRecord);
 
+pub(crate) struct SocketIdentity {
+    pub user: UserRecord,
+    pub token_hash: String,
+    pub local_client: bool,
+}
+
+impl FromRequestParts<AppState> for SocketIdentity {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let (token, from_cookie) = socket_token(&parts.headers, parts.uri.query())?;
+        // Browser upgrades can carry cookies from another origin. Apply the
+        // HTTP origin policy even though an upgrade uses GET.
+        if (from_cookie || parts.headers.contains_key(header::ORIGIN))
+            && !origin_is_same_site_origin(parts, &state.config)
+        {
+            return Err(ApiError::Forbidden);
+        }
+        let token_hash = token_digest(&token);
+        let local_client = is_local_client(parts, &state.config);
+        let CurrentUser(user) = authenticate_parts(parts, state, (token, from_cookie)).await?;
+        Ok(Self {
+            user,
+            token_hash,
+            local_client,
+        })
+    }
+}
+
+fn socket_token(headers: &HeaderMap, query: Option<&str>) -> Result<(String, bool), ApiError> {
+    let mut candidate = extract_token(headers)?;
+    if let Some(query) = query {
+        if query.len() > 2048 {
+            return Err(ApiError::Unauthorized);
+        }
+        let mut query_token_seen = false;
+        for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            if matches!(name.as_ref(), "api_key" | "ApiKey") {
+                if query_token_seen {
+                    return Err(ApiError::Unauthorized);
+                }
+                query_token_seen = true;
+                add_auth_candidate(&mut candidate, value.into_owned(), false)?;
+            }
+        }
+    }
+    candidate.ok_or(ApiError::Unauthorized)
+}
+
 #[derive(Clone, Debug)]
 pub struct AdminUser(pub UserRecord);
 
@@ -1046,6 +1098,44 @@ mod tests {
             );
         }
         assert!(extract_media_query_token(&Method::GET, Some("ApiKey=one&ApiKey=two")).is_err());
+    }
+
+    #[test]
+    fn socket_query_tokens_are_bounded_unique_and_consistent_with_headers() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(
+            socket_token(&headers, Some("deviceId=test&api_key=session-token")).unwrap(),
+            ("session-token".to_owned(), false)
+        );
+        assert_eq!(
+            socket_token(&headers, Some("ApiKey=session-token")).unwrap(),
+            ("session-token".to_owned(), false)
+        );
+        for query in [
+            "api_key=one&ApiKey=one",
+            "api_key=one&api_key=two",
+            "api_key=",
+            "api_key=bad%0Atoken",
+        ] {
+            assert!(socket_token(&headers, Some(query)).is_err());
+        }
+        assert!(socket_token(&headers, Some(&"x".repeat(2049))).is_err());
+        headers.insert("x-emby-token", HeaderValue::from_static("session-token"));
+        assert!(socket_token(&headers, Some("api_key=another-token")).is_err());
+        assert_eq!(
+            socket_token(&headers, Some("api_key=session-token")).unwrap(),
+            ("session-token".to_owned(), false)
+        );
+        headers.remove("x-emby-token");
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("puffinbox_session=session-token"),
+        );
+        assert_eq!(
+            socket_token(&headers, None).unwrap(),
+            ("session-token".to_owned(), true)
+        );
+        assert!(socket_token(&headers, Some("api_key=another-token")).is_err());
     }
 
     #[test]

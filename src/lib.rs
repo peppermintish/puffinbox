@@ -8,6 +8,7 @@ pub mod error;
 pub mod library;
 pub mod state;
 pub mod user_settings;
+pub(crate) mod websocket;
 
 // Media endpoints are implemented in their own module so each API can share the
 // same authentication and library authorization policy.

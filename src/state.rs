@@ -17,9 +17,17 @@ pub struct AppState {
     pub password_hash_slots: Arc<Semaphore>,
     pub scan_slots: Arc<Semaphore>,
     pub shutdown_requested: Arc<AtomicBool>,
+    pub(crate) user_events: Arc<crate::websocket::UserEvents>,
 }
 
 impl AppState {
+    /// Close upgraded sockets before releasing this run's database resources.
+    pub async fn drain_user_sockets(&self) -> bool {
+        self.shutdown_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.user_events.drain().await
+    }
+
     pub fn new(
         db: PgPool,
         config: Arc<Config>,
@@ -47,6 +55,7 @@ impl AppState {
             password_hash_slots: Arc::new(Semaphore::new(2)),
             scan_slots: Arc::new(Semaphore::new(scan_workers)),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
+            user_events: Arc::new(crate::websocket::UserEvents::new()),
         }
     }
 }

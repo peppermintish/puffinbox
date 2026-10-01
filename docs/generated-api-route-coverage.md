@@ -1,13 +1,13 @@
 # Generated route declaration comparison
 
-Generated at 2026-09-30T23:01:47.716814+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-01T12:01:07.638734+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `167`
+- Unique declared server method/path pairs: `168`
 - Declared pairs matching a schema method/path: `81`
-- Declared pairs outside the schema: `86`
+- Declared pairs outside the schema: `87`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
 
@@ -17,6 +17,7 @@ This is a source declaration comparison only. It does not establish that a match
 | --- | --- | --- |
 | `GET /` | `src/api.rs` | custom / not in target schema |
 | `GET /health` | `src/api.rs` | custom / not in target schema |
+| `GET /socket` | `src/api.rs` | custom / not in target schema |
 | `GET /health/ready` | `src/api.rs` | custom / not in target schema |
 | `GET /System/Info/Public` | `src/api.rs` | match |
 | `GET /Branding/Configuration` | `src/api.rs` | match |

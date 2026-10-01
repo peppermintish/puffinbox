@@ -7,7 +7,7 @@
     },
     "jellyfin_12_behavior": {
       "passed": false,
-      "detail": "81 of 364 operation declarations match. Fresh-navigation web resume and bounded full-source HLS seeking passed for a synthetic movie; cached user-data refresh and full behavioral compatibility remain incomplete."
+      "detail": "81 of 364 operation declarations match. Bounded full-source HLS seeking and authenticated notifications for fresh and cached resume positions passed for a synthetic movie. A transient web playback notice and full behavioral compatibility remain unresolved."
     },
     "feature_acceptance": {
       "passed": false,

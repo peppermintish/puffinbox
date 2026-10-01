@@ -23,6 +23,8 @@ import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 
+from acceptance_socket import SocketClient
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = ROOT / ".local" / "acceptance" / "acceptance.env"
@@ -479,7 +481,8 @@ def verify_container_restart(
     # This keeps the shutdown assertion about an active child, even when earlier
     # demand-driven batches have already finished on a fast machine.
     encoding_client = HttpClient(base_url)
-    login(encoding_client, admin_username, admin_password)
+    _, encoding_token = login(encoding_client, admin_username, admin_password)
+    notification_socket = SocketClient(base_url, encoding_token)
     encoding_status, _, encoding_segment = encoding_client.request(
         "GET", f"/Videos/{urllib.parse.quote(item_id)}/hls/{urllib.parse.quote(active_play_session_id)}/segment000032.ts"
     )
@@ -490,6 +493,10 @@ def verify_container_restart(
     report("Server shutdown requested while an HLS FFmpeg process was active", True)
     shutdown_started = datetime.now(timezone.utc).isoformat()
     subprocess.run(command + ["stop", "--timeout", "60", "server"], check=True, capture_output=True, text=True, timeout=75, env=command_environment)
+    try:
+        notification_socket.expect_shutdown()
+    finally:
+        notification_socket.close()
     state = subprocess.run(["docker", "inspect", "--format", "{{.State.ExitCode}} {{.State.OOMKilled}}", container], check=True, capture_output=True, text=True, timeout=20).stdout.strip()
     require(state == "0 false", f"server container did not exit cleanly on graceful stop ({state})")
     log_result = subprocess.run(["docker", "logs", "--since", shutdown_started, container], check=True, capture_output=True, text=True, timeout=20)
@@ -497,6 +504,7 @@ def verify_container_restart(
     require("media shutdown exceeded its drain deadline" not in logs.casefold(), "server reported that the FFmpeg shutdown hook missed its drain deadline")
     require("media child required forced termination" not in logs.casefold(), "FFmpeg did not exit within the graceful termination period")
     require("all media children drained during shutdown" in logs, "server did not confirm that it reaped every media child before exit")
+    require("socket shutdown exceeded" not in logs, "server could not drain its upgraded sockets before exit")
     subprocess.run(command + ["up", "-d", "--no-deps", "server"], check=True, capture_output=True, text=True, timeout=60, env=command_environment)
     client = HttpClient(base_url)
     deadline = time.monotonic() + MAX_WAIT_SECONDS
@@ -511,7 +519,7 @@ def verify_container_restart(
         time.sleep(1)
     else:
         raise AssertionError("server did not become ready after a graceful restart")
-    login(client, admin_username, admin_password)
+    restarted_user, restarted_token = login(client, admin_username, admin_password)
     _, _, item = client.json("GET", f"/Items/{urllib.parse.quote(item_id)}")
     require(str(item.get("Id")) == item_id, "catalog item did not persist across server restart")
     resume = client.json("GET", f"/UserItems/{urllib.parse.quote(item_id)}")[2]
@@ -530,7 +538,25 @@ def verify_container_restart(
     require(ended == "t", f"active playback session {session_uuid} was not closed in PostgreSQL after shutdown")
     old_session_status, _, _ = client.request("GET", f"/Videos/{urllib.parse.quote(item_id)}/hls/{urllib.parse.quote(active_play_session_id)}/playlist.m3u8")
     require(old_session_status in (404, 410), f"pre-shutdown HLS session remained addressable after restart (HTTP {old_session_status})")
+    with SocketClient(base_url, restarted_token) as restarted_socket:
+        for method in ("POST", "DELETE"):
+            committed = client.json(method, f"/UserFavoriteItems/{urllib.parse.quote(item_id)}")[2]
+            event = restarted_socket.event("UserDataChanged")
+            require(event.get("Data") == {"UserId": restarted_user["Id"], "UserDataList": [committed]},
+                    "reconnected socket did not report committed user data after restart")
+    report("Authenticated socket close and reconnected notifications across a container restart", True)
     report("Active HLS job shutdown, playback-row closure, committed resume position, and catalog persistence", True)
+
+
+def verify_socket_notifications(base_url: str, admin_token: str, peer_client: HttpClient, peer_user: dict, peer_token: str, item_id: str) -> None:
+    with SocketClient(base_url, admin_token) as admin_socket, SocketClient(base_url, peer_token) as peer_socket:
+        for method in ("POST", "DELETE"):
+            committed = peer_client.json(method, f"/UserFavoriteItems/{urllib.parse.quote(item_id)}")[2]
+            event = peer_socket.event("UserDataChanged")
+            require(event.get("Data") == {"UserId": peer_user["Id"], "UserDataList": [committed]},
+                    "socket did not report its own committed user data")
+            admin_socket.expect_quiet()
+    report("Authenticated WebSocket keepalive, committed user-data notifications, and cross-account isolation", True)
 
 
 def login(client: HttpClient, username: str, password: str, headers: dict[str, str] | None = None, identity: dict[str, str] | None = None) -> tuple[dict, str]:
@@ -881,6 +907,7 @@ def run(args: argparse.Namespace) -> int:
     conflict_status, _, _ = anonymous.request("GET", "/Users/Me", headers={"X-Emby-Token": admin_token, "Authorization": f"Bearer {peer_token}"})
     require(conflict_status in (401, 403), f"conflicting account tokens were not rejected (HTTP {conflict_status})")
     verify_playback_sessions(peer_client, client, item_id)
+    verify_socket_notifications(base_url, admin_token, peer_client, peer_user, peer_token, item_id)
     report("Authenticated browsing and cross-account requests follow user policies", True)
 
     range_path = f"/Videos/{urllib.parse.quote(item_id)}/stream"
