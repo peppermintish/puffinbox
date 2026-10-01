@@ -6,7 +6,7 @@ Puffinbox is partial and unreleased. Local checks on 2026-10-01 passed; their sc
 
 The Rust workspace passes formatting, strict Clippy, and 214 standard tests. All 20 PostgreSQL integration cases and the database-backed recorder unit test passed against a disposable database. Python, browser, and book-reader checks passed. The current static container passed all 20 HTTP and restart acceptance checks. Source and scratch-container TLS checks passed.
 
-The MIT/Apache-2.0 Cargo allowlist passes without exceptions. The linked Rust Unicode tables carry Unicode-3.0, and musl has additional component licenses. The runtime boundary is still open; see [licensing.md](licensing.md). No release tag or archive has been created. [Cloud CI passed at `11b531d`](https://github.com/peppermintish/puffinbox/actions/runs/36785032446); the navigation and playback fixes await their own cloud result.
+The MIT/Apache-2.0 Cargo allowlist passes without exceptions. The linked Rust Unicode tables carry Unicode-3.0, and musl has additional component licenses. The runtime boundary is still open; see [licensing.md](licensing.md). No release tag or archive has been created. [Cloud CI passed at `11b531d`](https://github.com/peppermintish/puffinbox/actions/runs/36785032446). The later `40dd4ba` run passed container acceptance and failed a Live TV browser-test refresh race; the corrected test passed locally. Current changes await a full cloud pass.
 
 ## Jellyfin API target
 
