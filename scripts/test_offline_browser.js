@@ -569,22 +569,27 @@ async function main() {
   const browser = spawn(chromePath, chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   let browserOutput = '';
   browser.stderr.on('data', (chunk) => { browserOutput += chunk.toString(); });
-  let devtoolsUrl = null;
-  for (let attempt = 0; attempt < 150; attempt += 1) {
-    if (browser.exitCode != null) throw new Error(`Chrome exited before its debugging endpoint was ready: ${browserOutput}`);
-    try {
-      const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(1500) });
-      if (response.ok) { devtoolsUrl = (await response.json()).webSocketDebuggerUrl; break; }
-    } catch (_) { /* Chrome is still starting. */ }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  if (!devtoolsUrl) throw new Error(`Chrome did not expose its debugging endpoint: ${browserOutput}`);
-  const socket = new WebSocket(devtoolsUrl);
-  await once(socket, 'open', { signal: AbortSignal.timeout(15000) });
-  const cdp = new DevTools(socket);
-  const baseUrl = `http://127.0.0.1:${serverPort}`;
-
+  let browserStartError = null;
+  browser.once('error', (error) => { browserStartError = error; });
+  let socket = null;
   try {
+    let devtoolsUrl = null;
+    const startupDeadline = Date.now() + 30000;
+    while (Date.now() < startupDeadline) {
+      if (browserStartError) throw browserStartError;
+      if (browser.exitCode != null) throw new Error(`Chrome exited before its debugging endpoint was ready: ${browserOutput}`);
+      try {
+        const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(Math.max(1, Math.min(1500, startupDeadline - Date.now()))) });
+        if (response.ok) { devtoolsUrl = (await response.json()).webSocketDebuggerUrl; break; }
+      } catch (_) { /* Chrome is still starting. */ }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!devtoolsUrl) throw new Error(`Chrome did not expose its debugging endpoint: ${browserOutput}`);
+    socket = new WebSocket(devtoolsUrl);
+    await once(socket, 'open', { signal: AbortSignal.timeout(15000) });
+    const cdp = new DevTools(socket);
+    const baseUrl = `http://127.0.0.1:${serverPort}`;
+
     const staleWorkerPage = await cdp.openPage(`${baseUrl}/web/__offline_test__/stale.html`);
     await cdp.waitFor(staleWorkerPage, 'document.body.dataset.status', (value) => value === 'stale-worker-active', 'the previous offline worker fixture');
     assert.match(await cdp.evaluate(staleWorkerPage.sessionId, 'document.body.dataset.script'), /offline-sw-stale\.js$/, 'the migration fixture did not start under the stale worker');
@@ -962,7 +967,7 @@ async function main() {
     const diagnostics = browserOutput.trim().slice(-3000);
     throw diagnostics ? new Error(`${error.message}\nChrome output:\n${diagnostics}`, { cause: error }) : error;
   } finally {
-    socket.close();
+    socket?.close();
     browser.kill();
     await Promise.race([once(browser, 'exit').catch(() => {}), new Promise((resolve) => setTimeout(resolve, 3000))]);
     const closed = new Promise((resolve) => server.close(() => resolve()));
