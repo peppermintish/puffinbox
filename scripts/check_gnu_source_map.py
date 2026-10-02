@@ -134,6 +134,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--source-hashes", required=True, type=Path, help="source hash record from the instrumented builder")
+    parser.add_argument("--dependency-sources", type=Path, help="dependency and generated source snapshot from the same build")
     parser.add_argument("--output", required=True, type=Path, help="new inventory file")
     args = parser.parse_args()
     try:
@@ -148,6 +149,11 @@ def main() -> int:
         result["binarySha256"] = hashlib.sha256(args.binary.read_bytes()).hexdigest()
         result["sourceHashesSha256"] = hashlib.sha256(args.source_hashes.read_bytes()).hexdigest()
         result["inspectorVersion"] = elftools.__version__
+        if args.dependency_sources:
+            from capture_gnu_sources import mapped_dependencies
+            result["mappedDependencySourceFiles"] = mapped_dependencies(
+                result, json.loads(args.dependency_sources.read_text()))
+            result["dependencySourceHashesSha256"] = hashlib.sha256(args.dependency_sources.read_bytes()).hexdigest()
         with args.output.open("x") as output:
             json.dump(result, output, indent=2)
             output.write("\n")

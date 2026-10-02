@@ -24,7 +24,7 @@ The link-map checker reports known retained runtime sections and generated Unico
 
 ## Source-location inventory
 
-Pass `--source-map` to retain release debug data, record exact standard-library source hashes, and capture the same compiler's `COPYRIGHT-library.html` notice. The hash record binds that notice to this build. This produces a larger test executable and does not change production packaging:
+Pass `--source-map` to retain release debug data, record standard-library and dependency source hashes, and capture the same compiler's `COPYRIGHT-library.html` notice. The hash record binds that notice to this build. This produces a larger test executable and does not change production packaging:
 
 ```sh
 python3 experiments/linux-gnu-runtime/build.py --output /probe/output --source-map
@@ -36,10 +36,17 @@ The external [pyelftools inspector](https://github.com/eliben/pyelftools) reads 
 python3 scripts/check_gnu_source_map.py \
   --binary /probe/output/server \
   --source-hashes /probe/output/standard-library-source-hashes.json \
+  --dependency-sources /probe/output/dependency-source-hashes.json \
   --output /probe/output/source-line-inventory.json
 ```
 
 The checker resolves DWARF 4 and 5 file indexes, attributes only nonempty intervals inside executable load ranges, and requires hashes for every mapped standard-library source. Missing debug information, unresolved paths, empty mappings, and missing hashes fail. Known non-allowlisted mapped source paths also fail the check, including generated Unicode even if the link map names no Unicode archive. Mapped instructions from `/usr/include/` fail as unreviewed system-header inputs. This catches header code that an archive-only inventory misses; it does not assign one license to all system headers. The inventory records line-zero and discarded-address intervals separately. Its byte counts can overlap; they are not a coverage percentage. Anonymous constants, unmapped instructions, assembler, generated code, headers without mapped instructions, and complete source-license classification remain outside this check. Every record keeps `licenseClearance: false`.
+
+The dependency snapshot records the resolved package versions, declared licenses, manifest hashes, and license/notice file hashes. Each downloaded `.crate` archive must match its lockfile checksum, and every extracted registry file must match that archive. Extra source files fail. Cargo's own `.cargo-ok` cache marker is excluded from the archive comparison. These are registry archives; [directory sources](https://doc.rust-lang.org/cargo/reference/source-replacement.html#directory-sources) use a different checksum record.
+
+The native compiler wrapper records successful C and assembly inputs before temporary OpenSSL sources are removed. GCC's documented [dependency options](https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html) supply included headers for preprocessed inputs, including system headers. Plain assembly records its input file. Failed compilations and compiler probes do not establish retained inputs. Multiple hashes for one source path stay ambiguous and fail if that path is mapped into the executable.
+
+With `--dependency-sources`, every mapped dependency path must have a captured hash. The most specific package root supplies its declaration; native and generated files retain a separate review requirement. Byte-identical package files are candidates for provenance review, not an automatic license assignment. Post-build package snapshots and native compiler traces do not establish every compile-time input or individual-file exception. Included-header hashes also do not establish which header content was retained.
 
 Then classify the mapped standard-library paths against the exact compiler's hierarchical notices:
 

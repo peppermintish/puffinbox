@@ -40,6 +40,10 @@ def inspect(binary: Path, label: str, output: Path, environment: dict[str, str])
 
 
 def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, str]) -> dict[str, object]:
+    root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root / "scripts"))
+    from capture_gnu_sources import capture
+
     run(["readelf", "-SW", str(output / "server")], cwd=output, env=environment,
         log=output / "server-sections.txt")
     sections = (output / "server-sections.txt").read_text()
@@ -59,8 +63,20 @@ def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, s
                    "scope": "Exact source bytes available to this disposable build; no license clearance inferred."},
                   ledger, indent=2)
         ledger.write("\n")
+    metadata = json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--locked", "--offline", "--format-version", "1",
+         "--filter-platform", "x86_64-unknown-linux-gnu"], cwd=root, env=environment, text=True))
+    dependencies = capture(metadata, output / "target/x86_64-unknown-linux-gnu/release/build", root / "Cargo.lock",
+                           output / "native-compiler-traces")
+    with (output / "dependency-source-hashes.json").open("x") as ledger:
+        json.dump(dependencies, ledger, indent=2)
+        ledger.write("\n")
     return {"sourceMappingPresent": True, "debugLevel": 2, "sourceFileCount": len(source_files),
             "compilerNotices": compiler_notices,
+            "dependencyPackages": len(dependencies["packages"]),
+            "dependencySourceFiles": len(dependencies["sourceFiles"]),
+            "generatedSourceFiles": len(dependencies["generatedSourceFiles"]),
+            "dependencySourceHashesSha256": digest(output / "dependency-source-hashes.json"),
             "sourceHashesSha256": digest(output / "standard-library-source-hashes.json"), "licenseClearance": False}
 
 
@@ -160,7 +176,7 @@ def numeric_check(output: Path, root: Path, environment: dict[str, str]) -> dict
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="new output directory outside the mounted source and sysroot")
-    parser.add_argument("--source-map", action="store_true", help="retain debug locations and exact standard-library source hashes")
+    parser.add_argument("--source-map", action="store_true", help="retain debug locations and source/package/notice hashes")
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64" or not Path("/.dockerenv").is_file():
         parser.error("Run inside a disposable Linux x86-64 Docker builder; this experiment changes its rust-src copy.")
@@ -181,8 +197,10 @@ def main() -> int:
     record = {"startedAtUtc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "compiler": version,
               "productionChanged": False, "licenseClearance": False, "sourceMountedAt": str(root),
               "cargoLockSha256": digest(root / "Cargo.lock"),
+              "auditScriptsSha256": {name: digest(root / "scripts" / name)
+                                      for name in ["capture_gnu_sources.py", "check_gnu_source_map.py", "check_gnu_notices.py"]},
               "experimentSourceSha256": {name: digest(Path(__file__).with_name(name))
-                                         for name in ["build.py", "compiler-wrapper.py", "linker-wrapper.py", "numeric.rs", "c-headers.h", "c-headers.c"]}}
+                                         for name in ["build.py", "compiler-wrapper.py", "native-source-wrapper.py", "linker-wrapper.py", "numeric.rs", "c-headers.h", "c-headers.c"]}}
     result = 1
     try:
         original = source.read_text()
@@ -195,6 +213,7 @@ def main() -> int:
         environment = {**os.environ, "CARGO_BUILD_JOBS": "2", "RUSTC_BOOTSTRAP": "1", "RUSTFLAGS": "-C prefer-dynamic",
                        "RUSTC_WRAPPER": str(root / "experiments/linux-gnu-runtime/compiler-wrapper.py"),
                        "PUFFINBOX_RUNTIME_PROBE_OUTPUT": str(output),
+                       "CC": str(root / "experiments/linux-gnu-runtime/native-source-wrapper.py"),
                        "CFLAGS": shlex.join(["-D_GNU_SOURCE", "-D__NO_INLINE__", "-include", str(root / "experiments/linux-gnu-runtime/c-headers.h")]),
                        "CC_SHELL_ESCAPED_FLAGS": "1"}
         record["cHeaderFlags"] = environment["CFLAGS"]
@@ -231,7 +250,7 @@ def main() -> int:
         if args.source_map:
             record["sourceMapping"] = capture_source_mapping(output, sysroot, environment)
         result = 0
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         record["failure"] = str(error)
     finally:
         record.update({"finishedAtUtc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "exitCode": result})
