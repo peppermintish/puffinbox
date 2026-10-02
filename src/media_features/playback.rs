@@ -137,6 +137,60 @@ pub(super) struct PlaybackInfoResponse {
     pub media_sources: Vec<MediaSource>,
 }
 
+impl PlaybackInfoResponse {
+    pub(super) fn supports_direct_play(&self) -> bool {
+        self.media_sources
+            .first()
+            .is_some_and(|source| source.supports_direct_play)
+    }
+}
+
+/// Reuse the probed PlaybackInfo rules for the universal audio direct path.
+pub(super) fn audio_direct_request(
+    containers: Vec<(String, Option<String>)>,
+    max_streaming_bitrate: Option<u64>,
+    max_audio_channels: Option<u32>,
+) -> PlaybackInfoRequest {
+    PlaybackInfoRequest {
+        device_profile: Some(DeviceProfile {
+            direct_play_profiles: containers
+                .into_iter()
+                .map(|(container, audio_codec)| {
+                    // Bare universal container names declare these common
+                    // audio codecs. Keep unknown combinations conservative.
+                    let audio_codec = audio_codec.or_else(|| {
+                        match container.as_str() {
+                            "flac" => Some("flac"),
+                            "mp3" => Some("mp3"),
+                            "aac" => Some("aac"),
+                            "opus" => Some("opus"),
+                            "ogg" => Some("vorbis,opus,flac"),
+                            "wav" => Some("pcm_s16le,pcm_s24le,pcm_s32le,pcm_u8,pcm_f32le"),
+                            "webm" | "webma" => Some("opus,vorbis"),
+                            "m4a" | "m4b" => Some("aac,alac"),
+                            _ => None,
+                        }
+                        .map(str::to_owned)
+                    });
+                    DirectPlayProfile {
+                        kind: Some("Audio".to_owned()),
+                        container: Some(container),
+                        audio_codec,
+                        ..Default::default()
+                    }
+                })
+                .collect(),
+            ..Default::default()
+        }),
+        max_streaming_bitrate,
+        max_audio_channels,
+        enable_direct_play: Some(true),
+        enable_direct_stream: Some(false),
+        enable_transcoding: Some(false),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct MediaSource {
@@ -1980,6 +2034,36 @@ mod tests {
         ));
         assert!(!profile_matches(&profile, "mkv", &flac, false, true));
         assert!(!profile_matches(&profile, "unknown", &flac, false, true));
+    }
+
+    #[test]
+    fn universal_audio_container_profiles_accept_flac_and_keep_codec_restrictions() {
+        let metadata = audio_probe(Some("flac"), "flac");
+        for (container, codec, expected) in [
+            ("flac", None, true),
+            ("flac", Some("aac"), false),
+            ("mp3", None, false),
+            ("unknown", None, false),
+        ] {
+            let request = super::audio_direct_request(
+                vec![(container.to_owned(), codec.map(str::to_owned))],
+                None,
+                None,
+            );
+            let profile = request.device_profile.unwrap();
+            assert_eq!(
+                profile_matches(
+                    &profile.direct_play_profiles[0],
+                    "flac",
+                    &metadata,
+                    false,
+                    true
+                ),
+                expected,
+            );
+            assert_eq!(request.enable_transcoding, Some(false));
+            assert_eq!(request.enable_direct_stream, Some(false));
+        }
     }
 
     #[test]

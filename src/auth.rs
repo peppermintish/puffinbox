@@ -199,6 +199,7 @@ fn scoped_media_route(parts: &axum::http::request::Parts) -> bool {
     match segments.as_slice() {
         ["Items", item_id, "File"] => valid_id(item_id),
         ["Videos", item_id, "stream"] | ["Audio", item_id, "stream"] => valid_id(item_id),
+        ["Audio", item_id, "universal"] => valid_id(item_id),
         ["Videos", item_id, "master.m3u8"] | ["Audio", item_id, "master.m3u8"] => valid_id(item_id),
         ["LiveTv", "Channels", item_id, "master.m3u8"] => valid_id(item_id),
         [
@@ -1306,6 +1307,17 @@ mod tests {
             &format!("/Items/{item_id}/File?ApiKey=scoped"),
         );
         assert!(scoped_media_route(&file));
+        file.uri = format!("/Audio/{item_id}/universal?ApiKey=scoped")
+            .parse()
+            .unwrap();
+        assert!(scoped_media_route(&file));
+        file.method = Method::HEAD;
+        assert!(scoped_media_route(&file));
+        file.method = Method::POST;
+        assert!(!scoped_media_route(&file));
+        file.method = Method::GET;
+        file.uri = "/Audio/not-an-id/universal".parse().unwrap();
+        assert!(!scoped_media_route(&file));
         file.uri = format!("/Videos/{item_id}/hls/{session_id}/playlist.m3u8")
             .parse()
             .unwrap();

@@ -97,6 +97,151 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
     let peer_session = auth::issue_token(&state, &peer, "test", "peer", "peer-device")
         .await
         .unwrap();
+    let library_id = Uuid::new_v4();
+    let track_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO libraries(id,name,collection_type,locations,enabled) VALUES ($1,'Playback event music','music','[\"/music\"]',TRUE)")
+        .bind(library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO items(id,library_id,name,sort_name,item_type,path,path_hash,runtime_ticks) VALUES ($1,$2,'Event track','Event track','Audio','/music/event.flac',$3,1000000000)")
+        .bind(track_id)
+        .bind(library_id)
+        .bind(db::path_hash("/music/event.flac"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let opaque_id = "1790913876274";
+    for invalid in [
+        "".to_owned(),
+        " ".to_owned(),
+        "x\ny".to_owned(),
+        "x".repeat(257),
+    ] {
+        let body = json!({"ItemId":track_id,"PlaySessionId":invalid,"PositionTicks":0});
+        assert_eq!(
+            post(&router, Some(&first.token), "/Sessions/Playing", &body)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    let event = json!({"ItemId":track_id,"PlaySessionId":opaque_id,"PositionTicks":0,"PlayMethod":"DirectPlay"});
+    for token in [&first.token, &second.token] {
+        assert_eq!(
+            post(&router, Some(token), "/Sessions/Playing", &event)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT,
+            "an opaque client playback ID is scoped to its authenticated device"
+        );
+    }
+    let playback_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM playback_sessions WHERE user_id=$1 AND ended_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(playback_ids.len(), 2);
+    assert_ne!(playback_ids[0], playback_ids[1]);
+    assert_eq!(
+        post(
+            &router,
+            Some(&peer_session.token),
+            "/Sessions/Playing/Progress",
+            &event
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "copying a client ID cannot update another user's playback"
+    );
+    let progress = json!({"ItemId":track_id,"PlaySessionId":opaque_id,"PositionTicks":120000000});
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Progress",
+            &progress
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let stopped = json!({"ItemId":track_id,"PlaySessionId":opaque_id,"PositionTicks":200000000});
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Stopped",
+            &stopped
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let data = db::item_user_data(&pool, user_id, &[track_id])
+        .await
+        .unwrap();
+    assert_eq!(data[&track_id].playback_position_ticks, 200000000);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM playback_sessions WHERE user_id=$1 AND ended_at IS NULL"
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1,
+        "stopping one device leaves the other device's session active"
+    );
+    assert_eq!(
+        post(
+            &router,
+            Some(&second.token),
+            "/Sessions/Playing/Stopped",
+            &stopped
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let server_id = Uuid::new_v4();
+    let uuid_event = json!({"ItemId":track_id,"PlaySessionId":server_id,"PositionTicks":0});
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing",
+            &uuid_event
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT,
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM playback_sessions WHERE user_id=$1 AND ended_at IS NULL"
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        server_id,
+        "server-issued UUIDs retain their identity"
+    );
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Stopped",
+            &uuid_event
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT,
+    );
     let capabilities = json!({
         "PlayableMediaTypes": ["Video", "Audio"],
         "SupportedCommands": ["SetVolume", "Mute"],

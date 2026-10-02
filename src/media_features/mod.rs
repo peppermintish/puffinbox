@@ -17,6 +17,7 @@ mod process_limits;
 pub mod range;
 mod secure_path;
 mod subtitles;
+mod universal_audio;
 mod vod_hls;
 
 use std::{
@@ -69,6 +70,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/Audio/{item_id}/stream",
             get(stream_audio).head(stream_audio),
+        )
+        .route(
+            "/Audio/{item_id}/universal",
+            get(universal_audio::stream).head(universal_audio::stream),
         )
         .route("/Items/{item_id}/File", get(stream_file).head(stream_file))
         .route("/Items/{item_id}/Download", get(download_item).head(download_item))

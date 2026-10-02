@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-02T03:55:07.143891+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-02T04:34:46.356813+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `174`
-- Declared pairs matching a schema method/path: `86`
+- Unique declared server method/path pairs: `176`
+- Declared pairs matching a schema method/path: `88`
 - Declared pairs outside the schema: `88`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -136,6 +136,8 @@ This is a source declaration comparison only. It does not establish that a match
 | `HEAD /Videos/{item_id}/stream` | `src/media_features/mod.rs` | match |
 | `GET /Audio/{item_id}/stream` | `src/media_features/mod.rs` | match |
 | `HEAD /Audio/{item_id}/stream` | `src/media_features/mod.rs` | match |
+| `GET /Audio/{item_id}/universal` | `src/media_features/mod.rs` | match |
+| `HEAD /Audio/{item_id}/universal` | `src/media_features/mod.rs` | match |
 | `GET /Items/{item_id}/File` | `src/media_features/mod.rs` | match |
 | `HEAD /Items/{item_id}/File` | `src/media_features/mod.rs` | custom / not in target schema |
 | `GET /Items/{item_id}/Download` | `src/media_features/mod.rs` | match |

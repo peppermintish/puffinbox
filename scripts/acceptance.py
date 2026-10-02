@@ -718,6 +718,62 @@ def ensure_user(admin: HttpClient, username: str, password: str, library_id: str
     return user
 
 
+def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: str, scan_timeout: int) -> None:
+    fixture = fixture_root / "Music" / "Puffinbox Original Acceptance Track.flac"
+    require(fixture.is_file(), "generated universal audio fixture is missing")
+    name = "Puffinbox Acceptance Music"
+    libraries = client.json("GET", "/Library/VirtualFolders")[2]
+    library = next((entry for entry in libraries if entry.get("Name") == name), None)
+    if library is None:
+        client.json("POST", "/Library/VirtualFolders", {
+            "Name": name, "Locations": [music_root], "CollectionType": "music",
+            "LibraryOptions": {"Enabled": True},
+        }, expected=(204,))
+        libraries = client.json("GET", "/Library/VirtualFolders")[2]
+        library = next((entry for entry in libraries if entry.get("Name") == name), None)
+    require(library is not None, "audio fixture library was not created")
+    library_id = str(library.get("ItemId") or library.get("Id") or "")
+    scan_library(client, library_id, scan_timeout)
+    query = urllib.parse.urlencode({"ParentId": library_id, "IncludeItemTypes": "Audio", "Recursive": "true"})
+    tracks = client.json("GET", "/Items?" + query)[2].get("Items", [])
+    track = next((entry for entry in tracks if entry.get("Name") in (fixture.name, fixture.stem)), None)
+    require(track is not None, "FLAC audio fixture was not indexed")
+    item_id = str(track["Id"])
+    path = f"/Audio/{urllib.parse.quote(item_id)}/universal"
+    options = "?Container=flac&MaxStreamingBitrate=1911466591&StartTimeTicks=0&TranscodingContainer=mp4&TranscodingProtocol=hls&AudioCodec=aac"
+    source = fixture.read_bytes()
+    status, headers, body = client.request("GET", path + options)
+    require(status == 200 and body == source and headers.get("Content-Type") == "audio/flac",
+            "universal audio did not deliver the original FLAC bytes")
+    require(headers.get("Cache-Control") == "private, no-store" and headers.get("Referrer-Policy") == "no-referrer",
+            "universal audio omitted private media headers")
+    status, headers, body = client.request("HEAD", path + options)
+    require(status == 200 and not body and headers.get("Content-Length") == str(len(source)),
+            "universal audio HEAD did not return source metadata without a body")
+    status, headers, body = client.request("GET", path + options, headers={"Range": "bytes=8-31"})
+    require(status == 206 and body == source[8:32] and headers.get("Content-Range") == f"bytes 8-31/{len(source)}",
+            "universal audio byte range differs from the source")
+    status, _, _ = client.request("GET", path + "?Container=mp3")
+    require(status == 400, "universal audio ignored an incompatible container")
+    status, _, _ = client.request("GET", path + "?Container=flac&MaxStreamingBitrate=1")
+    require(status == 400, "universal audio ignored the source bitrate limit")
+    status, _, _ = HttpClient(client.base_url).request("GET", path + options)
+    require(status == 401, "anonymous universal audio was accepted")
+    session_id = str(time.time_ns() // 1_000_000)
+    client.json("POST", "/Sessions/Playing", {
+        "ItemId": item_id, "PlaySessionId": session_id, "PositionTicks": 0, "PlayMethod": "DirectPlay",
+    }, expected=(204,))
+    for event in ("Progress", "Stopped"):
+        client.json("POST", f"/Sessions/Playing/{event}", {
+            "ItemId": item_id, "PlaySessionId": session_id, "PositionTicks": 50_000_000,
+        }, expected=(204,))
+    data = client.json("GET", f"/UserItems/{urllib.parse.quote(item_id)}")[2]
+    require(data.get("PlaybackPositionTicks") == 50_000_000,
+            "numeric audio session events did not preserve the stopped position")
+    report("Universal FLAC audio, byte ranges, format/bitrate limits, and numeric playback events", True,
+           "original bytes and HEAD metadata matched; stopping preserved five seconds; the source was delivered directly")
+
+
 def verify_playback_sessions(admin: HttpClient, viewer: HttpClient, item_id: str) -> None:
     session_id = str(uuid.uuid4())
     item_path = urllib.parse.quote(item_id)
@@ -924,6 +980,9 @@ def run(args: argparse.Namespace) -> int:
     verify_direct_play_acceptance(client, direct_play_fixture_path, args.scan_timeout)
     verify_video_range_acceptance(client, sdr_direct_play_fixture_path, direct_play_fixture_path, args.scan_timeout)
     verify_scan_lifecycle(client, library_id, fixture_path.parent, args.scan_timeout)
+    verify_universal_audio(
+        client, fixture_root, values.get("PUFFINBOX_ACCEPTANCE_MUSIC_ROOT", "/media/Music"), args.scan_timeout,
+    )
     verify_catalog_filters(client, library_id)
     verify_scanner_root_identity(
         client,

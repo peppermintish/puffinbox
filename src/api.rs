@@ -11,6 +11,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use ctutils::CtEq;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::error::DatabaseError;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
@@ -1272,10 +1273,36 @@ async fn device_context(
     })
 }
 
-fn parse_play_session_id(raw: Option<&str>) -> Result<Option<Uuid>, ApiError> {
+fn parse_play_session_id(
+    raw: Option<&str>,
+    run_id: Uuid,
+    user_id: Uuid,
+    device_id: &str,
+) -> Result<Option<Uuid>, ApiError> {
     raw.map(|value| {
-        Uuid::parse_str(value)
-            .map_err(|_| ApiError::BadRequest("PlaySessionId must be a UUID".to_owned()))
+        if value.len() > 256 || value.trim().is_empty() || value.chars().any(char::is_control) {
+            return Err(ApiError::BadRequest(
+                "PlaySessionId must be nonempty, at most 256 bytes, and contain no control characters"
+                    .to_owned(),
+            ));
+        }
+        if let Ok(id) = Uuid::parse_str(value) {
+            return Ok(id);
+        }
+        // Keep server-issued UUIDs intact. Opaque client IDs get an internal
+        // key scoped to this run, user, and authenticated device. Lengths keep
+        // identifiers containing delimiters from sharing the same hash input.
+        let input = format!(
+            "puffinbox-playback-v1:{run_id}:{user_id}:{}:{device_id}:{}:{value}",
+            device_id.len(),
+            value.len()
+        );
+        let mut bytes: [u8; 16] = Sha256::digest(input)[..16]
+            .try_into()
+            .expect("SHA-256 has a 16-byte prefix");
+        bytes[6] = (bytes[6] & 0x0f) | 0x80;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Ok(Uuid::from_bytes(bytes))
     })
     .transpose()
 }
@@ -1309,8 +1336,13 @@ async fn start_playback(
     }
     validate_playback_position(body.position_ticks)?;
     let device = device_context(&state, &user, &headers).await?;
-    let play_session_id =
-        parse_play_session_id(body.play_session_id.as_deref())?.unwrap_or_else(Uuid::new_v4);
+    let play_session_id = parse_play_session_id(
+        body.play_session_id.as_deref(),
+        state.run_id,
+        user.id,
+        &device.id,
+    )?
+    .unwrap_or_else(Uuid::new_v4);
     match db::start_playback_session(
         &state.db,
         db::PlaybackStartRequest {
@@ -1351,7 +1383,12 @@ async fn progress_playback(
     }
     validate_playback_position(body.position_ticks)?;
     let device = device_context(&state, &user, &headers).await?;
-    let session_id = parse_play_session_id(body.play_session_id.as_deref())?;
+    let session_id = parse_play_session_id(
+        body.play_session_id.as_deref(),
+        state.run_id,
+        user.id,
+        &device.id,
+    )?;
     let active = db::active_playback_session(
         &state.db,
         state.run_id,
@@ -1393,7 +1430,12 @@ async fn stop_playback(
 ) -> Result<StatusCode, ApiError> {
     validate_playback_position(body.position_ticks)?;
     let device = device_context(&state, &user, &headers).await?;
-    let session_id = parse_play_session_id(body.play_session_id.as_deref())?;
+    let session_id = parse_play_session_id(
+        body.play_session_id.as_deref(),
+        state.run_id,
+        user.id,
+        &device.id,
+    )?;
     let active = db::active_playback_session(
         &state.db,
         state.run_id,

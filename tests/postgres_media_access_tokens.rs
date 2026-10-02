@@ -196,6 +196,50 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
     let minted_body = minted.into_body().collect().await.unwrap().to_bytes();
     let minted_body: serde_json::Value = serde_json::from_slice(&minted_body).unwrap();
     let media_token = minted_body["AccessToken"].as_str().unwrap().to_owned();
+    for method in ["GET", "HEAD"] {
+        let audio_uri = format!("/Audio/{item_id}/universal?Container=flac&ApiKey={media_token}");
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&audio_uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "a scoped credential reaches the authorized audio route but cannot play a photo"
+        );
+        let wrong_parent = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&audio_uri)
+                    .header("x-emby-token", &peer_session.token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_parent.status(), axum::http::StatusCode::UNAUTHORIZED);
+        let wrong_user = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(format!("{audio_uri}&UserId={peer_user_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_user.status(), axum::http::StatusCode::FORBIDDEN);
+    }
     let expires_at: chrono::DateTime<Utc> =
         serde_json::from_value(minted_body["ExpiresAt"].clone()).unwrap();
     assert!(expires_at > Utc::now());
