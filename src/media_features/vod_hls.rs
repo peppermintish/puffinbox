@@ -29,6 +29,7 @@ use crate::ApiError;
 
 const SEGMENT_MILLIS: u64 = 4000;
 const BATCH_SEGMENTS: u32 = 16;
+const VIDEO_FPS: u64 = 30;
 const MAX_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ROOT_RESERVED_BYTES: u64 = 16 * 1024 * 1024;
@@ -43,6 +44,7 @@ pub(super) struct VodPlan {
     pub demuxer: String,
     pub directory: PathBuf,
     pub duration_millis: u64,
+    pub resume_ticks: Option<i64>,
     pub video_index: Option<u32>,
     pub audio_index: Option<u32>,
     pub video_bitrate: u64,
@@ -96,6 +98,38 @@ pub(super) fn prepare_session(
 
 fn segment_count(duration_millis: u64) -> u32 {
     duration_millis.div_ceil(SEGMENT_MILLIS) as u32
+}
+
+fn batch_keyframe_times(
+    start_millis: u64,
+    duration_millis: u64,
+    resume_ticks: Option<i64>,
+) -> String {
+    let start_frame = start_millis * VIDEO_FPS / 1000;
+    let frame_count = (duration_millis * VIDEO_FPS).div_ceil(1000);
+    let mut frames = (0..BATCH_SEGMENTS)
+        .map(|index| u64::from(index) * SEGMENT_MILLIS * VIDEO_FPS / 1000)
+        .take_while(|frame| *frame < frame_count)
+        .collect::<Vec<_>>();
+    // Preserve every segment boundary and add one random-access point at
+    // the first output frame on or after the requested resume position.
+    if let Some(frame) = resume_ticks
+        .and_then(|ticks| u64::try_from(ticks).ok())
+        .filter(|ticks| *ticks > 0)
+        .and_then(|ticks| ticks.checked_mul(VIDEO_FPS))
+        .map(|ticks| ticks.div_ceil(10_000_000))
+        .and_then(|frame| frame.checked_sub(start_frame))
+        .filter(|frame| *frame < frame_count)
+    {
+        frames.push(frame);
+    }
+    frames.sort_unstable();
+    frames.dedup();
+    frames
+        .into_iter()
+        .map(|frame| format!("{:.6}", frame as f64 / VIDEO_FPS as f64))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub(super) fn playlist(
@@ -322,6 +356,8 @@ async fn prepare_command(
     if start_millis >= plan.duration_millis {
         return Err(ApiError::NotFound);
     }
+    let duration_millis =
+        (plan.duration_millis - start_millis).min(BATCH_SEGMENTS as u64 * SEGMENT_MILLIS);
     fs::create_dir(&directory)
         .await
         .map_err(|_| ApiError::Unavailable)?;
@@ -380,7 +416,9 @@ async fn prepare_command(
             .arg("scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2")
             .args(["-r", "30", "-fps_mode", "cfr", "-g", "120", "-keyint_min", "120", "-sc_threshold", "0", "-b:v"])
             .arg(plan.video_bitrate.to_string()).arg("-maxrate").arg(plan.video_bitrate.to_string())
-            .arg("-bufsize").arg(plan.video_bitrate.saturating_mul(2).to_string()).args(["-threads:v", "2"]);
+            .arg("-bufsize").arg(plan.video_bitrate.saturating_mul(2).to_string()).args(["-threads:v", "2"])
+            .arg("-force_key_frames").arg(batch_keyframe_times(start_millis, duration_millis, plan.resume_ticks))
+            .args(["-forced-idr", "1"]);
     } else {
         command.arg("-vn");
     }
@@ -396,8 +434,6 @@ async fn prepare_command(
     } else {
         command.arg("-an");
     }
-    let duration_millis =
-        (plan.duration_millis - start_millis).min(BATCH_SEGMENTS as u64 * SEGMENT_MILLIS);
     command
         .args(["-sn", "-dn", "-t"])
         .arg(format!("{:.3}", duration_millis as f64 / 1000.0))
@@ -434,8 +470,49 @@ async fn prepare_command(
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaKind, playlist_for_duration};
+    use super::{MediaKind, batch_keyframe_times, playlist_for_duration};
     use uuid::Uuid;
+
+    #[test]
+    fn resume_keyframes_round_forward_without_moving_segment_or_batch_boundaries() {
+        let regular = (0..16)
+            .map(|index| format!("{:.6}", index as f64 * 4.0))
+            .collect::<Vec<_>>();
+        for ticks in [None, Some(0), Some(-1), Some(i64::MAX), Some(640_000_000)] {
+            assert_eq!(batch_keyframe_times(0, 64_000, ticks), regular.join(","));
+        }
+        let resumed = batch_keyframe_times(0, 64_000, Some(251_000_000));
+        assert!(resumed.contains("24.000000,25.100000,28.000000"));
+        assert_eq!(resumed.split(',').count(), 17);
+        let fractional = batch_keyframe_times(0, 64_000, Some(251_160_000));
+        assert!(fractional.contains("24.000000,25.133333,28.000000"));
+        assert_eq!(
+            batch_keyframe_times(64_000, 64_000, Some(1_231_855_880)),
+            regular
+                .join(",")
+                .replace("56.000000,60.000000", "56.000000,59.200000,60.000000")
+        );
+        assert_eq!(
+            batch_keyframe_times(64_000, 64_000, Some(251_000_000)),
+            regular.join(",")
+        );
+        assert_eq!(
+            batch_keyframe_times(64_000, 64_000, Some(640_000_000)),
+            regular.join(",")
+        );
+        assert_eq!(
+            batch_keyframe_times(64_000, 64_000, Some(1_280_000_000)),
+            regular.join(",")
+        );
+        assert_eq!(
+            batch_keyframe_times(0, 4_023, Some(40_100_000)),
+            "0.000000,4.000000"
+        );
+        assert_eq!(
+            batch_keyframe_times(0, 4_034, Some(40_100_000)),
+            "0.000000,4.000000,4.033333"
+        );
+    }
 
     #[test]
     fn vod_playlist_preserves_duration_tail_and_authenticated_child_urls() {

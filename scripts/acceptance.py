@@ -660,8 +660,8 @@ def verify_hls_timeline(client: HttpClient, item_id: str, profile: dict, fixture
     require(source.get("SupportsTranscoding") is True and isinstance(url, str),
             "resume did not negotiate a full-timeline HLS stream")
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
-    require(query.get("fullTimeline") == ["true"] and not any(key.casefold() == "starttimeticks" for key in query),
-            "resume URL still describes an offset clip rather than the full movie")
+    require(query.get("fullTimeline") == ["true"] and query.get("StartTimeTicks") == ["1231855880"],
+            "full-timeline resume URL omitted its requested random-access point")
     status, _, master = client.request("GET", url)
     require(status == 200 and b"#EXTM3U" in master, "resume master playlist was unavailable")
     session_id = str(uuid.UUID(str(playback.get("PlaySessionId") or "")))
@@ -690,6 +690,14 @@ def verify_hls_timeline(client: HttpClient, item_id: str, profile: dict, fixture
                     f"HLS segment {index} does not carry its source-time video timestamp")
             require(abs(float(video.get("duration", -1)) - durations[index]) < 0.05,
                     f"HLS segment {index} does not have the advertised duration")
+            if index == 30:
+                result = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_frames",
+                                         "-show_entries", "frame=key_frame,pts_time", "-of", "json", str(path)],
+                                        check=True, capture_output=True, text=True, timeout=20)
+                keys = [float(frame["pts_time"]) for frame in json.loads(result.stdout).get("frames", [])
+                        if frame.get("key_frame") == 1 and "pts_time" in frame]
+                require(any(0 <= point - 123.185588 < 1 / 30 + 0.001 for point in keys),
+                        "HLS resume segment has no random-access frame at or immediately after the requested position")
             if index in (16, 48, 64):
                 first_packets = {}
                 require(len(segment) % 188 == 0, "HLS transport data is not packet aligned")
@@ -712,7 +720,7 @@ def verify_hls_timeline(client: HttpClient, item_id: str, profile: dict, fixture
     status, _, _ = client.request("DELETE", session_path)
     require(status == 204, "full-timeline HLS session cancellation failed")
     report("Full-duration HLS resume, forward/backward segment requests, source timestamps, and end boundary", True,
-           f"{count} segments cover the {runtime:.3f}-second source; video timestamps matched nonsequential requests and three batch starts signaled transport-counter resets")
+           f"{count} segments cover the {runtime:.3f}-second source; the resume keyframe rounded forward within one frame, nonsequential timestamps matched, and three batch starts signaled transport-counter resets")
 
 
 def ensure_user(admin: HttpClient, username: str, password: str, library_id: str | None, *, playback: bool, blocked_categories: list[str] | None = None) -> dict:

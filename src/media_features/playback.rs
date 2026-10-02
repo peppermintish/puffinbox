@@ -1295,7 +1295,8 @@ fn build_hls_url(options: HlsUrlOptions<'_>) -> String {
         query.push("streamCopy=true".to_owned());
     } else if full_timeline {
         query.push("fullTimeline=true".to_owned());
-    } else if let Some(ticks) = request.start_time_ticks.filter(|ticks| *ticks > 0) {
+    }
+    if !stream_copy && let Some(ticks) = request.start_time_ticks.filter(|ticks| *ticks > 0) {
         query.push(format!("StartTimeTicks={ticks}"));
     }
     if let Some(index) = request.audio_stream_index.filter(|_| output_audio) {
@@ -1952,7 +1953,7 @@ mod tests {
             max_streaming_bitrate: Some(800_000),
         });
         assert!(transcoded.contains("fullTimeline=true"));
-        assert!(!transcoded.contains("StartTimeTicks="));
+        assert!(transcoded.contains("StartTimeTicks=12345678"));
         assert!(transcoded.contains("audioStreamIndex=2"));
         assert!(transcoded.contains("maxAudioChannels=1"));
         assert!(transcoded.ends_with("ApiKey=token%2B%2F%3D"));

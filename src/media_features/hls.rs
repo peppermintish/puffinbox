@@ -788,6 +788,7 @@ async fn start_hls(
                 directory: directory.clone(),
                 duration_millis: (source_duration.ok_or(ApiError::Unavailable)? * 1000.0).ceil()
                     as u64,
+                resume_ticks: options.start_time_ticks,
                 video_index: selected_video.map(|stream| stream.index),
                 audio_index: selected_audio.map(|stream| stream.index),
                 video_bitrate,
