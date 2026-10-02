@@ -2060,6 +2060,12 @@ fn push_item_conditions(
         .push(LIVE_TV_CHANNEL_ENABLED_SQL)
         .push(" ");
     push_user_visibility_filters(builder, user);
+    if !query.item_ids.is_empty() {
+        builder
+            .push(" AND i.id = ANY(")
+            .push_bind(query.item_ids.clone())
+            .push(") ");
+    }
     if let Some((library_id, parent_item_id)) = parent {
         if let Some(parent_id) = parent_item_id {
             if recursive {
@@ -2264,9 +2270,16 @@ async fn run_item_page(
     } else {
         "ASC"
     };
+    builder.push(" ORDER BY ");
+    if query.preserve_item_order && !query.item_ids.is_empty() {
+        builder
+            .push("array_position(")
+            .push_bind(query.item_ids.clone())
+            .push(", i.id)");
+    } else {
+        builder.push(sort_column);
+    }
     builder
-        .push(" ORDER BY ")
-        .push(sort_column)
         .push(" ")
         .push(order)
         .push(", i.id ASC LIMIT ")

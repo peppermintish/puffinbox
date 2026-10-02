@@ -331,6 +331,7 @@ pub(crate) async fn catalog_result(
         }
     }
     if query.include_item_types.len() != 1
+        || !query.item_ids.is_empty()
         || query.is_folder.is_some()
         || query.is_played.is_some()
         || query.is_favorite

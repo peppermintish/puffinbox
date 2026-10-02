@@ -1108,7 +1108,7 @@ async fn verify_folder_filters(
     )
     .await;
     set_local_policy_rating(pool, blocked.id, "R", 100).await;
-    insert_item(
+    let hidden = insert_item(
         pool,
         library_id,
         None,
@@ -1231,7 +1231,7 @@ async fn verify_folder_filters(
     )
     .await
     .unwrap();
-    insert_item(
+    let private_photo = insert_item(
         pool,
         private_library,
         None,
@@ -1241,6 +1241,70 @@ async fn verify_folder_filters(
         None,
     )
     .await;
+    let ids = format!(
+        "{},{},{},{},{},{},{}",
+        second.id,
+        hidden.id,
+        blocked.id,
+        private_photo.id,
+        Uuid::new_v4(),
+        first.id,
+        first.id
+    );
+    for endpoint in ["/Items".to_owned(), format!("/Users/{user_id}/Items")] {
+        let (status, result) = get_json(router, &format!("{endpoint}?Ids={ids}&Limit=300&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=true&CollapseBoxSetItems=false"), token).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(result["TotalRecordCount"], 2);
+        assert_eq!(result["Items"].as_array().unwrap().len(), 2);
+        assert_eq!(result["Items"][0]["Id"], second.id.to_string());
+        assert_eq!(result["Items"][1]["Id"], first.id.to_string());
+        let (status, page) = get_json(
+            router,
+            &format!("{endpoint}?ids={ids}&StartIndex=1&Limit=1"),
+            token,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(page["TotalRecordCount"], 2);
+        assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+        assert_eq!(page["Items"][0]["Id"], first.id.to_string());
+    }
+    let (status, sorted) = get_json(
+        router,
+        &format!(
+            "/Items?Ids={ids}&ParentId={library_id}&Recursive=true&MediaTypes=Photo&SortBy=SortName"
+        ),
+        token,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(sorted["TotalRecordCount"], 2);
+    assert_eq!(sorted["Items"][0]["Id"], first.id.to_string());
+    assert_eq!(sorted["Items"][1]["Id"], second.id.to_string());
+    let (status, omitted_count) = get_json(
+        router,
+        &format!(
+            "/Items?Ids={}&MediaTypes=Video&EnableTotalRecordCount=false",
+            first.id
+        ),
+        token,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert!(omitted_count.get("TotalRecordCount").is_none());
+    assert!(omitted_count["Items"].as_array().unwrap().is_empty());
+    for selection in [
+        String::new(),
+        "invalid".to_owned(),
+        format!("{},invalid", first.id),
+        format!("{},", first.id),
+        vec![first.id.to_string(); 1001].join(","),
+    ] {
+        assert_eq!(
+            get_status(router, &format!("/Items?Ids={selection}"), token).await,
+            axum::http::StatusCode::BAD_REQUEST
+        );
+    }
     assert_eq!(
         get_status(
             router,
@@ -1255,6 +1319,10 @@ async fn verify_folder_filters(
         .execute(pool)
         .await
         .unwrap();
+    let (status, disabled) = get_json(router, &format!("/Items?Ids={ids}"), token).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(disabled["TotalRecordCount"], 0);
+    assert!(disabled["Items"].as_array().unwrap().is_empty());
     assert_eq!(
         get_status(
             router,

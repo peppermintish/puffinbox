@@ -7,7 +7,7 @@
     },
     "jellyfin_12_behavior": {
       "passed": false,
-      "detail": "92 of 364 operation declarations match. Bounded HLS seeking, cached-detail resume, notifications, catalog filters, private playlists, and universal direct audio have local coverage. Core 87a1da1a passed official Qt 6 native video resume/completion and visible HLS decoding. Current core 4d38ae94 passed 26 container checks and native viewing of one synthetic PNG. Scoped HLS credentials have revocation and conflicting-parent regressions. Ignored Ids queue selection, native audio resume, broader HLS stop/resume, universal audio transcoding, a transient web playback notice, audio continuity, and full behavioral compatibility remain unresolved."
+      "detail": "92 of 364 operation declarations match. Bounded HLS seeking, cached-detail resume, notifications, catalog filters, private playlists, and universal direct audio have local coverage. Core 87a1da1a passed official Qt 6 native video resume/completion and visible HLS decoding. Core 4d38ae94 passed native viewing of one synthetic PNG. Current core 99b11427 passed 26 container checks, explicit queue selection, and native FLAC resume and stop. Scoped HLS credentials have revocation and conflicting-parent regressions. Native HLS resume has an unresolved 2.9-second discrepancy. Broader HLS behavior, universal audio transcoding, a transient web playback notice, audio continuity, and full behavioral compatibility remain unresolved."
     },
     "feature_acceptance": {
       "passed": false,

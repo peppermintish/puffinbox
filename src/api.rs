@@ -2312,6 +2312,8 @@ mod library_request_tests {
 pub(crate) struct ItemsQueryParams {
     #[serde(default, rename = "ParentId", alias = "parentId")]
     parent_id: Option<Uuid>,
+    #[serde(default, rename = "Ids", alias = "ids")]
+    ids: Option<String>,
     #[serde(default, rename = "SearchTerm", alias = "searchTerm")]
     search_term: Option<String>,
     #[serde(default, rename = "IncludeItemTypes", alias = "includeItemTypes")]
@@ -2536,6 +2538,8 @@ pub(crate) fn item_query(
     params: ItemsQueryParams,
     state: &AppState,
 ) -> Result<ItemQuery, ApiError> {
+    let item_ids = parse_catalog_item_ids(params.ids.as_deref())?;
+    let preserve_item_order = !item_ids.is_empty() && params.sort_by.is_none();
     if [
         params.audio_languages.as_deref(),
         params.subtitle_languages.as_deref(),
@@ -2667,6 +2671,8 @@ pub(crate) fn item_query(
     }
     Ok(ItemQuery {
         parent_id: params.parent_id,
+        item_ids,
+        preserve_item_order,
         search_term,
         exact_name: None,
         include_item_types,
@@ -2689,6 +2695,28 @@ pub(crate) fn item_query(
             params.years.as_deref(),
         )?,
     })
+}
+
+fn parse_catalog_item_ids(raw: Option<&str>) -> Result<Vec<Uuid>, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    for (index, value) in raw.split(',').enumerate() {
+        if index >= 1_000 {
+            return Err(ApiError::BadRequest(
+                "Ids contains more than 1,000 values".to_owned(),
+            ));
+        }
+        let id = value.trim().parse::<Uuid>().map_err(|_| {
+            ApiError::BadRequest("Ids contains an invalid item identifier".to_owned())
+        })?;
+        if seen.insert(id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 #[derive(Deserialize, Default)]
@@ -2970,6 +2998,8 @@ async fn latest_items(
         enable_total_record_count: false,
         sort_by: "DateCreated".to_owned(),
         sort_order: "Descending".to_owned(),
+        item_ids: Vec::new(),
+        preserve_item_order: false,
         is_folder: None,
         is_played: params.is_played,
         is_favorite: false,
@@ -3019,6 +3049,8 @@ async fn resume_items(
         enable_total_record_count: true,
         sort_by: "LastPlayedDate".to_owned(),
         sort_order: "Descending".to_owned(),
+        item_ids: Vec::new(),
+        preserve_item_order: false,
         is_folder: None,
         is_played: None,
         is_favorite: false,
@@ -3067,6 +3099,8 @@ async fn show_seasons(
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        item_ids: Vec::new(),
+        preserve_item_order: false,
         is_folder: None,
         is_played: None,
         is_favorite: false,
@@ -3106,6 +3140,8 @@ async fn show_episodes(
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        item_ids: Vec::new(),
+        preserve_item_order: false,
         is_folder: None,
         is_played: None,
         is_favorite: false,
@@ -3269,6 +3305,8 @@ async fn list_music_persons(
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        item_ids: Vec::new(),
+        preserve_item_order: false,
         is_folder: None,
         is_played: None,
         is_favorite: false,
@@ -3483,6 +3521,8 @@ async fn list_music_artists(
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        item_ids: Vec::new(),
+        preserve_item_order: false,
         is_folder: None,
         is_played: None,
         is_favorite: false,
@@ -3723,6 +3763,8 @@ async fn search_hints(
         enable_total_record_count: true,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        item_ids: Vec::new(),
+        preserve_item_order: false,
         is_folder: None,
         is_played: None,
         is_favorite: false,

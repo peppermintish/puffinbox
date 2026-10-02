@@ -1032,6 +1032,17 @@ def run(args: argparse.Namespace) -> int:
     photo_id = urllib.parse.quote(str(photo.get("Id") or ""))
     photo_parent = urllib.parse.quote(str(photo.get("ParentId") or ""))
     require(bool(photo_parent), "photo fixture has no catalog parent")
+    selected_ids = f"{photo_id},{item_id},{photo_id},{uuid.uuid4()}"
+    _, _, selected = client.json("GET", f"/Users/{admin_user['Id']}/Items?Ids={selected_ids}&Limit=300")
+    require([item["Id"] for item in selected["Items"]] == [photo["Id"], item_id]
+            and selected["TotalRecordCount"] == 2,
+            "explicit queue identifiers included unrelated items or lost requested order")
+    _, _, selected_page = client.json("GET", f"/Items?ids={selected_ids}&StartIndex=1&Limit=1")
+    require([item["Id"] for item in selected_page["Items"]] == [item_id]
+            and selected_page["TotalRecordCount"] == 2,
+            "explicit queue selection was not applied before counts and pagination")
+    require(client.request("GET", f"/Items?Ids={photo_id},invalid")[0] == 400,
+            "invalid queue identifiers were accepted")
     _, _, photo_page = client.json("GET", f"/Users/{admin_user['Id']}/Items?ParentId={photo_parent}&Filters=IsNotFolder&Recursive=false&SortBy=SortName&MediaTypes=Photo,Video&SortOrder=Ascending&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false&CollapseBoxSetItems=false")
     require([item["Id"] for item in photo_page["Items"]] == [photo["Id"]]
             and all(item["IsFolder"] is False for item in photo_page["Items"])
@@ -1084,6 +1095,9 @@ def run(args: argparse.Namespace) -> int:
     login(denied_client, values["PUFFINBOX_ACCEPTANCE_DENIED_USERNAME"], values["PUFFINBOX_ACCEPTANCE_DENIED_PASSWORD"])
     _, _, hidden = denied_client.json("GET", "/Items?Recursive=true&StartIndex=0&Limit=100&EnableTotalRecordCount=true")
     require(not any(str(entry.get("Id")) == item_id for entry in hidden.get("Items", [])), "empty-library user can see a restricted item")
+    _, _, hidden_selection = denied_client.json("GET", f"/Items?Ids={item_id}")
+    require(hidden_selection["Items"] == [] and hidden_selection["TotalRecordCount"] == 0,
+            "explicit queue identifiers bypassed the empty library policy")
     unrated_client = HttpClient(base_url)
     login(unrated_client, values["PUFFINBOX_ACCEPTANCE_UNRATED_USERNAME"], values["PUFFINBOX_ACCEPTANCE_UNRATED_PASSWORD"])
     _, _, unrated_items = unrated_client.json("GET", "/Items?Recursive=true&StartIndex=0&Limit=100&EnableTotalRecordCount=true")
