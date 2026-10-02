@@ -1399,13 +1399,15 @@ async fn progress_playback(
         user.id,
         &device.id,
     )?;
-    let active = db::active_playback_session(
+    let active = db::wait_for_playback_start(
         &state.db,
-        state.run_id,
-        user.id,
-        &device.id,
-        session_id,
-        body.item_id,
+        &db::PlaybackSessionSelector {
+            run_id: state.run_id,
+            user_id: user.id,
+            device_id: device.id.clone(),
+            id: session_id,
+            item_id: body.item_id,
+        },
     )
     .await?
     .ok_or(ApiError::NotFound)?;
@@ -1454,8 +1456,11 @@ async fn stop_playback(
         session_id,
         body.item_id,
     )
-    .await?
-    .ok_or(ApiError::NotFound)?;
+    .await?;
+    let Some(active) = active else {
+        return acknowledge_ended_playback(&state, &user, &device.id, session_id, body.item_id)
+            .await;
+    };
     let item_id = active.item_id.ok_or(ApiError::NotFound)?;
     let item = visible_playback_item(&state, &user, item_id).await?;
     let session = db::finish_playback_session(
@@ -1463,7 +1468,7 @@ async fn stop_playback(
         db::PlaybackSessionSelector {
             run_id: state.run_id,
             user_id: user.id,
-            device_id: device.id,
+            device_id: device.id.clone(),
             id: Some(active.id),
             item_id: Some(item_id),
         },
@@ -1472,13 +1477,51 @@ async fn stop_playback(
         user.allow_media_playback && item.is_some(),
     )
     .await?;
+    let Some(_session) = session else {
+        return acknowledge_ended_playback(
+            &state,
+            &user,
+            &device.id,
+            Some(active.id),
+            Some(item_id),
+        )
+        .await;
+    };
     crate::media_features::cancel_playback_session(user.id, item_id, active.id).await;
-    let _session = session.ok_or(ApiError::NotFound)?;
     if !user.allow_media_playback {
         return Err(ApiError::Forbidden);
     }
     let _item = item.ok_or(ApiError::NotFound)?;
     state.user_events.publish(user.id, item_id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn acknowledge_ended_playback(
+    state: &AppState,
+    user: &UserRecord,
+    device_id: &str,
+    session_id: Option<Uuid>,
+    item_id: Option<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    if !user.allow_media_playback {
+        return Err(ApiError::Forbidden);
+    }
+    let ended = db::ended_playback_session(
+        &state.db,
+        state.run_id,
+        user.id,
+        device_id,
+        session_id,
+        item_id,
+    )
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    let item_id = ended.item_id.ok_or(ApiError::NotFound)?;
+    visible_playback_item(state, user, item_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    // Duplicate native stop events must not reset completion or the saved
+    // position, publish a second update, or cancel a newer playback session.
     Ok(StatusCode::NO_CONTENT)
 }
 

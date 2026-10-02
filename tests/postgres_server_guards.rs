@@ -1019,6 +1019,20 @@ async fn server_run_fences_playback_and_scans_and_scan_reconciliation_fails_safe
     );
     let old_selector = playback_selector(old_run, user_id, old_session_id, movie_id);
     assert!(
+        db::ended_playback_session(
+            &pool,
+            old_run,
+            user_id,
+            "test-device",
+            Some(old_session_id),
+            Some(movie_id)
+        )
+        .await
+        .unwrap()
+        .is_none(),
+        "ended playback cannot be acknowledged by a stale server run"
+    );
+    assert!(
         db::update_playback_session(&pool, old_selector.clone(), Some(900), None)
             .await
             .unwrap()
@@ -1057,6 +1071,55 @@ async fn server_run_fences_playback_and_scans_and_scan_reconciliation_fails_safe
             .unwrap()
             .unwrap();
     assert_eq!(active.id, new_session_id);
+
+    // Hold the same transaction lock as a new start while its row is still
+    // uncommitted. A progress lookup must wait for that start to commit.
+    let pending_session_id = Uuid::new_v4();
+    let mut pending_start = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("{user_id}:pending-device"))
+        .execute(&mut *pending_start)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO playback_sessions(id,instance_run_id,user_id,item_id,device_id,device_name,client,position_ticks) VALUES ($1,$2,$3,$4,'pending-device','Pending device','test',0)")
+        .bind(pending_session_id).bind(new_run).bind(user_id).bind(movie_id)
+        .execute(&mut *pending_start).await.unwrap();
+    let lookup = db::active_playback_session(
+        &pool,
+        new_run,
+        user_id,
+        "pending-device",
+        None,
+        Some(movie_id),
+    );
+    tokio::pin!(lookup);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut lookup)
+            .await
+            .is_err(),
+        "a lookup must not report missing playback while its start is uncommitted"
+    );
+    assert!(
+        db::active_playback_session(
+            &pool,
+            new_run,
+            user_id,
+            "different-device",
+            None,
+            Some(movie_id)
+        )
+        .await
+        .unwrap()
+        .is_none(),
+        "an unrelated device does not wait on another device's start"
+    );
+    pending_start.commit().await.unwrap();
+    let committed = tokio::time::timeout(Duration::from_secs(5), &mut lookup)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.id, pending_session_id);
 
     for _ in 0..32 {
         let session_id = Uuid::new_v4();

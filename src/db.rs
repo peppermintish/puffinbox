@@ -1607,7 +1607,79 @@ pub async fn active_playback_session(
         tx.rollback().await?;
         return Ok(None);
     }
+    // A native client can report progress while its start is committing.
+    // Share the start's device lock so this lookup sees the committed row.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("{user_id}:{device_id}"))
+        .execute(&mut *tx)
+        .await?;
     let row = sqlx::query("SELECT id,item_id,position_ticks FROM playback_sessions WHERE instance_run_id=$1 AND user_id=$2 AND device_id=$3 AND ended_at IS NULL AND ($4::UUID IS NULL OR id=$4) AND ($5::UUID IS NULL OR item_id=$5) ORDER BY last_activity_at DESC LIMIT 1")
+        .bind(run_id).bind(user_id).bind(device_id).bind(id).bind(item_id).fetch_optional(&mut *tx).await?;
+    tx.commit().await?;
+    row.as_ref()
+        .map(|row| {
+            Ok(PlaybackSessionRecord {
+                id: row.try_get("id")?,
+                item_id: row.try_get("item_id")?,
+                position_ticks: row.try_get("position_ticks")?,
+            })
+        })
+        .transpose()
+}
+
+pub async fn wait_for_playback_start(
+    pool: &PgPool,
+    selector: &PlaybackSessionSelector,
+) -> Result<Option<PlaybackSessionRecord>, sqlx::Error> {
+    let mut active = active_playback_session(
+        pool,
+        selector.run_id,
+        selector.user_id,
+        &selector.device_id,
+        selector.id,
+        selector.item_id,
+    )
+    .await?;
+    // Desktop direct playback sends an empty ID and can report progress
+    // before its concurrent start takes the transaction lock. Give that
+    // start five short chances to commit; never create or revive a row here.
+    if active.is_none() && selector.id.is_none() && selector.item_id.is_some() {
+        for _ in 0..5 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            active = active_playback_session(
+                pool,
+                selector.run_id,
+                selector.user_id,
+                &selector.device_id,
+                selector.id,
+                selector.item_id,
+            )
+            .await?;
+            if active.is_some() {
+                break;
+            }
+        }
+    }
+    Ok(active)
+}
+
+pub async fn ended_playback_session(
+    pool: &PgPool,
+    run_id: Uuid,
+    user_id: Uuid,
+    device_id: &str,
+    id: Option<Uuid>,
+    item_id: Option<Uuid>,
+) -> Result<Option<PlaybackSessionRecord>, sqlx::Error> {
+    if id.is_none() && item_id.is_none() {
+        return Ok(None);
+    }
+    let mut tx = pool.begin().await?;
+    if !active_run_is_current(&mut tx, run_id).await? {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let row = sqlx::query("SELECT id,item_id,position_ticks FROM playback_sessions WHERE instance_run_id=$1 AND user_id=$2 AND device_id=$3 AND ended_at IS NOT NULL AND ($4::UUID IS NULL OR id=$4) AND ($5::UUID IS NULL OR item_id=$5) ORDER BY ended_at DESC,id LIMIT 1")
         .bind(run_id).bind(user_id).bind(device_id).bind(id).bind(item_id).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
     row.as_ref()

@@ -111,6 +111,64 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         .execute(&pool)
         .await
         .unwrap();
+    let early_progress = json!({"ItemId":track_id,"PlaySessionId":"","PositionTicks":120000000});
+    let early_selector = db::PlaybackSessionSelector {
+        run_id,
+        user_id,
+        device_id: first_device.clone(),
+        id: None,
+        item_id: Some(track_id),
+    };
+    let pending_progress = db::wait_for_playback_start(&pool, &early_selector);
+    tokio::pin!(pending_progress);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut pending_progress)
+            .await
+            .is_err(),
+        "native progress can arrive before start acquires its transaction lock"
+    );
+    let empty_start = json!({"ItemId":track_id,"PlaySessionId":"","PositionTicks":0});
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing",
+            &empty_start
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        pending_progress.await.unwrap().unwrap().item_id,
+        Some(track_id)
+    );
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Progress",
+            &early_progress
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let early_data = db::item_user_data(&pool, user_id, &[track_id])
+        .await
+        .unwrap();
+    assert_eq!(early_data[&track_id].playback_position_ticks, 120000000);
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Stopped",
+            &early_progress
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
     for invalid in [" ".to_owned(), "x\ny".to_owned(), "x".repeat(257)] {
         let body = json!({"ItemId":track_id,"PlaySessionId":invalid,"PositionTicks":0});
         assert_eq!(
@@ -167,21 +225,56 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         );
         let stopped =
             json!({"ItemId":track_id,"PlaySessionId":opaque_id,"PositionTicks":200000000});
-        assert_eq!(
+        let (stop, repeated_stop) = tokio::join!(
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing/Stopped",
+                &stopped
+            ),
             post(
                 &router,
                 Some(&first.token),
                 "/Sessions/Playing/Stopped",
                 &stopped
             )
-            .await
-            .status(),
-            StatusCode::NO_CONTENT
         );
+        for response in [stop, repeated_stop] {
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        }
         let data = db::item_user_data(&pool, user_id, &[track_id])
             .await
             .unwrap();
         assert_eq!(data[&track_id].playback_position_ticks, 200000000);
+        let duplicate_stop = json!({"ItemId":track_id,"PlaySessionId":opaque_id,"PositionTicks":0});
+        assert_eq!(
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing/Stopped",
+                &duplicate_stop
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT,
+            "a duplicate stop is acknowledged without replacing the saved position"
+        );
+        let retained = db::item_user_data(&pool, user_id, &[track_id])
+            .await
+            .unwrap();
+        assert_eq!(retained[&track_id].playback_position_ticks, 200000000);
+        assert_eq!(
+            post(
+                &router,
+                Some(&peer_session.token),
+                "/Sessions/Playing/Stopped",
+                &duplicate_stop
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND,
+            "a duplicate stop cannot acknowledge another user's ended playback"
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM playback_sessions WHERE user_id=$1 AND ended_at IS NULL"
@@ -241,6 +334,23 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         server_id,
         "server-issued UUIDs retain their identity"
     );
+    let completed = json!({"ItemId":track_id,"PlaySessionId":server_id,"PositionTicks":980000000});
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Stopped",
+            &completed
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT,
+    );
+    let completed_data = db::item_user_data(&pool, user_id, &[track_id])
+        .await
+        .unwrap();
+    assert!(completed_data[&track_id].played);
+    assert_eq!(completed_data[&track_id].playback_position_ticks, 0);
     assert_eq!(
         post(
             &router,
@@ -251,7 +361,149 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         .await
         .status(),
         StatusCode::NO_CONTENT,
+        "a duplicate zero-position stop cannot erase completion"
     );
+    let retained_data = db::item_user_data(&pool, user_id, &[track_id])
+        .await
+        .unwrap();
+    assert!(retained_data[&track_id].played);
+    assert_eq!(retained_data[&track_id].playback_position_ticks, 0);
+    assert_eq!(
+        retained_data[&track_id].play_count,
+        completed_data[&track_id].play_count
+    );
+    assert_eq!(
+        post(
+            &router,
+            Some(&second.token),
+            "/Sessions/Playing/Stopped",
+            &uuid_event
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "an ended UUID is still restricted to its authenticated device"
+    );
+    let next_track = Uuid::new_v4();
+    sqlx::query("INSERT INTO items(id,library_id,name,sort_name,item_type,path,path_hash,runtime_ticks) VALUES ($1,$2,'Next event track','Next event track','Audio','/music/next.flac',$3,1000000000)")
+        .bind(next_track).bind(library_id).bind(db::path_hash("/music/next.flac"))
+        .execute(&pool).await.unwrap();
+    let next_session = Uuid::new_v4();
+    let next_event =
+        json!({"ItemId":next_track,"PlaySessionId":next_session,"PositionTicks":10000000});
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing",
+            &next_event
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    for duplicate in [
+        &uuid_event,
+        &json!({"ItemId":track_id,"PlaySessionId":"","PositionTicks":0}),
+    ] {
+        assert_eq!(
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing/Stopped",
+                duplicate
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(
+        db::active_playback_session(
+            &pool,
+            run_id,
+            user_id,
+            &first_device,
+            Some(next_session),
+            Some(next_track)
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .id,
+        next_session,
+        "a duplicate old-track stop cannot close the newer queue item"
+    );
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Stopped",
+            &next_event
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Stopped",
+            &uuid_event
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "an ended session cannot bypass a changed library policy"
+    );
+    sqlx::query("UPDATE libraries SET enabled=TRUE WHERE id=$1")
+        .bind(library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET allow_media_playback=FALSE WHERE id=$1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            &router,
+            Some(&first.token),
+            "/Sessions/Playing/Stopped",
+            &uuid_event
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query("UPDATE users SET allow_media_playback=TRUE WHERE id=$1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for unknown in [
+        json!({}),
+        json!({"ItemId":track_id,"PlaySessionId":Uuid::new_v4()}),
+    ] {
+        assert_eq!(
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing/Stopped",
+                &unknown
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
     let capabilities = json!({
         "PlayableMediaTypes": ["Video", "Audio"],
         "SupportedCommands": ["SetVolume", "Mute"],
