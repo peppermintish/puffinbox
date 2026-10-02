@@ -1692,7 +1692,7 @@ async fn update_user_policy(
     let Json(body) = body.map_err(|_| {
         ApiError::BadRequest("A valid user policy JSON object is required".to_owned())
     })?;
-    if body.name.is_some() || body.password.is_some() || body.is_administrator.is_some() {
+    if body.name.is_some() || body.password.is_some() {
         return Err(ApiError::BadRequest(
             "The policy endpoint only accepts policy fields".to_owned(),
         ));
@@ -1717,7 +1717,13 @@ async fn update_user_policy(
     };
     db::update_user(&state.db, state.run_id, user_id, &patch)
         .await
-        .map_err(map_user_write_error)?
+        .map_err(|error| {
+            if matches!(&error, sqlx::Error::Protocol(message) if message.contains("last enabled administrator")) {
+                ApiError::BadRequest("At least one enabled administrator must remain".to_owned())
+            } else {
+                map_user_write_error(error)
+            }
+        })?
         .ok_or(ApiError::NotFound)?;
     Ok(StatusCode::NO_CONTENT)
 }

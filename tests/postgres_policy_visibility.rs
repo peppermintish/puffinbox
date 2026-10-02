@@ -1000,6 +1000,7 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
     assert_eq!(song_json["IndexNumber"], 1);
 
     verify_folder_filters(&router, &pool, run_id, user_id, token).await;
+    verify_administrator_policy(&router, &pool, run_id, admin_id, admin_token).await;
     drop(router);
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
@@ -1007,6 +1008,162 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
         .await
         .unwrap();
     admin_pool.close().await;
+}
+
+async fn verify_administrator_policy(
+    router: &axum::Router,
+    pool: &PgPool,
+    run_id: Uuid,
+    admin_id: Uuid,
+    admin_token: &str,
+) {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    let target_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,username,username_norm,password_hash,enable_remote_access) VALUES ($1,'policy-role-target','policy-role-target','unused',TRUE)")
+        .bind(target_id).execute(pool).await.unwrap();
+    let target_token = "policy-role-target-token";
+    create_token(pool, run_id, target_id, target_token).await;
+    let target_uri = format!("/Users/{target_id}/Policy");
+    let admin_uri = format!("/Users/{admin_id}/Policy");
+    let (status, _) = post_json(
+        router,
+        &target_uri,
+        target_token,
+        json!({"IsAdministrator":true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "users cannot promote themselves"
+    );
+    assert!(
+        !db::get_user(pool, target_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_admin
+    );
+
+    for body in [json!({"IsAdministrator":false}), json!({"IsDisabled":true})] {
+        let (status, _) = post_json(router, &admin_uri, admin_token, body).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "the last enabled administrator is retained"
+        );
+        let retained = db::get_user(pool, admin_id).await.unwrap().unwrap();
+        assert!(retained.is_admin && !retained.disabled);
+    }
+    for body in [
+        json!({"IsAdministrator":"true"}),
+        json!({"IsAdministrator":true,"Name":"cannot-rename"}),
+        json!({"IsAdministrator":true,"Password":"cannot-change"}),
+    ] {
+        let (status, _) = post_json(router, &target_uri, admin_token, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let retained = db::get_user(pool, target_id).await.unwrap().unwrap();
+        assert!(!retained.is_admin);
+        assert_eq!(retained.username, "policy-role-target");
+    }
+    let (status, body) = post_json(
+        router,
+        &target_uri,
+        admin_token,
+        json!({"IsAdministrator":true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "administrator is a documented policy field: {body}"
+    );
+    assert!(body.is_null());
+    let (status, policy) = get_json(router, &target_uri, target_token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(policy["IsAdministrator"], true);
+    assert!(
+        db::get_user(pool, target_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_admin
+    );
+    assert_eq!(
+        get_status(router, "/Users", target_token).await,
+        StatusCode::OK
+    );
+
+    let (status, _) = post_json(
+        router,
+        &format!("/Users/{}/Policy", Uuid::new_v4()),
+        admin_token,
+        json!({"IsAdministrator":true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = post_json(
+        router,
+        &admin_uri,
+        admin_token,
+        json!({"IsAdministrator":false}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "another enabled administrator remains: {body}"
+    );
+    assert!(body.is_null());
+    assert_eq!(
+        get_status(router, "/Users", admin_token).await,
+        StatusCode::FORBIDDEN,
+        "existing sessions lose administrative access immediately"
+    );
+    for body in [json!({"IsAdministrator":false}), json!({"IsDisabled":true})] {
+        let (status, _) = post_json(router, &target_uri, target_token, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let retained = db::get_user(pool, target_id).await.unwrap().unwrap();
+        assert!(retained.is_admin && !retained.disabled);
+    }
+    let (status, body) = post_json(
+        router,
+        &admin_uri,
+        target_token,
+        json!({"IsAdministrator":true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "the remaining administrator can restore a role: {body}"
+    );
+    assert!(body.is_null());
+    assert_eq!(
+        get_status(router, "/Users", admin_token).await,
+        StatusCode::OK
+    );
+    let (status, body) = post_json(
+        router,
+        &target_uri,
+        admin_token,
+        json!({"IsAdministrator":false,"EnableAllFolders":false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(body.is_null());
+    let retained = db::get_user(pool, target_id).await.unwrap().unwrap();
+    assert!(!retained.is_admin && retained.restrict_libraries);
+    assert_eq!(
+        get_status(router, "/Users", target_token).await,
+        StatusCode::FORBIDDEN
+    );
+    let (status, policy) = get_json(router, &target_uri, target_token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(policy["IsAdministrator"], false);
+    assert_eq!(policy["EnableAllFolders"], false);
 }
 
 async fn verify_folder_filters(
