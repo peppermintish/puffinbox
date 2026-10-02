@@ -100,6 +100,15 @@ class SourceInventoryTests(unittest.TestCase):
         self.assertFalse(known_non_allowlisted_path(LIBRARY + "core/src/unicode/mod.rs"))
         self.assertFalse(known_non_allowlisted_path("/cargo/unicode-normalization/src/lib.rs"))
 
+    def test_mapped_system_headers_are_reported_for_review(self):
+        program = Program(states=[state(0x1000), state(0x1008, end=True),
+                                  state(0x1010, file=2), state(0x1018, end=True)])
+        program["file_entry"].append(SimpleNamespace(name=b"/usr/include/stdlib.h", dir_index=0))
+        result = inventory(Elf(program), {SOURCE: "source-hash"})
+        self.assertIn("/usr/include/stdlib.h", result["unreviewedSystemHeaderFiles"])
+        self.assertNotIn(SOURCE, result["unreviewedSystemHeaderFiles"])
+        self.assertFalse(result["licenseClearance"])
+
 
 if __name__ == "__main__":
     unittest.main()

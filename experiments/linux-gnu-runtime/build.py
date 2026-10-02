@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -69,6 +70,33 @@ def startup_check(output: Path, environment: dict[str, str]) -> dict[str, object
         raise RuntimeError("The executable did not reach and reject the missing-database configuration.")
     return {"executableMode": oct((output / "server").stat().st_mode & 0o777),
             "missingDatabaseExitCode": result.returncode, "configurationErrorReached": True}
+
+
+def c_header_check(output: Path, root: Path, environment: dict[str, str]) -> dict[str, object]:
+    header = root / "experiments/linux-gnu-runtime/c-headers.h"
+    fixture = root / "experiments/linux-gnu-runtime/c-headers.c"
+    for label in ["baseline", "adapter"]:
+        command = ["cc", "-O2", "-g", "-Wall", "-Wextra", "-Werror"]
+        if label == "adapter":
+            command += ["-D_GNU_SOURCE", "-D__NO_INLINE__", "-include", str(header)]
+        binary = output / f"c-headers-{label}"
+        run([*command, str(fixture), "-o", str(binary)], cwd=output, env=environment,
+            log=output / f"c-headers-{label}-build.log")
+        run([str(binary), " -12345tail"], cwd=output, env=environment,
+            log=output / f"c-headers-{label}-output.txt")
+    before = (output / "c-headers-baseline-output.txt").read_bytes()
+    after = (output / "c-headers-adapter-output.txt").read_bytes()
+    if before != after or len(after.splitlines()) != 4096:
+        raise RuntimeError("The endian adapter differed from the C baseline or independent byte oracle.")
+    assembly = output / "c-headers-assembly.S"
+    assembly.write_text(".text\n.p2align 4\n.globl puffinbox_c_header_assembly_probe\npuffinbox_c_header_assembly_probe:\n    ret\n.section .note.GNU-stack,\"\",@progbits\n")
+    run(["cc", "-D_GNU_SOURCE", "-D__NO_INLINE__", "-include", str(header), "-c", str(assembly),
+         "-o", str(output / "c-headers-assembly.o")], cwd=output, env=environment,
+        log=output / "c-headers-assembly-build.log")
+    return {"identicalOutputs": True, "inputRows": 4096,
+            "assemblyPreprocessingPassed": True,
+            "outputSha256": hashlib.sha256(after).hexdigest(),
+            "scope": "Native x86-64 endian conversions, single evaluation, and an external atoi call."}
 
 
 def numeric_check(output: Path, root: Path, environment: dict[str, str]) -> dict[str, object]:
@@ -138,8 +166,8 @@ def main() -> int:
     version = subprocess.check_output(["rustc", "--version"], text=True).strip()
     if not version.startswith("rustc 1.98.1 "):
         parser.error("This probe is pinned to Rust 1.98.1.")
-    if os.environ.get("RUSTC_WRAPPER") or os.environ.get("RUSTFLAGS"):
-        parser.error("Use a builder without preexisting compiler wrappers or Rust flags.")
+    if any(os.environ.get(name) for name in ["RUSTC_WRAPPER", "RUSTFLAGS", "CFLAGS", "CC_SHELL_ESCAPED_FLAGS"]):
+        parser.error("Use a builder without preexisting compiler wrappers, Rust flags, or C flags.")
     source = sysroot / "lib/rustlib/src/rust/library/core/src/unicode/unicode_data.rs"
     if not source.is_file() or digest(source) != UNICODE_SOURCE_SHA256:
         parser.error("The rust-src Unicode file does not match the recorded original Rust 1.98.1 input.")
@@ -148,7 +176,7 @@ def main() -> int:
               "productionChanged": False, "licenseClearance": False, "sourceMountedAt": str(root),
               "cargoLockSha256": digest(root / "Cargo.lock"),
               "experimentSourceSha256": {name: digest(Path(__file__).with_name(name))
-                                         for name in ["build.py", "compiler-wrapper.py", "linker-wrapper.py", "numeric.rs"]}}
+                                         for name in ["build.py", "compiler-wrapper.py", "linker-wrapper.py", "numeric.rs", "c-headers.h", "c-headers.c"]}}
     result = 1
     try:
         original = source.read_text()
@@ -160,7 +188,11 @@ def main() -> int:
                                        "attributesChanged": 13, "tablesChanged": False}
         environment = {**os.environ, "CARGO_BUILD_JOBS": "2", "RUSTC_BOOTSTRAP": "1", "RUSTFLAGS": "-C prefer-dynamic",
                        "RUSTC_WRAPPER": str(root / "experiments/linux-gnu-runtime/compiler-wrapper.py"),
-                       "PUFFINBOX_RUNTIME_PROBE_OUTPUT": str(output)}
+                       "PUFFINBOX_RUNTIME_PROBE_OUTPUT": str(output),
+                       "CFLAGS": shlex.join(["-D_GNU_SOURCE", "-D__NO_INLINE__", "-include", str(root / "experiments/linux-gnu-runtime/c-headers.h")]),
+                       "CC_SHELL_ESCAPED_FLAGS": "1"}
+        record["cHeaderFlags"] = environment["CFLAGS"]
+        record["cHeaderCheck"] = c_header_check(output, root, environment)
         if args.source_map:
             environment["CARGO_PROFILE_RELEASE_DEBUG"] = "2"
         for name in ["entry", "compat"]:

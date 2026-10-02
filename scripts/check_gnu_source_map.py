@@ -115,15 +115,18 @@ def inventory(elf, source_hashes: dict[str, str]) -> dict[str, object]:
     if missing:
         raise ValueError("Mapped standard-library sources are missing exact build hashes: " + ", ".join(missing))
     blocked = {name: value for name, value in standard.items() if known_non_allowlisted_path(name)}
+    headers = {name: value for name, value in sources.items() if name.startswith("/usr/include/")}
     return {
         "compilationUnits": units, "mappedSourceFiles": len(sources), "mappedIntervals": mapped,
         "lineZeroIntervals": unmapped, "discardedOrInvalidAddressIntervals": discarded,
         "standardLibrarySourceFiles": standard, "knownNonAllowlistedMappedFiles": blocked,
+        "unreviewedSystemHeaderFiles": headers,
         "allMappedSources": sources, "licenseClearance": False,
         "scope": "DWARF v4/v5 line intervals within loaded executable ranges. Line mappings do not establish provenance "
                  "for anonymous constants, unmapped instructions, assembler, generated code, or every included header. "
                  "Interval bytes may overlap and do not measure total coverage. Known path checks are an inventory, "
-                 "not an exhaustive source-license classifier.",
+                 "not an exhaustive source-license classifier. Mapped system-header instructions require "
+                 "exact review or exclusion before this inventory can pass.",
     }
 
 
@@ -151,8 +154,9 @@ def main() -> int:
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     print(f"Source inventory: {len(result['standardLibrarySourceFiles'])} exact standard-library source files; "
-          f"{len(result['knownNonAllowlistedMappedFiles'])} known non-allowlisted paths. License clearance remains open.")
-    return 1 if result["knownNonAllowlistedMappedFiles"] else 0
+          f"{len(result['knownNonAllowlistedMappedFiles'])} known non-allowlisted paths; "
+          f"{len(result['unreviewedSystemHeaderFiles'])} unreviewed system headers. License clearance remains open.")
+    return 1 if result["knownNonAllowlistedMappedFiles"] or result["unreviewedSystemHeaderFiles"] else 0
 
 
 if __name__ == "__main__":

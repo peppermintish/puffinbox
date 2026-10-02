@@ -7,7 +7,7 @@ Puffinbox is partial and unreleased. The source and container checks below passe
 | Rust formatting and strict workspace Clippy | Passed |
 | Standard Rust workspace suite | 227 passed, 0 failed; 23 database cases skipped by default |
 | Disposable PostgreSQL regression suite | 22 integration cases and 1 database-backed unit test passed |
-| Python acceptance, route-report, and runtime-inventory tests | 40 passed, including eight source-map regressions |
+| Python acceptance, route-report, and runtime-inventory tests | 41 passed after the GNU header inventory update, including nine source-map regressions |
 | Experimental GNU process entry | C lifecycle, fork callback order, and Rust lifecycle fixtures passed; production packaging is unchanged |
 | Browser helpers, playlists, Live TV, offline cache, and book reader | Passed; book reader has 8 Node cases |
 | Strict Cargo dependency audit and full notices | Passed with MIT and Apache-2.0 as the only allowed licenses |
@@ -126,6 +126,8 @@ The installed Jellyfin Media Player 1.12 was retried against the current audio s
 Both main jobs passed at [`5307cf0`](https://github.com/peppermintish/puffinbox/actions/runs/36991172919), covering the user-policy 204 response; [its separate GNU runtime experiment passed](https://github.com/peppermintish/puffinbox/actions/runs/36991172974). The subsequent playback event fix has local source, container, HTTPS, concurrent-request, and native-player validation.
 
 An instrumented GNU build at `6560147` passed startup, link inventory, and all 4,096 numerical comparisons. DWARF locations map 1,463,499 instruction intervals to 2,427 source files, including 245 standard-library files with exact build hashes. No mapped generated Unicode or compiler-builtins source path was found. Line-zero intervals and anonymous constants remain outside that attribution; this is not complete runtime license clearance. The [runtime audit](runtime-link-audit.md) records the binary and inspection limits. Production remains the static musl image.
+
+A later GNU replay excludes the two previously mapped system-header inputs with an original C adapter and retains the stricter source check. Server `171be7a3` passed startup, link and source inventories, both 4,096-row numerical fixtures, 26 container checks including shutdown/restart/resume, and 29 HTTPS checks. Its C fixture also covers GNU datagram declarations and preprocessed assembly. The [runtime audit](runtime-link-audit.md#mapped-gnu-header-instructions) identifies exact hashes and retained failure records. The external shared runtime is still outside the release allowlist; this result does not clear complete inlined-source provenance, anonymous or unmapped inputs, or distribution. Production remains the static musl image. All 41 Python regressions passed after the checker update, recorded under `.local/gnu-header-source-checks-20261002b`.
 
 ## Requirements
 
