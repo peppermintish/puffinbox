@@ -837,18 +837,26 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
     status, _, _ = HttpClient(client.base_url).request("GET", suffixed_path)
     require(status == 401, "anonymous container-suffixed audio was accepted")
     for session_id in (str(time.time_ns() // 1_000_000), ""):
+        previous = client.json("GET", f"/UserItems/{urllib.parse.quote(item_id)}")[2]
+        expected_count = int(previous.get("PlayCount", 0)) + 1
         client.json("POST", "/Sessions/Playing", {
             "ItemId": item_id, "PlaySessionId": session_id, "PositionTicks": 0, "PlayMethod": "DirectPlay",
         }, expected=(204,))
+        started = client.json("GET", f"/UserItems/{urllib.parse.quote(item_id)}")[2]
+        require(started.get("Played") is True and started.get("PlaybackPositionTicks") == 0
+                and started.get("PlayCount") == expected_count,
+                "numeric or empty music session did not count its start and clear saved resume")
         for event in ("Progress", "Stopped"):
             client.json("POST", f"/Sessions/Playing/{event}", {
                 "ItemId": item_id, "PlaySessionId": session_id, "PositionTicks": 50_000_000,
             }, expected=(204,))
         data = client.json("GET", f"/UserItems/{urllib.parse.quote(item_id)}")[2]
-        require(data.get("PlaybackPositionTicks") == 50_000_000,
-                "numeric or empty audio session events did not preserve the stopped position")
+        require(data.get("Played") is True and data.get("PlaybackPositionTicks") == 0
+                and data.get("PlayCount") == expected_count
+                and data.get("LastPlayedDate") == started.get("LastPlayedDate"),
+                "music progress or stop changed the counted play or saved a resume position")
     report("Universal and suffixed FLAC audio, byte ranges, format/bitrate/rate/depth limits, and numeric/empty playback events", True,
-           "zero, five-second, and fractional saved positions retain original bytes, ranges, and HEAD metadata; stopping preserved five seconds")
+           "zero, five-second, and fractional requested positions retain original bytes, ranges, and HEAD metadata; each music start counts once and progress/stop keep saved resume at zero")
     return library_id, item_id
 
 

@@ -1624,7 +1624,12 @@ pub async fn start_playback_session(
         .bind(user_id).bind(&device_id).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO playback_sessions(id,instance_run_id,user_id,item_id,device_id,device_name,client,play_method,position_ticks) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
         .bind(id).bind(run_id).bind(user_id).bind(item_id).bind(device_id).bind(device_name).bind(client).bind(play_method).bind(position_ticks.unwrap_or(0)).execute(&mut *tx).await?;
-    if let Some(position) = position_ticks {
+    let (_, music) = playback_item_details(&mut tx, item_id).await?;
+    if music {
+        // Public Jellyfin 12 behavior counts each new music playback at
+        // start, independently of progress, EOF and a previous play.
+        save_music_playback_user_data(&mut tx, user_id, item_id, true).await?;
+    } else if let Some(position) = position_ticks {
         save_playback_user_data(&mut tx, user_id, item_id, None, position).await?;
     }
     tx.commit().await?;
@@ -1758,7 +1763,12 @@ pub async fn update_playback_session(
     let row = sqlx::query("UPDATE playback_sessions SET position_ticks=COALESCE($2,position_ticks),play_method=COALESCE($3,play_method),last_activity_at=NOW() WHERE id=$1 AND ended_at IS NULL RETURNING id,item_id,position_ticks")
         .bind(selected_id).bind(position_ticks).bind(play_method).fetch_optional(&mut *tx).await?;
     if let (Some(item_id), Some(position)) = (selected_item, position_ticks) {
-        save_playback_user_data(&mut tx, user_id, item_id, None, position).await?;
+        let (_, music) = playback_item_details(&mut tx, item_id).await?;
+        if music {
+            save_music_playback_user_data(&mut tx, user_id, item_id, false).await?;
+        } else {
+            save_playback_user_data(&mut tx, user_id, item_id, None, position).await?;
+        }
     }
     tx.commit().await?;
     row.as_ref()
@@ -1807,15 +1817,13 @@ pub async fn finish_playback_session(
     let mut completed = false;
     let mut saved_at = None;
     if persist_user_data && let Some(item_id) = selected_item {
-        let runtime_ticks: Option<i64> =
-            sqlx::query_scalar("SELECT runtime_ticks FROM items WHERE id=$1")
-                .bind(item_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .flatten();
-        completed = playback_completed(final_position, runtime_ticks, played_to_completion);
+        let (runtime_ticks, music) = playback_item_details(&mut tx, item_id).await?;
+        completed =
+            music || playback_completed(final_position, runtime_ticks, played_to_completion);
         let resume_position = if completed { 0 } else { final_position };
-        saved_at = Some(
+        saved_at = Some(if music {
+            save_music_playback_user_data(&mut tx, user_id, item_id, false).await?
+        } else {
             save_playback_user_data(
                 &mut tx,
                 user_id,
@@ -1823,8 +1831,8 @@ pub async fn finish_playback_session(
                 completed.then_some(true),
                 resume_position,
             )
-            .await?,
-        );
+            .await?
+        });
     }
     let row = sqlx::query("UPDATE playback_sessions SET ended_at=NOW(),position_ticks=$2,last_activity_at=NOW(),stop_reported_at=clock_timestamp(),stop_user_data_updated_at=$3,stop_completed=$4 WHERE id=$1 AND ended_at IS NULL RETURNING id,item_id,position_ticks")
         .bind(selected_id).bind(final_position).bind(saved_at).bind(completed).fetch_optional(&mut *tx).await?;
@@ -1915,6 +1923,26 @@ fn playback_completed(position: i64, runtime: Option<i64>, reported: Option<bool
         || runtime.is_some_and(|duration| {
             duration > 0 && (position as i128) * 100 >= (duration as i128) * 95
         })
+}
+
+async fn playback_item_details(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    item_id: Uuid,
+) -> Result<(Option<i64>, bool), sqlx::Error> {
+    let row = sqlx::query("SELECT i.runtime_ticks,i.item_type='Audio' AND lower(l.collection_type)='music' AS music FROM items i JOIN libraries l ON l.id=i.library_id WHERE i.id=$1")
+        .bind(item_id).fetch_optional(&mut **tx).await?;
+    row.map(|row| Ok((row.try_get("runtime_ticks")?, row.try_get("music")?)))
+        .unwrap_or(Ok((None, false)))
+}
+
+async fn save_music_playback_user_data(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    user_id: Uuid,
+    item_id: Uuid,
+    new_play: bool,
+) -> Result<DateTime<Utc>, sqlx::Error> {
+    sqlx::query_scalar("INSERT INTO user_item_data(user_id,item_id,played,playback_position_ticks,play_count,last_played_at) VALUES ($1,$2,TRUE,0,CASE WHEN $3 THEN 1 ELSE 0 END,CASE WHEN $3 THEN NOW() ELSE NULL END) ON CONFLICT (user_id,item_id) DO UPDATE SET played=TRUE,playback_position_ticks=0,play_count=CASE WHEN $3 AND user_item_data.play_count<2147483647 THEN user_item_data.play_count+1 ELSE user_item_data.play_count END,last_played_at=CASE WHEN $3 THEN NOW() ELSE user_item_data.last_played_at END,updated_at=NOW() RETURNING updated_at")
+        .bind(user_id).bind(item_id).bind(new_play).fetch_one(&mut **tx).await
 }
 
 async fn save_playback_user_data(

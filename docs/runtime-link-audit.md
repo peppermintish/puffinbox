@@ -146,6 +146,14 @@ The public TLS helper check passed all four certificate cases against the existi
 
 This is still an experiment. The external standard library contains non-allowlisted components and is excluded from permissive-only release bundles. External-runtime distribution and production adoption remain unresolved. Every report keeps `licenseClearance: false`; the production Dockerfile is unchanged.
 
+## Mapped file exception preflight
+
+A read-only follow-up on 2026-10-03 checked all 245 mapped standard-library files from server `10efeb22` against the official Rust 1.98.1 `rust-src` component. Every file hash matches the captured build input. A textual search for copyright, license and source-attribution hints found the retained `core/src/slice/memchr.rs` copyright and the `core/src/str/pattern.rs` reference to an earlier memchr implementation, alongside ordinary code documentation. No additional SPDX license declaration was found in those mapped files. The record is `.local/gnu-standard-file-preflight-20261003.json`; it retains exact file hashes and the earlier classification hash.
+
+A separate diagnostic searched 8,634 source files in the currently available locked GNU Cargo packages. Its 20 license hints are zerocopy files declaring `BSD-2-Clause OR Apache-2.0 OR MIT`, which offers an allowed alternative under the existing policy. Evidence is `.local/gnu-file-license-preflight-20261003.json`. This scan is not tied to every retained input of the earlier executable and excludes non-source files.
+
+These searches help identify files for review. They do not establish all included-header licenses, unmapped code or constant provenance, the external runtime's distribution boundary, or whole-release compliance. Both records keep `licenseClearance: false`, and production remains the static musl image.
+
 ## Reproducing the link inventory
 
 Inside the locked Linux builder, relink with a fresh output directory:

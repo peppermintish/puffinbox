@@ -99,7 +99,9 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         .unwrap();
     let library_id = Uuid::new_v4();
     let track_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO libraries(id,name,collection_type,locations,enabled) VALUES ($1,'Playback event music','music','[\"/music\"]',TRUE)")
+    // These generic event cases retain a resumable Audio item outside a
+    // music library. Music-specific saved state is checked separately.
+    sqlx::query("INSERT INTO libraries(id,name,collection_type,locations,enabled) VALUES ($1,'Resumable playback events','mixed','[\"/music\"]',TRUE)")
         .bind(library_id)
         .execute(&pool)
         .await
@@ -680,6 +682,7 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
             );
         }
     }
+    verify_music_playback_state(&router, &pool, user_id, &first.token, &second.token).await;
     sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
         .bind(library_id)
         .execute(&pool)
@@ -888,6 +891,229 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         .await
         .unwrap();
     admin_pool.close().await;
+}
+
+async fn verify_music_playback_state(
+    router: &Router,
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    token: &str,
+    other_device_token: &str,
+) {
+    let library_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO libraries(id,name,collection_type,locations,enabled) VALUES ($1,'Music state comparison','music','[\"/music-state\"]',TRUE)")
+        .bind(library_id).execute(pool).await.unwrap();
+    // The opaque Jellyfin 12 reference counts music on start for both
+    // short and long tracks, then keeps progress and stop resume at zero.
+    for duration in [
+        None,
+        Some(200000000),
+        Some(2990000000),
+        Some(3000000000),
+        Some(6000000000),
+    ] {
+        let item_id = Uuid::new_v4();
+        let path = format!("/music-state/{item_id}.flac");
+        sqlx::query("INSERT INTO items(id,library_id,name,sort_name,item_type,path,path_hash,runtime_ticks) VALUES ($1,$2,'State track','State track','Audio',$3,$4,$5)")
+            .bind(item_id).bind(library_id).bind(&path).bind(db::path_hash(&path)).bind(duration)
+            .execute(pool).await.unwrap();
+        for play in 1..=2 {
+            let session_id = Uuid::new_v4();
+            let start =
+                json!({"ItemId":item_id,"PlaySessionId":session_id,"PositionTicks":50000000});
+            let (one, duplicate) = tokio::join!(
+                post(router, Some(token), "/Sessions/Playing", &start),
+                post(router, Some(token), "/Sessions/Playing", &start),
+            );
+            assert_eq!(one.status(), StatusCode::NO_CONTENT);
+            assert_eq!(duplicate.status(), StatusCode::NO_CONTENT);
+            let started = db::item_user_data(pool, user_id, &[item_id]).await.unwrap();
+            assert!(
+                started[&item_id].played,
+                "music is played at start, independently of duration"
+            );
+            assert_eq!(
+                started[&item_id].play_count, play,
+                "each new session counts once even when already played"
+            );
+            assert_eq!(started[&item_id].playback_position_ticks, 0);
+            assert!(started[&item_id].last_played_at.is_some());
+            assert_eq!(
+                post(
+                    router,
+                    Some(other_device_token),
+                    "/Sessions/Playing",
+                    &start
+                )
+                .await
+                .status(),
+                StatusCode::CONFLICT
+            );
+            for position in [0, 170900000, duration.unwrap_or(200000000)] {
+                sqlx::query("UPDATE user_item_data SET played=FALSE,playback_position_ticks=7000000,updated_at=clock_timestamp() WHERE user_id=$1 AND item_id=$2")
+                    .bind(user_id).bind(item_id).execute(pool).await.unwrap();
+                let progress = json!({"ItemId":item_id,"PlaySessionId":session_id,"PositionTicks":position,"IsPaused":true});
+                assert_eq!(
+                    post(router, Some(token), "/Sessions/Playing/Progress", &progress)
+                        .await
+                        .status(),
+                    StatusCode::NO_CONTENT
+                );
+                let data = db::item_user_data(pool, user_id, &[item_id]).await.unwrap();
+                assert!(
+                    data[&item_id].played,
+                    "active music progress reapplies the played state without another count"
+                );
+                assert_eq!(
+                    data[&item_id].playback_position_ticks, 0,
+                    "music progress never becomes a saved resume"
+                );
+                assert_eq!(data[&item_id].play_count, play);
+                assert_eq!(
+                    data[&item_id].last_played_at,
+                    started[&item_id].last_played_at
+                );
+                let active_position: i64 = sqlx::query_scalar(
+                    "SELECT position_ticks FROM playback_sessions WHERE id=$1 AND ended_at IS NULL",
+                )
+                .bind(session_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                assert_eq!(
+                    active_position, position,
+                    "the active playback timeline is retained separately"
+                );
+            }
+            sqlx::query("UPDATE user_item_data SET played=FALSE,playback_position_ticks=7000000,updated_at=clock_timestamp() WHERE user_id=$1 AND item_id=$2")
+                .bind(user_id).bind(item_id).execute(pool).await.unwrap();
+            for position in [170900000, 0, duration.unwrap_or(200000000)] {
+                let stop = json!({"ItemId":item_id,"PlaySessionId":session_id,"PositionTicks":position,"Failed":true});
+                assert_eq!(
+                    post(router, Some(token), "/Sessions/Playing/Stopped", &stop)
+                        .await
+                        .status(),
+                    StatusCode::NO_CONTENT
+                );
+                let data = db::item_user_data(pool, user_id, &[item_id]).await.unwrap();
+                assert!(data[&item_id].played);
+                assert_eq!(data[&item_id].playback_position_ticks, 0);
+                assert_eq!(
+                    data[&item_id].play_count, play,
+                    "stops and duplicates never add another play"
+                );
+                assert_eq!(
+                    data[&item_id].last_played_at,
+                    started[&item_id].last_played_at
+                );
+            }
+            assert_eq!(
+                post(
+                    router,
+                    Some(token),
+                    &format!("/UserItems/{item_id}/UserData"),
+                    &json!({"Played":false,"PlaybackPositionTicks":7000000})
+                )
+                .await
+                .status(),
+                StatusCode::OK
+            );
+            let duplicate =
+                json!({"ItemId":item_id,"PlaySessionId":session_id,"PositionTicks":200000000});
+            assert_eq!(
+                post(router, Some(token), "/Sessions/Playing/Stopped", &duplicate)
+                    .await
+                    .status(),
+                StatusCode::NO_CONTENT
+            );
+            let edited = db::item_user_data(pool, user_id, &[item_id]).await.unwrap();
+            assert!(
+                !edited[&item_id].played,
+                "an ended duplicate cannot undo a later explicit edit"
+            );
+            assert_eq!(edited[&item_id].playback_position_ticks, 7000000);
+            assert_eq!(edited[&item_id].play_count, play);
+        }
+        let third = json!({"ItemId":item_id,"PlaySessionId":"","PositionTicks":0});
+        assert_eq!(
+            post(
+                router,
+                Some(other_device_token),
+                "/Sessions/Playing",
+                &third
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        let data = db::item_user_data(pool, user_id, &[item_id]).await.unwrap();
+        assert_eq!(
+            data[&item_id].play_count, 3,
+            "a new playback on another device counts separately"
+        );
+        assert_eq!(
+            post(
+                router,
+                Some(other_device_token),
+                "/Sessions/Playing/Stopped",
+                &third
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+            .bind(library_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            post(router, Some(token), "/Sessions/Playing", &third)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            db::item_user_data(pool, user_id, &[item_id]).await.unwrap()[&item_id].play_count,
+            3
+        );
+        sqlx::query("UPDATE libraries SET enabled=TRUE WHERE id=$1")
+            .bind(library_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    // An audiobook is resumable even if it was catalogued in a music
+    // library. The music policy applies to Audio, not every audio medium.
+    let audiobook = Uuid::new_v4();
+    sqlx::query("INSERT INTO items(id,library_id,name,sort_name,item_type,path,path_hash,runtime_ticks) VALUES ($1,$2,'Narration','Narration','AudioBook','/music-state/narration.m4b',$3,6000000000)")
+        .bind(audiobook).bind(library_id).bind(db::path_hash("/music-state/narration.m4b"))
+        .execute(pool).await.unwrap();
+    let session_id = Uuid::new_v4();
+    let start = json!({"ItemId":audiobook,"PlaySessionId":session_id,"PositionTicks":0});
+    assert_eq!(
+        post(router, Some(token), "/Sessions/Playing", &start)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let started = db::item_user_data(pool, user_id, &[audiobook])
+        .await
+        .unwrap();
+    assert!(!started[&audiobook].played);
+    assert_eq!(started[&audiobook].play_count, 0);
+    let partial = json!({"ItemId":audiobook,"PlaySessionId":session_id,"PositionTicks":170900000});
+    for route in ["/Sessions/Playing/Progress", "/Sessions/Playing/Stopped"] {
+        assert_eq!(
+            post(router, Some(token), route, &partial).await.status(),
+            StatusCode::NO_CONTENT
+        );
+        let data = db::item_user_data(pool, user_id, &[audiobook])
+            .await
+            .unwrap();
+        assert!(!data[&audiobook].played);
+        assert_eq!(data[&audiobook].playback_position_ticks, 170900000);
+    }
 }
 
 async fn post(router: &Router, token: Option<&str>, uri: &str, body: &Value) -> Response {
