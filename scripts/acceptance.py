@@ -172,6 +172,21 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def wait_for_ready(client: HttpClient, timeout_seconds: float = MAX_WAIT_SECONDS) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            status, _, _ = client.request("GET", "/health/ready")
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            status = None
+        if status == 200:
+            return
+        if status not in (None, 502, 503, 504):
+            raise AssertionError(f"database readiness endpoint returned HTTP {status}")
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+    raise AssertionError("isolated server did not become database-ready before the startup deadline")
+
+
 def report(name: str, passed: bool | None, detail: str = "") -> None:
     status = "pending" if passed is None else "pass" if passed else "fail"
     EVIDENCE.append({"name": name, "status": status, "detail": detail})
@@ -809,20 +824,7 @@ def run(args: argparse.Namespace) -> int:
         raise SystemExit(f"Missing generated explicit SDR fixture: {sdr_direct_play_fixture_path}")
     client = HttpClient(base_url)
 
-    readiness_deadline = time.monotonic() + MAX_WAIT_SECONDS
-    readiness_status = None
-    while time.monotonic() < readiness_deadline:
-        try:
-            readiness_status, _, _ = client.request("GET", "/health/ready")
-        except urllib.error.URLError:
-            readiness_status = None
-        if readiness_status == 200:
-            break
-        if readiness_status not in (None, 502, 503, 504):
-            raise AssertionError(f"database readiness endpoint returned HTTP {readiness_status}")
-        time.sleep(1)
-    else:
-        raise AssertionError("isolated server did not become database-ready before the startup deadline")
+    wait_for_ready(client)
     status, _, _ = client.request("GET", "/Users")
     require(status in (401, 403), f"unauthenticated administrator request was accepted (HTTP {status})")
     _, _, ready = client.json("GET", "/health/ready")

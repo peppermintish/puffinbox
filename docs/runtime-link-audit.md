@@ -56,6 +56,18 @@ Its symbol inventory imports seven core Unicode-data symbols and defines a white
 
 The output map still retains system `Scrt1.o`, `crti.o`, `crtbeginS.o`, `crtendS.o`, and `crtn.o`. This changes where runtime code and data reside without establishing an allowed distribution: retained startup objects, the Unicode lookup body, and any proposed runtime bundle need their own license review. The probe has no server acceptance result, and production remains the static musl build. Evidence is preserved under `.local/runtime-dynamic-retry-20261002`; the earlier failed helper invocation is retained separately.
 
+## Original GNU entry and wrapper probe
+
+A follow-up at clean source `e72cfbd` replaced the five GNU startup inputs with an original process entry. Binary SHA-256 was `8262a6a4abe8dcd3c7e773f33a42dae7e0aa4f89e29e2c48aec9129c156ba242`. C and Rust lifecycle fixtures passed, and the server rejected an invalid configuration with exit code one. Its map still retained `libc_nonshared.a(atexit.oS)` and `libc_nonshared.a(pthread_atfork.oS)`.
+
+Original bridges to the public LSB exit- and fork-registration interfaces then replaced those two wrappers. The first server link failed because the libc definition was selected before the bridge object. A fresh link used `--wrap=atexit,--wrap=pthread_atfork`, producing binary SHA-256 `d13f71aa00f9550e54a449e8270ef645558c3b146192367c5f6b6523176a106e`. No system startup or libc-nonshared sections remain in that output map. The LLD cross-reference table still lists the lazy archive members; those lines do not establish retention.
+
+The [original sources and reproduction steps](../experiments/linux-gnu-entry/README.md) are retained in the repository. Their fixtures check initialization and cleanup order, arguments and environment, thread-local values, exit status, fork callback order, and Rust panic catching. The standalone checker also passed on the WSL host. It is now part of source CI; that new CI step awaits its first cloud result.
+
+The wrapped binary passed 22 server media/API checks with one pending restart check in a fresh database and copied fixture tree. It ran as UID/GID 10001, with a read-only root, dropped capabilities, and external standard-library and FFmpeg runtimes. It exited with code zero and logged that media children had drained. The final runtime ledger is preserved under `.local/runtime-original-bridges-acceptance-final-20261002`; link evidence is under `.local/runtime-original-bridges-retry-20261002`. Failed setup, link, startup-race, and fixture-path attempts remain preserved separately.
+
+This binary still imports seven core Unicode-data symbols and defines a generated whitespace lookup. It retains compiler-builtins sections and needs the same external Rust standard library and GNU libraries as the earlier dynamic probe. Exact source and retained-section review, runtime distribution, restart/resume, and broader client acceptance remain open. The production static build and release gates are unchanged.
+
 ## Reproducing the link inventory
 
 Inside the locked Linux builder, relink with a fresh output directory:

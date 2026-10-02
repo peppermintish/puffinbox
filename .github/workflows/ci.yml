@@ -56,6 +56,9 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Check the experimental GNU process entry
+        run: python3 scripts/check_gnu_runtime_entry.py
+
       - name: Check source formatting
         run: cargo fmt --all -- --check
 
