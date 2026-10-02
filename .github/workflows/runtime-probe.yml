@@ -10,9 +10,13 @@ on:
       - 'scripts/check_gnu_link_map.py'
       - 'scripts/check_gnu_source_map.py'
       - 'scripts/check_gnu_notices.py'
+      - 'scripts/check_gnu_shared_tls.py'
+      - 'scripts/test_gnu_shared_tls.py'
       - 'scripts/capture_gnu_sources.py'
       - 'scripts/test_gnu_sources.py'
       - 'scripts/test_gnu_notices.py'
+      - 'scripts/check_tls.py'
+      - 'examples/tls_probe.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
@@ -27,9 +31,13 @@ on:
       - 'scripts/check_gnu_link_map.py'
       - 'scripts/check_gnu_source_map.py'
       - 'scripts/check_gnu_notices.py'
+      - 'scripts/check_gnu_shared_tls.py'
+      - 'scripts/test_gnu_shared_tls.py'
       - 'scripts/capture_gnu_sources.py'
       - 'scripts/test_gnu_sources.py'
       - 'scripts/test_gnu_notices.py'
+      - 'scripts/check_tls.py'
+      - 'examples/tls_probe.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
@@ -47,7 +55,11 @@ concurrency:
 
 jobs:
   reproduce:
-    name: Shared-runtime link inventory and numeric comparisons
+    name: Shared-runtime inventory with ${{ matrix.tls }} TLS
+    strategy:
+      fail-fast: false
+      matrix:
+        tls: [vendored, external]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -62,10 +74,14 @@ jobs:
       - name: Reproduce the experimental server and helper comparisons
         run: |
           mkdir "$RUNNER_TEMP/gnu-probe"
+          tls_options=()
+          if [ "${{ matrix.tls }}" = external ]; then
+            tls_options+=(--external-openssl)
+          fi
           docker run --rm --workdir /work \
             --volume "$GITHUB_WORKSPACE:/work:ro" \
             --volume "$RUNNER_TEMP/gnu-probe:/probe" \
-            puffinbox:gnu-probe-builder --output /probe/output --source-map
+            puffinbox:gnu-probe-builder --output /probe/output --source-map "${tls_options[@]}"
 
       - name: Inspect source locations with an external audit tool
         run: |
@@ -90,10 +106,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: experimental-gnu-runtime-records
+          name: experimental-gnu-runtime-${{ matrix.tls }}-records
           path: |
             ${{ runner.temp }}/gnu-probe/output/probe.json
             ${{ runner.temp }}/gnu-probe/output/runtime-input-inventory.json
+            ${{ runner.temp }}/gnu-probe/output/shared-tls-inventory.json
+            ${{ runner.temp }}/gnu-probe/output/tls-client-check.json
+            ${{ runner.temp }}/gnu-probe/output/tls-client-check.log
             ${{ runner.temp }}/gnu-probe/output/server-elf.txt
             ${{ runner.temp }}/gnu-probe/output/server-dynamic-symbols.txt
             ${{ runner.temp }}/gnu-probe/output/server-sections.txt

@@ -3,7 +3,7 @@
   "gates": {
     "runtime_license_boundary": {
       "passed": false,
-      "detail": "The Cargo graph passes. Linked Rust core Unicode tables remain outside the allowlist. Libc, unwind, compiler-builtins, and startup objects still require exact provenance and a complete retained-section audit or replacement."
+      "detail": "The Cargo graph passes. The production static image still contains non-allowlisted Rust Unicode and incompletely reviewed runtime inputs. Experimental GNU server 10efeb22 uses external std and OpenSSL 3, has hashes for all 1,439 mapped source paths, and passed container, HTTPS, outbound TLS, and native HLS restart checks. Its external std contains non-allowlisted components and must not be bundled. Individual-file exceptions, unmapped content, external-runtime distribution, and production adoption remain uncleared; see runtime-link-audit.md."
     },
     "jellyfin_12_behavior": {
       "passed": false,

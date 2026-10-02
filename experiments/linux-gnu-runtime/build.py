@@ -39,7 +39,7 @@ def inspect(binary: Path, label: str, output: Path, environment: dict[str, str])
         run([utility, *options, str(binary)], cwd=output, env=environment, log=output / f"{label}-{suffix}.txt")
 
 
-def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, str]) -> dict[str, object]:
+def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, str], *, external_openssl: bool) -> dict[str, object]:
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root / "scripts"))
     from capture_gnu_sources import capture
@@ -67,7 +67,7 @@ def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, s
         ["cargo", "metadata", "--locked", "--offline", "--format-version", "1",
          "--filter-platform", "x86_64-unknown-linux-gnu"], cwd=root, env=environment, text=True))
     dependencies = capture(metadata, output / "target/x86_64-unknown-linux-gnu/release/build", root / "Cargo.lock",
-                           output / "native-compiler-traces")
+                           output / "native-compiler-traces", require_native_compilations=not external_openssl)
     with (output / "dependency-source-hashes.json").open("x") as ledger:
         json.dump(dependencies, ledger, indent=2)
         ledger.write("\n")
@@ -173,10 +173,46 @@ def numeric_check(output: Path, root: Path, environment: dict[str, str]) -> dict
     return record
 
 
+def tls_check(output: Path, root: Path, environment: dict[str, str]) -> dict[str, object]:
+    captured = json.loads((output / "puffinbox_server-rustc-argv.json").read_text())
+    source = root / "examples/tls_probe.rs"
+    checker = root / "scripts/check_tls.py"
+    binary = output / "tls-client"
+    arguments = [captured["compiler"], "--edition=2024", "--crate-name", "puffinbox_tls_probe",
+                 "--target", "x86_64-unknown-linux-gnu", "-C", "opt-level=3", "-C", "prefer-dynamic",
+                 "-Z", "unstable-options", "-C", "linker=" + str(root / "experiments/linux-gnu-runtime/linker-wrapper.py"),
+                 "-C", "link-arg=-nostartfiles", "-C", "link-arg=-Wl,--wrap=atexit,--wrap=pthread_atfork",
+                 "-C", "link-arg=" + str(output / "entry.o"), "-C", "link-arg=" + str(output / "compat.o"),
+                 str(source), "-o", str(binary)]
+    # Host dependency paths are needed by Tokio's procedural macro; target
+    # paths and explicit rebuilt std dependencies must match the server.
+    for index, argument in enumerate(captured["modified"][:-1]):
+        value = captured["modified"][index + 1]
+        if argument == "-L" and value.startswith("dependency="):
+            arguments += ["-L", value]
+        if argument == "--extern" and value.startswith(("noprelude,nounused:", "std=", "reqwest=", "tokio=")):
+            arguments += ["--extern", value]
+    phase_environment = {**environment, "PUFFINBOX_RUNTIME_LINK_LABEL": "tls-client",
+                         "LD_LIBRARY_PATH": str(output / "external-runtime")}
+    run(arguments, cwd=root, env=phase_environment, log=output / "tls-client-build.log")
+    binary.chmod(0o555)
+    run([sys.executable, str(checker), "--probe", str(binary)], cwd=root, env=phase_environment,
+        log=output / "tls-client-check.log")
+    record = {"passed": True, "certificateCases": 4, "binarySha256": digest(binary),
+              "sourceSha256": digest(source), "checkerSha256": digest(checker),
+              "serverSha256": digest(output / "server"), "licenseClearance": False,
+              "scope": "Rust TLS helper reuses the server dependency artifacts and rebuilt shared std; this is not a server HTTP test."}
+    with (output / "tls-client-check.json").open("x") as ledger:
+        json.dump(record, ledger, indent=2)
+        ledger.write("\n")
+    return record
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="new output directory outside the mounted source and sysroot")
     parser.add_argument("--source-map", action="store_true", help="retain debug locations and source/package/notice hashes")
+    parser.add_argument("--external-openssl", action="store_true", help="use operator-supplied OpenSSL 3 shared libraries")
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64" or not Path("/.dockerenv").is_file():
         parser.error("Run inside a disposable Linux x86-64 Docker builder; this experiment changes its rust-src copy.")
@@ -188,17 +224,20 @@ def main() -> int:
     version = subprocess.check_output(["rustc", "--version"], text=True).strip()
     if not version.startswith("rustc 1.98.1 "):
         parser.error("This probe is pinned to Rust 1.98.1.")
-    if any(os.environ.get(name) for name in ["RUSTC_WRAPPER", "RUSTFLAGS", "CFLAGS", "CC_SHELL_ESCAPED_FLAGS"]):
+    if any(os.environ.get(name) for name in ["RUSTC_WRAPPER", "RUSTFLAGS", "CFLAGS", "CC_SHELL_ESCAPED_FLAGS", "CC",
+                                            "OPENSSL_NO_VENDOR", "OPENSSL_STATIC", "OPENSSL_DIR", "OPENSSL_LIB_DIR", "OPENSSL_INCLUDE_DIR"]):
         parser.error("Use a builder without preexisting compiler wrappers, Rust flags, or C flags.")
     source = sysroot / "lib/rustlib/src/rust/library/core/src/unicode/unicode_data.rs"
     if not source.is_file() or digest(source) != UNICODE_SOURCE_SHA256:
         parser.error("The rust-src Unicode file does not match the recorded original Rust 1.98.1 input.")
     output.mkdir(parents=True, exist_ok=False)
     record = {"startedAtUtc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "compiler": version,
+              "externalOpenSslRequested": args.external_openssl,
               "productionChanged": False, "licenseClearance": False, "sourceMountedAt": str(root),
               "cargoLockSha256": digest(root / "Cargo.lock"),
               "auditScriptsSha256": {name: digest(root / "scripts" / name)
-                                      for name in ["capture_gnu_sources.py", "check_gnu_source_map.py", "check_gnu_notices.py"]},
+                                      for name in ["capture_gnu_sources.py", "check_gnu_link_map.py", "check_gnu_shared_tls.py", "check_gnu_source_map.py", "check_gnu_notices.py", "check_tls.py"]},
+              "tlsProbeSourceSha256": digest(root / "examples/tls_probe.rs"),
               "experimentSourceSha256": {name: digest(Path(__file__).with_name(name))
                                          for name in ["build.py", "compiler-wrapper.py", "native-source-wrapper.py", "linker-wrapper.py", "numeric.rs", "c-headers.h", "c-headers.c"]}}
     result = 1
@@ -217,6 +256,12 @@ def main() -> int:
                        "CFLAGS": shlex.join(["-D_GNU_SOURCE", "-D__NO_INLINE__", "-include", str(root / "experiments/linux-gnu-runtime/c-headers.h")]),
                        "CC_SHELL_ESCAPED_FLAGS": "1"}
         record["cHeaderFlags"] = environment["CFLAGS"]
+        if args.external_openssl:
+            environment["OPENSSL_NO_VENDOR"] = "1"
+            tls_version = subprocess.check_output(["pkg-config", "--modversion", "openssl"], env=environment, text=True).strip()
+            if not re.fullmatch(r"3[.][0-9]+[.][0-9]+", tls_version):
+                raise RuntimeError("The external TLS experiment requires an OpenSSL 3 development installation.")
+            record["externalOpenSslBuildVersion"] = tls_version
         record["cHeaderCheck"] = c_header_check(output, root, environment)
         if args.source_map:
             environment["CARGO_PROFILE_RELEASE_DEBUG"] = "2"
@@ -246,9 +291,20 @@ def main() -> int:
         run([sys.executable, str(root / "scripts/check_gnu_link_map.py"), "--map", str(output / "server-link.map"),
              "--symbols", str(output / "server-symbols.txt"), "--output", str(output / "runtime-input-inventory.json")],
             cwd=root, env=environment, log=output / "inventory-check.log")
+        if args.external_openssl:
+            sys.path.insert(0, str(root / "scripts"))
+            from check_gnu_shared_tls import inventory as tls_inventory
+
+            tls = tls_inventory((output / "server-elf.txt").read_text(), (output / "server-symbols.txt").read_text(),
+                                json.loads((output / "runtime-input-inventory.json").read_text()))
+            with (output / "shared-tls-inventory.json").open("x") as ledger:
+                json.dump(tls, ledger, indent=2)
+                ledger.write("\n")
+            record["sharedTlsInventorySha256"] = digest(output / "shared-tls-inventory.json")
         record["numericCheck"] = numeric_check(output, root, environment)
+        record["tlsCheck"] = tls_check(output, root, environment)
         if args.source_map:
-            record["sourceMapping"] = capture_source_mapping(output, sysroot, environment)
+            record["sourceMapping"] = capture_source_mapping(output, sysroot, environment, external_openssl=args.external_openssl)
         result = 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         record["failure"] = str(error)

@@ -69,7 +69,7 @@ def verify_archive(package: dict, root: Path, package_files: dict[str, str], che
     return {"registryArchiveVerified": True, "registryArchivePath": str(archive), "registryArchiveSha256": expected}
 
 
-def capture_native(traces: Path | None) -> dict:
+def capture_native(traces: Path | None, *, require_compilations: bool = True) -> dict:
     hashes = {}
     inputs = {}
     invocations = 0
@@ -85,14 +85,15 @@ def capture_native(traces: Path | None) -> dict:
                     if not Path(source).is_absolute() or ".." in Path(source).parts or not re.fullmatch(r"[0-9a-f]{64}", value):
                         raise ValueError("Unsafe native compiler source path or hash.")
                     inputs.setdefault(source, set()).add(value)
-        if not hashes or not invocations:
+        if not hashes or (require_compilations and not invocations):
             raise ValueError("Native compiler source traces are missing or contain no successful compilation.")
     return {"nativeCompilerTraceHashes": hashes, "nativeCompileInvocations": invocations,
             "nativeSourceFiles": {path: next(iter(values)) for path, values in inputs.items() if len(values) == 1},
             "ambiguousNativeSourceFiles": {path: sorted(values) for path, values in inputs.items() if len(values) != 1}}
 
 
-def capture(metadata: dict, generated: Path, lockfile: Path, native_traces: Path | None = None) -> dict:
+def capture(metadata: dict, generated: Path, lockfile: Path, native_traces: Path | None = None,
+            *, require_native_compilations: bool = True) -> dict:
     locked = tomllib.loads(lockfile.read_text())
     checksums = {}
     for package in locked["package"]:
@@ -144,7 +145,8 @@ def capture(metadata: dict, generated: Path, lockfile: Path, native_traces: Path
         raise ValueError("The native/generated build source snapshot is empty.")
     return {"schemaVersion": 1, "packages": packages, "sourceFiles": sources,
             "generatedSourceRoot": str(generated), "generatedSourceFiles": generated_sources,
-            "lockfileSha256": digest(lockfile), **capture_native(native_traces), "licenseClearance": False,
+            "lockfileSha256": digest(lockfile),
+            **capture_native(native_traces, require_compilations=require_native_compilations), "licenseClearance": False,
             "scope": "Source bytes available after the disposable build, package declarations, and exact notice hashes. "
                      "Archive and file verification binds registry bytes to the lockfile's package checksums. This snapshot does "
                      "not prove which headers, constants, or generated inputs were retained, or clear file exceptions."}

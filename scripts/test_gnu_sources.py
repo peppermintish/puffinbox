@@ -191,6 +191,18 @@ class DependencySourceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "differs from its final"):
             mapped_dependencies(self.inventory, snapshot)
 
+    def test_probe_only_native_traces_require_an_explicit_no_compilation_mode(self):
+        traces = self.root / "probe-traces"
+        traces.mkdir()
+        (traces / "version.json").write_text(json.dumps({"licenseClearance": False, "exitCode": 0,
+                                                       "compileSource": False, "sourceFiles": {}}))
+        with self.assertRaisesRegex(ValueError, "no successful compilation"):
+            capture_native(traces)
+        result = capture_native(traces, require_compilations=False)
+        self.assertEqual(result["nativeCompileInvocations"], 0)
+        self.assertEqual(result["nativeSourceFiles"], {})
+        self.assertEqual(len(result["nativeCompilerTraceHashes"]), 1)
+
 
 WRAPPER_PATH = Path(__file__).resolve().parents[1] / "experiments/linux-gnu-runtime/native-source-wrapper.py"
 

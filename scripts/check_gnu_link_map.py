@@ -41,6 +41,7 @@ def inventory(map_text: str, symbols_text: str) -> dict[str, object]:
     unicode = [line for line in symbols_text.splitlines() if "core::unicode::unicode_data::" in line]
     defined = [line for line in unicode if not re.match(r"^\s+U ", line)]
     return {"scope": "Parsed nonempty LLD input sections; system paths, known runtime archives and startup objects, and generated Unicode symbols.",
+            "allInputObjects": sorted(set(inputs)),
             "inputObjects": len(set(inputs)), "retainedRuntimeSections": runtime,
             "unicodeImports": len(unicode) - len(defined), "unicodeDefinitions": defined,
             "knownRuntimeInputsAbsent": not runtime and not defined,

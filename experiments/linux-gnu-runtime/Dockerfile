@@ -3,7 +3,7 @@
 FROM rust:1.98.1-bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 binutils perl make \
+    && apt-get install -y --no-install-recommends python3 binutils perl make pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add rust-src
 

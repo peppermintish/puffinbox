@@ -14,6 +14,14 @@ python3 experiments/linux-gnu-runtime/build.py --output /probe/output
 
 The [probe Dockerfile](Dockerfile) installs those build prerequisites. Build it with `docker build --tag puffinbox:gnu-probe-builder --file experiments/linux-gnu-runtime/Dockerfile .`, then run that image with the two mounts and `--output /probe/output`. The separate experimental CI workflow repeats this recipe and saves only inventory records, excluding executable and runtime binaries.
 
+Pass `--external-openssl` to use the builder's OpenSSL 3 development installation through `pkg-config`, with `OPENSSL_NO_VENDOR=1`. This follows the [Rust OpenSSL build interface](https://docs.rs/openssl/0.10.81/openssl/). The server must declare `libssl.so.3` and `libcrypto.so.3`, import the required TLS entry points, and retain no named static TLS archives or defined native TLS symbols. The output does not copy these shared libraries. An operator must supply the matching runtime. CI builds both this mode and the default vendored mode:
+
+```sh
+python3 experiments/linux-gnu-runtime/build.py --output /probe/output --source-map --external-openssl
+```
+
+Both modes build a Rust TLS helper with the server's exact dependency artifacts and rebuilt standard library. A local certificate fixture requires a trusted certificate with the right host to succeed and rejects a wrong CA, wrong host, and both together. The fixture removes its temporary certificates and keys. CI retains the helper's hashes and sanitized check results, excluding the helper binary. This checks outbound TLS verification separately from server HTTPS acceptance.
+
 The script rejects a host invocation, an existing output directory, a changed Unicode source input, or a different compiler version. Cargo retains the project lockfile. Dependency downloads and compiler-source changes stay in the disposable builder. The copied server has mode 0555. A native Linux startup check must reach and reject the missing database configuration, catching lost executable permissions and loader failures before numerical tests. The output records compiler arguments, actual linker inputs, maps, symbols, dynamic dependencies, hashes, and a separate standard-library lockfile. Do not treat the output directory or builder image as a release artifact.
 
 The numeric fixture compares all 11 previously retained helper functions against a baseline that includes compiler-builtins. It covers signed zero, subnormals, infinities, NaNs, halfway rounding values, and 4,096 deterministic integer and floating inputs. Python integer arithmetic and conversion independently check the 128-bit modulo and signed-to-double results. Unicode trimming, alphabetic and numeric classification, and case conversion are also exercised.
