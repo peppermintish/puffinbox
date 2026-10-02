@@ -2149,7 +2149,10 @@ fn push_item_conditions(
     catalog_filters::push_selections(builder, &query.facets);
 }
 
-fn push_user_visibility_filters(builder: &mut QueryBuilder<'_, Postgres>, user: &UserRecord) {
+pub(crate) fn push_user_visibility_filters(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    user: &UserRecord,
+) {
     if user.is_admin {
         return;
     }

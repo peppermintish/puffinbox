@@ -1,13 +1,13 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-01T19:52:11.013738+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-02T03:55:07.143891+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `170`
-- Declared pairs matching a schema method/path: `83`
-- Declared pairs outside the schema: `87`
+- Unique declared server method/path pairs: `174`
+- Declared pairs matching a schema method/path: `86`
+- Declared pairs outside the schema: `88`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
 
@@ -58,9 +58,12 @@ This is a source declaration comparison only. It does not establish that a match
 | `GET /Persons/{name}` | `src/api.rs` | match |
 | `GET /Artists` | `src/api.rs` | match |
 | `GET /Artists/AlbumArtists` | `src/api.rs` | match |
+| `DELETE /Items` | `src/api.rs` | match |
 | `GET /Items` | `src/api.rs` | match |
 | `GET /Items/Counts` | `src/api.rs` | match |
+| `DELETE /Items/{item_id}` | `src/api.rs` | match |
 | `GET /Items/{item_id}` | `src/api.rs` | match |
+| `GET /Users/{user_id}/Items` | `src/api.rs` | custom / not in target schema |
 | `GET /Users/{user_id}/Items/{item_id}` | `src/api.rs` | custom / not in target schema |
 | `GET /Items/{item_id}/UserData` | `src/api.rs` | custom / not in target schema |
 | `POST /Items/{item_id}/UserData` | `src/api.rs` | custom / not in target schema |
@@ -177,6 +180,7 @@ This is a source declaration comparison only. It does not establish that a match
 | `DELETE /Playlists/{playlist_id}/Items` | `src/playlists.rs` | match |
 | `GET /Playlists/{playlist_id}/Items` | `src/playlists.rs` | match |
 | `POST /Playlists/{playlist_id}/Items` | `src/playlists.rs` | match |
+| `GET /Playlists/{playlist_id}/Users/{user_id}` | `src/playlists.rs` | match |
 | `POST /Playlists/{playlist_id}/Items/{entry_id}/Move/{new_index}` | `src/playlists.rs` | match |
 | `GET /Puffinbox/Plugins` | `src/plugins.rs` | custom / not in target schema |
 | `POST /Puffinbox/Plugins/TrustStaged` | `src/plugins.rs` | custom / not in target schema |

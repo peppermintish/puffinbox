@@ -7,7 +7,7 @@
     },
     "jellyfin_12_behavior": {
       "passed": false,
-      "detail": "83 of 364 operation declarations match. Bounded full-source HLS seeking, cached-detail resume, notifications, and permission-aware catalog filters have local coverage. Rename-race and transport-counter regressions pass; a transient web playback notice, audio continuity, and full behavioral compatibility remain unresolved."
+      "detail": "86 of 364 operation declarations match. Bounded full-source HLS seeking, cached-detail resume, notifications, permission-aware catalog filters, and private playlist catalog behavior have local coverage. Rename-race and transport-counter regressions pass; the official web audio endpoint, a transient movie playback notice, audio continuity, and full behavioral compatibility remain unresolved."
     },
     "feature_acceptance": {
       "passed": false,

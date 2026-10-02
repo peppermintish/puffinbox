@@ -2,18 +2,19 @@ use axum::{
     Json, Router,
     extract::{Path, Query, RawQuery, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres, Transaction};
+use sqlx::{Postgres, QueryBuilder, Transaction};
 use uuid::Uuid;
 
 use crate::{
     auth::{CurrentUser, UserRecord},
     db,
     error::ApiError,
-    library::ItemRecord,
+    library::{ItemQuery, ItemRecord, MediaType},
     state::AppState,
 };
 
@@ -36,6 +37,10 @@ pub fn router(state: AppState) -> Router {
             get(get_playlist_items)
                 .post(add_playlist_items)
                 .delete(remove_playlist_items),
+        )
+        .route(
+            "/Playlists/{playlist_id}/Users/{user_id}",
+            get(get_playlist_user),
         )
         .route(
             "/Playlists/{playlist_id}/Items/{entry_id}/Move/{new_index}",
@@ -106,6 +111,28 @@ struct PlaylistDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
+struct PlaylistOwnerPermissionDto {
+    user_id: Uuid,
+    can_edit: bool,
+}
+
+async fn get_playlist_user(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((playlist_id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<PlaylistOwnerPermissionDto>, ApiError> {
+    ensure_owned(&state, &user, playlist_id).await?;
+    if user_id != user.id {
+        return Err(ApiError::NotFound);
+    }
+    Ok(Json(PlaylistOwnerPermissionDto {
+        user_id,
+        can_edit: true,
+    }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
 struct PlaylistListItemDto {
     id: Uuid,
     name: String,
@@ -115,6 +142,8 @@ struct PlaylistListItemDto {
     is_folder: bool,
     media_type: &'static str,
     date_created: DateTime<Utc>,
+    date_modified: DateTime<Utc>,
+    can_delete: bool,
 }
 
 #[derive(Serialize)]
@@ -168,6 +197,288 @@ struct PlaylistRecord {
     id: Uuid,
     name: String,
     created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl PlaylistRecord {
+    fn into_dto(self, server_id: Uuid) -> PlaylistListItemDto {
+        PlaylistListItemDto {
+            id: self.id,
+            name: self.name,
+            server_id: server_id.to_string(),
+            item_type: "Playlist",
+            is_folder: true,
+            media_type: "Audio",
+            date_created: self.created_at,
+            date_modified: self.updated_at,
+            can_delete: true,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct PlaylistCatalogResultDto {
+    items: Vec<PlaylistListItemDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_record_count: Option<i64>,
+    start_index: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct PlaylistCatalogEntriesDto {
+    items: Vec<PlaylistItemDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_record_count: Option<i64>,
+    start_index: i64,
+}
+
+pub(crate) async fn catalog_children_result(
+    state: &AppState,
+    user: &UserRecord,
+    playlist_id: Uuid,
+    query: ItemQuery,
+) -> Result<Response, ApiError> {
+    ensure_owned(state, user, playlist_id).await?;
+    if query.is_played.is_some()
+        || query.is_favorite
+        || query.is_resumable
+        || query.search_term.is_some()
+        || !query.facets.genres.is_empty()
+        || !query.facets.genre_ids.is_empty()
+        || !query.facets.tags.is_empty()
+        || !query.facets.official_ratings.is_empty()
+        || !query.facets.years.is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "Playlist entry catalog filters are not available yet".to_owned(),
+        ));
+    }
+    let selected = (query.include_item_types.is_empty()
+        || query
+            .include_item_types
+            .iter()
+            .any(|kind| kind.eq_ignore_ascii_case("Audio")))
+        && (query.media_types.is_empty() || query.media_types.contains(&MediaType::Audio));
+    ensure_playback_allowed(user)?;
+    let (items, total) = if selected {
+        playlist_item_page(state, user, playlist_id, query.start_index, query.limit).await?
+    } else {
+        (Vec::new(), 0)
+    };
+    Ok(Json(PlaylistCatalogEntriesDto {
+        items,
+        total_record_count: query.enable_total_record_count.then_some(total),
+        start_index: query.start_index,
+    })
+    .into_response())
+}
+
+pub(crate) fn validate_catalog_query(raw_query: Option<&str>) -> Result<(), ApiError> {
+    validate_catalog_options(raw_query, false)
+}
+
+pub(crate) fn validate_catalog_children_query(raw_query: Option<&str>) -> Result<(), ApiError> {
+    validate_catalog_options(raw_query, true)
+}
+
+fn validate_catalog_options(raw_query: Option<&str>, entries: bool) -> Result<(), ApiError> {
+    for (key, value) in url::form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        if entries {
+            match key.to_ascii_lowercase().as_str() {
+                // Entries contain scanned Audio files, never virtual items or box sets.
+                "excludelocationtypes" if value.eq_ignore_ascii_case("Virtual") => continue,
+                "collapseboxsetitems" if value.eq_ignore_ascii_case("false") => continue,
+                _ => {}
+            }
+        }
+        if !matches!(
+            key.to_ascii_lowercase().as_str(),
+            "parentid" | "searchterm" | "includeitemtypes" | "mediatypes" | "recursive"
+            | "startindex" | "limit" | "enabletotalrecordcount" | "sortby" | "sortorder"
+            | "isplayed" | "filters" | "userid" | "genres" | "genreids" | "tags"
+            | "officialratings" | "years" | "audiolanguages" | "subtitlelanguages"
+            // These presentation options do not change which playlists are selected.
+            | "fields" | "enableuserdata" | "enableimages" | "imagetypelimit" | "enableimagetypes"
+        ) {
+            return Err(ApiError::BadRequest(
+                "Unsupported playlist catalog query parameter".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Playlists are owned catalog objects, separate from scanned library files.
+pub(crate) async fn catalog_result(
+    state: &AppState,
+    user: &UserRecord,
+    query: ItemQuery,
+) -> Result<Response, ApiError> {
+    if let Some(parent_id) = query.parent_id {
+        let library = db::get_library(&state.db, parent_id)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+        if !db::library_visible_to_user(&state.db, user, library.id).await? {
+            return Err(ApiError::NotFound);
+        }
+        if !library.collection_type.eq_ignore_ascii_case("music") {
+            return Err(ApiError::BadRequest(
+                "Playlist parent views require a music library".to_owned(),
+            ));
+        }
+    }
+    if query.include_item_types.len() != 1
+        || query.is_played.is_some()
+        || query.is_favorite
+        || query.is_resumable
+        || !query.facets.genres.is_empty()
+        || !query.facets.genre_ids.is_empty()
+        || !query.facets.tags.is_empty()
+        || !query.facets.official_ratings.is_empty()
+        || !query.facets.years.is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "Playlist catalog queries require only Playlist, without playback or metadata filters"
+                .to_owned(),
+        ));
+    }
+    let sort_column = match query.sort_by.to_ascii_lowercase().as_str() {
+        "name" | "sortname" => "lower(p.name)",
+        "datecreated" | "dateadded" => "p.created_at",
+        "datemodified" => "p.updated_at",
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Unsupported playlist SortBy field".to_owned(),
+            ));
+        }
+    };
+    let audio_selected =
+        query.media_types.is_empty() || query.media_types.contains(&MediaType::Audio);
+    let total_record_count = if query.enable_total_record_count {
+        let mut count = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM playlists p");
+        push_catalog_conditions(&mut count, user, &query, audio_selected);
+        Some(
+            count
+                .build_query_scalar::<i64>()
+                .fetch_one(&state.db)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let direction = if query.sort_order.eq_ignore_ascii_case("Descending")
+        || query.sort_order.eq_ignore_ascii_case("Desc")
+    {
+        "DESC"
+    } else {
+        "ASC"
+    };
+    let mut page = QueryBuilder::<Postgres>::new(
+        "SELECT p.id,p.name,p.created_at,p.updated_at FROM playlists p",
+    );
+    push_catalog_conditions(&mut page, user, &query, audio_selected);
+    page.push(format!(
+        " ORDER BY {sort_column} {direction},p.id {direction} OFFSET "
+    ))
+    .push_bind(query.start_index)
+    .push(" LIMIT ")
+    .push_bind(query.limit);
+    let records = page
+        .build_query_as::<PlaylistRecord>()
+        .fetch_all(&state.db)
+        .await?;
+    Ok(Json(PlaylistCatalogResultDto {
+        items: records
+            .into_iter()
+            .map(|record| record.into_dto(state.server_id))
+            .collect(),
+        total_record_count,
+        start_index: query.start_index,
+    })
+    .into_response())
+}
+
+fn push_catalog_conditions(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    user: &UserRecord,
+    query: &ItemQuery,
+    audio_selected: bool,
+) {
+    builder.push(" WHERE p.owner_user_id=").push_bind(user.id);
+    if !audio_selected {
+        builder.push(" AND FALSE");
+    }
+    if let Some(search) = &query.search_term {
+        builder
+            .push(" AND strpos(lower(p.name),lower(")
+            .push_bind(search.clone())
+            .push("))>0");
+    }
+    if let Some(parent_id) = query.parent_id {
+        // A music-library view includes playlists with a visible track in that
+        // library. Root queries also include the owner's empty playlists.
+        builder.push(" AND EXISTS (SELECT 1 FROM playlist_items entry JOIN items i ON i.id=entry.item_id JOIN libraries l ON l.id=i.library_id WHERE entry.playlist_id=p.id AND l.enabled=TRUE AND i.item_type='Audio' AND i.path !~ '(^|/)[.]' AND i.library_id=")
+            .push_bind(parent_id);
+        db::push_user_visibility_filters(builder, user);
+        builder.push(")");
+    }
+}
+
+pub(crate) async fn catalog_item_response(
+    state: &AppState,
+    current: &UserRecord,
+    selected: &UserRecord,
+    playlist_id: Uuid,
+) -> Result<Option<Response>, ApiError> {
+    if current.id != selected.id {
+        return Ok(None);
+    }
+    Ok(sqlx::query_as::<_, PlaylistRecord>(
+        "SELECT id,name,created_at,updated_at FROM playlists WHERE id=$1 AND owner_user_id=$2",
+    )
+    .bind(playlist_id)
+    .bind(current.id)
+    .fetch_optional(&state.db)
+    .await?
+    .map(|record| Json(record.into_dto(state.server_id)).into_response()))
+}
+
+pub(crate) async fn delete_catalog_playlists(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    RawQuery(raw_query): RawQuery,
+) -> Result<StatusCode, ApiError> {
+    ensure_self_user(&user, query_uuid(raw_query.as_deref(), "UserId")?)?;
+    let ids = query_uuids(raw_query.as_deref(), "Ids")?;
+    if ids.is_empty() {
+        return Err(ApiError::BadRequest("Ids is required".to_owned()));
+    }
+    delete_owned_playlists(&state, &user, ids).await
+}
+
+async fn delete_owned_playlists(
+    state: &AppState,
+    user: &UserRecord,
+    mut ids: Vec<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    ids.sort_unstable();
+    ids.dedup();
+    let mut tx = state.db.begin().await?;
+    let deleted = sqlx::query_scalar::<_, Uuid>(
+        "DELETE FROM playlists WHERE id=ANY($1) AND owner_user_id=$2 RETURNING id",
+    )
+    .bind(&ids)
+    .bind(user.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    if deleted.len() != ids.len() {
+        tx.rollback().await?;
+        return Err(ApiError::NotFound);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -248,7 +559,7 @@ async fn list_playlists(
             .fetch_one(&state.db)
             .await?;
     let records = sqlx::query_as::<_, PlaylistRecord>(
-        "SELECT id,name,created_at FROM playlists WHERE owner_user_id=$1 ORDER BY lower(name),id OFFSET $2 LIMIT $3",
+        "SELECT id,name,created_at,updated_at FROM playlists WHERE owner_user_id=$1 ORDER BY lower(name),id OFFSET $2 LIMIT $3",
     )
     .bind(user.id)
     .bind(start_index)
@@ -257,15 +568,7 @@ async fn list_playlists(
     .await?;
     let items = records
         .into_iter()
-        .map(|record| PlaylistListItemDto {
-            id: record.id,
-            name: record.name,
-            server_id: state.server_id.to_string(),
-            item_type: "Playlist",
-            is_folder: true,
-            media_type: "Audio",
-            date_created: record.created_at,
-        })
+        .map(|record| record.into_dto(state.server_id))
         .collect();
     Ok(Json(PlaylistsResultDto {
         items,
@@ -334,20 +637,12 @@ async fn update_playlist(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_playlist(
+pub(crate) async fn delete_playlist(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(playlist_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let result = sqlx::query("DELETE FROM playlists WHERE id=$1 AND owner_user_id=$2")
-        .bind(playlist_id)
-        .bind(user.id)
-        .execute(&state.db)
-        .await?;
-    if result.rows_affected() == 0 {
-        return Err(ApiError::NotFound);
-    }
-    Ok(StatusCode::NO_CONTENT)
+    delete_owned_playlists(&state, &user, vec![playlist_id]).await
 }
 
 async fn get_playlist_items(
@@ -365,8 +660,27 @@ async fn get_playlist_items(
             "StartIndex cannot be negative".to_owned(),
         ));
     }
-    let limit = query.limit.unwrap_or(MAX_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
-    let mut entries = visible_entries(&state, &user, playlist_id).await?;
+    let limit = query
+        .limit
+        .unwrap_or(MAX_PAGE_SIZE)
+        .clamp(1, state.config.max_page_size.min(MAX_PLAYLIST_ITEMS as i64));
+    let (items, total_record_count) =
+        playlist_item_page(&state, &user, playlist_id, start_index, limit).await?;
+    Ok(Json(PlaylistItemsResultDto {
+        items,
+        total_record_count: as_i32(total_record_count)?,
+        start_index: as_i32(start_index)?,
+    }))
+}
+
+async fn playlist_item_page(
+    state: &AppState,
+    user: &UserRecord,
+    playlist_id: Uuid,
+    start_index: i64,
+    limit: i64,
+) -> Result<(Vec<PlaylistItemDto>, i64), ApiError> {
+    let mut entries = visible_entries(state, user, playlist_id).await?;
     let total_record_count = entries.len() as i64;
     let start = usize::try_from(start_index).unwrap_or(usize::MAX);
     let items = if start >= entries.len() {
@@ -405,11 +719,7 @@ async fn get_playlist_items(
             }
         })
         .collect();
-    Ok(Json(PlaylistItemsResultDto {
-        items,
-        total_record_count: as_i32(total_record_count)?,
-        start_index: as_i32(start_index)?,
-    }))
+    Ok((items, total_record_count))
 }
 
 async fn add_playlist_items(
@@ -525,6 +835,18 @@ async fn ensure_owned(
     user: &UserRecord,
     playlist_id: Uuid,
 ) -> Result<(), ApiError> {
+    if owns_playlist(state, user, playlist_id).await? {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+pub(crate) async fn owns_playlist(
+    state: &AppState,
+    user: &UserRecord,
+    playlist_id: Uuid,
+) -> Result<bool, ApiError> {
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM playlists WHERE id=$1 AND owner_user_id=$2)",
     )
@@ -532,11 +854,7 @@ async fn ensure_owned(
     .bind(user.id)
     .fetch_one(&state.db)
     .await?;
-    if exists {
-        Ok(())
-    } else {
-        Err(ApiError::NotFound)
-    }
+    Ok(exists)
 }
 
 async fn lock_owned_playlist(

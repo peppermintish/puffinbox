@@ -84,7 +84,18 @@ async fn ancestors(
         }
         return Ok(Json(Vec::new()));
     }
-    let item = visible_item(&state, &user, id).await?;
+    let item = match visible_item(&state, &user, id).await {
+        Ok(item) => item,
+        Err(ApiError::NotFound) => {
+            if current.id == user.id
+                && crate::playlists::owns_playlist(&state, &current, id).await?
+            {
+                return Ok(Json(Vec::new()));
+            }
+            return Err(ApiError::NotFound);
+        }
+        Err(error) => return Err(error),
+    };
     let parents = parent_chain(&state, &item).await?;
     let mut entries = Vec::with_capacity(parents.len() + 1);
     for parent in parents {
@@ -192,7 +203,18 @@ async fn theme_media(
         }
         return Ok(Json(result));
     }
-    let item = visible_item(&state, &user, id).await?;
+    let item = match visible_item(&state, &user, id).await {
+        Ok(item) => item,
+        Err(ApiError::NotFound) => {
+            if current.id == user.id
+                && crate::playlists::owns_playlist(&state, &current, id).await?
+            {
+                return Ok(Json(result));
+            }
+            return Err(ApiError::NotFound);
+        }
+        Err(error) => return Err(error),
+    };
     let parents = if query.inherit_from_parent {
         parent_chain(&state, &item).await?
     } else {

@@ -182,6 +182,525 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
     assert_eq!(list["Items"][0]["Type"], "Playlist");
     assert_eq!(list["Items"][0]["MediaType"], "Audio");
 
+    let catalog = send(
+        &router,
+        "GET",
+        "/Items?includeItemTypes=Playlist&recursive=true&searchTerm=road&mediaTypes=Audio",
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(catalog.status(), axum::http::StatusCode::OK);
+    assert_eq!(catalog.headers()["cache-control"], "private, no-store");
+    let catalog = response_json(catalog).await;
+    assert_eq!(catalog["TotalRecordCount"], 1);
+    assert_eq!(catalog["Items"][0]["Id"], playlist_id.to_string());
+    assert_eq!(catalog["Items"][0]["Type"], "Playlist");
+    assert_eq!(catalog["Items"][0]["IsFolder"], true);
+    assert_eq!(catalog["Items"][0]["CanDelete"], true);
+    assert!(catalog["Items"][0].get("Path").is_none());
+
+    let detail = send(
+        &router,
+        "GET",
+        &format!("/Items/{playlist_id}?userId={owner_id}"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(detail.status(), axum::http::StatusCode::OK);
+    assert_eq!(detail.headers()["cache-control"], "private, no-store");
+    let detail = response_json(detail).await;
+    assert_eq!(detail["Name"], "Road trip");
+    assert_eq!(detail["DateCreated"], catalog["Items"][0]["DateCreated"]);
+    assert!(detail["DateModified"].is_string());
+    let permission = send(
+        &router,
+        "GET",
+        &format!("/Playlists/{playlist_id}/Users/{owner_id}"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(permission.status(), axum::http::StatusCode::OK);
+    assert_eq!(permission.headers()["cache-control"], "private, no-store");
+    assert_eq!(
+        response_json(permission).await,
+        json!({"UserId":owner_id,"CanEdit":true})
+    );
+    for (requested_user, token) in [(peer_id, &owner_token), (owner_id, &peer_token)] {
+        assert_eq!(
+            send(
+                &router,
+                "GET",
+                &format!("/Playlists/{playlist_id}/Users/{requested_user}"),
+                Some(token),
+                None
+            )
+            .await
+            .status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+    }
+    let legacy = send(
+        &router,
+        "GET",
+        &format!("/Users/{owner_id}/Items?IncludeItemTypes=Playlist"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(legacy.status(), axum::http::StatusCode::OK);
+    assert_eq!(item_ids(&response_json(legacy).await), vec![playlist_id]);
+    let conflict = send(
+        &router,
+        "GET",
+        &format!("/Users/{owner_id}/Items?UserId={peer_id}"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(conflict.status(), axum::http::StatusCode::BAD_REQUEST);
+    let peer_alias = send(
+        &router,
+        "GET",
+        &format!("/Users/{owner_id}/Items?IncludeItemTypes=Playlist"),
+        Some(&peer_token),
+        None,
+    )
+    .await;
+    assert_eq!(peer_alias.status(), axum::http::StatusCode::FORBIDDEN);
+    for uri in [
+        format!("/Items?ParentId={playlist_id}&Limit=300&Fields=Chapters,MediaSources,Trickplay"),
+        format!(
+            "/Users/{owner_id}/Items?ParentId={playlist_id}&Limit=300&Fields=Chapters,MediaSources,Trickplay"
+        ),
+        format!(
+            "/Users/{owner_id}/Items?ParentId={playlist_id}&Limit=300&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&CollapseBoxSetItems=false"
+        ),
+    ] {
+        let entries = send(&router, "GET", &uri, Some(&owner_token), None).await;
+        assert_eq!(entries.status(), axum::http::StatusCode::OK);
+        assert_eq!(entries.headers()["cache-control"], "private, no-store");
+        let entries = response_json(entries).await;
+        assert_eq!(entries["TotalRecordCount"], 2);
+        assert_eq!(item_ids(&entries), vec![first, second]);
+        assert_ne!(
+            entries["Items"][0]["PlaylistItemId"],
+            entries["Items"][1]["PlaylistItemId"]
+        );
+    }
+    let entry_page = response_json(send(&router, "GET", &format!("/Users/{owner_id}/Items?ParentId={playlist_id}&StartIndex=1&Limit=1&EnableTotalRecordCount=false"), Some(&owner_token), None).await).await;
+    assert_eq!(item_ids(&entry_page), vec![second]);
+    assert_eq!(entry_page["StartIndex"], 1);
+    assert!(entry_page.get("TotalRecordCount").is_none());
+    for query in [
+        "SortBy=Name",
+        "Filters=IsFavorite",
+        "SearchTerm=First",
+        "Ids=invalid",
+        "ExcludeLocationTypes=FileSystem",
+        "ExcludeLocationTypes=Virtual,FileSystem",
+        "CollapseBoxSetItems=true",
+    ] {
+        assert_eq!(
+            send(
+                &router,
+                "GET",
+                &format!("/Items?ParentId={playlist_id}&{query}"),
+                Some(&owner_token),
+                None
+            )
+            .await
+            .status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        send(
+            &router,
+            "GET",
+            &format!("/Items?ParentId={playlist_id}"),
+            Some(&peer_token),
+            None
+        )
+        .await
+        .status(),
+        axum::http::StatusCode::NOT_FOUND
+    );
+    for suffix in ["Ancestors", "ThemeMedia"] {
+        let response = send(
+            &router,
+            "GET",
+            &format!("/Items/{playlist_id}/{suffix}"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        let response = response_json(response).await;
+        if suffix == "Ancestors" {
+            assert_eq!(response, json!([]));
+        } else {
+            for key in [
+                "ThemeSongsResult",
+                "ThemeVideosResult",
+                "SoundtrackSongsResult",
+            ] {
+                assert_eq!(response[key]["Items"], json!([]));
+                assert_eq!(response[key]["TotalRecordCount"], 0);
+            }
+        }
+        assert_eq!(
+            send(
+                &router,
+                "GET",
+                &format!("/Items/{playlist_id}/{suffix}"),
+                Some(&peer_token),
+                None
+            )
+            .await
+            .status(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+    }
+
+    let second_playlist = response_json(
+        send(
+            &router,
+            "POST",
+            "/Playlists",
+            Some(&owner_token),
+            Some(json!({ "Name": "Road 100%_mix", "MediaType": "Audio" })),
+        )
+        .await,
+    )
+    .await;
+    let second_playlist_id = Uuid::parse_str(second_playlist["Id"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE playlists SET created_at='2020-01-01T00:00:00Z',updated_at='2023-01-01T00:00:00Z' WHERE id=$1")
+        .bind(playlist_id).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE playlists SET created_at='2021-01-01T00:00:00Z',updated_at='2022-01-01T00:00:00Z' WHERE id=$1")
+        .bind(second_playlist_id).execute(&pool).await.unwrap();
+    for (sort, order, expected) in [
+        ("DateCreated", "Ascending", playlist_id),
+        ("DateAdded", "Descending", second_playlist_id),
+        ("DateModified", "Ascending", second_playlist_id),
+        ("DateModified", "Descending", playlist_id),
+    ] {
+        let response = send(
+            &router,
+            "GET",
+            &format!("/Items?IncludeItemTypes=Playlist&SortBy={sort}&SortOrder={order}&Limit=1"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(item_ids(&response_json(response).await), vec![expected]);
+    }
+    for (query, expected_id) in [
+        (
+            "SortBy=Name&SortOrder=Descending&StartIndex=1&Limit=1",
+            second_playlist_id,
+        ),
+        (
+            "SearchTerm=100%25_mix&EnableTotalRecordCount=false",
+            second_playlist_id,
+        ),
+    ] {
+        let response = send(
+            &router,
+            "GET",
+            &format!("/Items?IncludeItemTypes=Playlist&{query}"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response = response_json(response).await;
+        assert_eq!(item_ids(&response), vec![expected_id]);
+        if query.contains("false") {
+            assert!(response.get("TotalRecordCount").is_none());
+        } else {
+            assert_eq!(response["TotalRecordCount"], 2);
+            assert_eq!(response["StartIndex"], 1);
+        }
+    }
+    for query in ["MediaTypes=Video", "SearchTerm=absent", "StartIndex=100"] {
+        let response = response_json(
+            send(
+                &router,
+                "GET",
+                &format!("/Items?IncludeItemTypes=Playlist&{query}"),
+                Some(&owner_token),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(response["Items"], json!([]));
+    }
+    for query in [
+        "Filters=IsFavorite",
+        "IsPlayed=false",
+        "Genres=Rock",
+        "Tags=Road",
+        "SortBy=LastPlayedDate",
+        "SortBy=Name,DateCreated",
+        "StartIndex=-1",
+    ] {
+        let response = send(
+            &router,
+            "GET",
+            &format!("/Items?IncludeItemTypes=Playlist&{query}"),
+            Some(&owner_token),
+            None,
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "{query}"
+        );
+    }
+    let mixed = send(
+        &router,
+        "GET",
+        "/Items?IncludeItemTypes=Playlist,Audio",
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(mixed.status(), axum::http::StatusCode::BAD_REQUEST);
+    let parent_scope = send(
+        &router,
+        "GET",
+        &format!("/Items?IncludeItemTypes=Playlist&ParentId={library_id}"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(parent_scope.status(), axum::http::StatusCode::OK);
+    let parent_scope = response_json(parent_scope).await;
+    assert_eq!(parent_scope["TotalRecordCount"], 1);
+    assert_eq!(item_ids(&parent_scope), vec![playlist_id]);
+    sqlx::query("UPDATE items SET path='/music/.private/'||name WHERE id=ANY($1)")
+        .bind(vec![first, second])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let hidden_tracks = response_json(
+        send(
+            &router,
+            "GET",
+            &format!("/Items?IncludeItemTypes=Playlist&ParentId={library_id}"),
+            Some(&owner_token),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(hidden_tracks["TotalRecordCount"], 0);
+    assert_eq!(hidden_tracks["Items"], json!([]));
+    sqlx::query("UPDATE items SET path='/music/first.flac' WHERE id=$1")
+        .bind(first)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE items SET path='/music/second.flac' WHERE id=$1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let unknown_parent = send(
+        &router,
+        "GET",
+        &format!(
+            "/Items?IncludeItemTypes=Playlist&ParentId={}",
+            Uuid::new_v4()
+        ),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(unknown_parent.status(), axum::http::StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let disabled_parent = send(
+        &router,
+        "GET",
+        &format!("/Items?IncludeItemTypes=Playlist&ParentId={library_id}"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(disabled_parent.status(), axum::http::StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE libraries SET enabled=TRUE WHERE id=$1")
+        .bind(library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let peer_catalog = response_json(
+        send(
+            &router,
+            "GET",
+            "/Items?IncludeItemTypes=Playlist",
+            Some(&peer_token),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(peer_catalog["TotalRecordCount"], 0);
+    for method in ["GET", "DELETE"] {
+        let response = send(
+            &router,
+            method,
+            &format!("/Items/{playlist_id}"),
+            Some(&peer_token),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+    let cross_catalog = send(
+        &router,
+        "GET",
+        &format!("/Items?IncludeItemTypes=Playlist&UserId={owner_id}"),
+        Some(&peer_token),
+        None,
+    )
+    .await;
+    assert_eq!(cross_catalog.status(), axum::http::StatusCode::FORBIDDEN);
+    let atomic_delete = send(
+        &router,
+        "DELETE",
+        &format!("/Items?ids={second_playlist_id},{first}"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(atomic_delete.status(), axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(
+        send(
+            &router,
+            "GET",
+            &format!("/Items/{second_playlist_id}"),
+            Some(&owner_token),
+            None
+        )
+        .await
+        .status(),
+        axum::http::StatusCode::OK
+    );
+    let bulk_delete = send(
+        &router,
+        "DELETE",
+        &format!("/Items?ids={second_playlist_id},{second_playlist_id}"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(bulk_delete.status(), axum::http::StatusCode::NO_CONTENT);
+    assert!(db::get_item(&pool, first).await.unwrap().is_some());
+
+    for (method, uri) in [
+        ("GET", format!("/Items/{playlist_id}")),
+        ("DELETE", format!("/Items/{playlist_id}")),
+        ("DELETE", format!("/Items?Ids={playlist_id}")),
+    ] {
+        assert_eq!(
+            send(&router, method, &uri, None, None).await.status(),
+            axum::http::StatusCode::UNAUTHORIZED
+        );
+    }
+    for query in [
+        "Ids=invalid",
+        "ExcludeItemTypes=Playlist",
+        "IsFavorite=true",
+        "UnknownOption=true",
+    ] {
+        assert_eq!(
+            send(
+                &router,
+                "GET",
+                &format!("/Items?IncludeItemTypes=Playlist&{query}"),
+                Some(&owner_token),
+                None
+            )
+            .await
+            .status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+    }
+    for uri in [
+        "/Items".to_owned(),
+        "/Items?Ids=invalid".to_owned(),
+        format!("/Items?Ids={}&UserId={peer_id}", playlist_id),
+    ] {
+        let expected = if uri.contains("UserId") {
+            axum::http::StatusCode::FORBIDDEN
+        } else {
+            axum::http::StatusCode::BAD_REQUEST
+        };
+        assert_eq!(
+            send(&router, "DELETE", &uri, Some(&owner_token), None)
+                .await
+                .status(),
+            expected
+        );
+    }
+    sqlx::query("UPDATE users SET is_admin=TRUE WHERE id=$1")
+        .bind(peer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(
+            &router,
+            "GET",
+            &format!("/Items?IncludeItemTypes=Playlist&UserId={owner_id}"),
+            Some(&peer_token),
+            None
+        )
+        .await
+        .status(),
+        axum::http::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            &router,
+            "GET",
+            &format!("/Items/{playlist_id}?UserId={owner_id}"),
+            Some(&peer_token),
+            None
+        )
+        .await
+        .status(),
+        axum::http::StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(
+            &router,
+            "DELETE",
+            &format!("/Items/{playlist_id}"),
+            Some(&peer_token),
+            None
+        )
+        .await
+        .status(),
+        axum::http::StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE users SET is_admin=FALSE WHERE id=$1")
+        .bind(peer_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
     let metadata = send(
         &router,
         "GET",
@@ -288,6 +807,15 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
         .await
         .unwrap();
     let filtered = playlist_items(&router, playlist_id, &owner_token).await;
+    let hidden_parent = send(
+        &router,
+        "GET",
+        &format!("/Items?IncludeItemTypes=Playlist&ParentId={library_id}"),
+        Some(&owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(hidden_parent.status(), axum::http::StatusCode::NOT_FOUND);
     assert_eq!(filtered["Items"], json!([]));
     assert_eq!(filtered["TotalRecordCount"], 0);
     let filtered_metadata = response_json(
@@ -382,7 +910,7 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
     let delete = send(
         &router,
         "DELETE",
-        &format!("/Playlists/{playlist_id}"),
+        &format!("/Items/{playlist_id}"),
         Some(&owner_token),
         None,
     )

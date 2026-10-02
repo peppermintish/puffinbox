@@ -94,9 +94,16 @@ pub fn router(state: AppState) -> Router {
         .route("/Persons/{name}", get(get_music_person))
         .route("/Artists", get(list_music_artists))
         .route("/Artists/AlbumArtists", get(list_music_artists))
-        .route("/Items", get(browse_items))
+        .route(
+            "/Items",
+            get(browse_items).delete(crate::playlists::delete_catalog_playlists),
+        )
         .route("/Items/Counts", get(item_counts))
-        .route("/Items/{item_id}", get(get_item))
+        .route(
+            "/Items/{item_id}",
+            get(get_item).delete(crate::playlists::delete_playlist),
+        )
+        .route("/Users/{user_id}/Items", get(browse_user_items))
         .route("/Users/{user_id}/Items/{item_id}", get(get_user_item))
         .route(
             "/Items/{item_id}/UserData",
@@ -194,6 +201,17 @@ async fn add_response_security_headers(
     let is_web_asset = request.uri().path() == "/web" || request.uri().path().starts_with("/web/");
     let is_media_token_exchange = request.uri().path() == "/Users/Me/MediaAccessToken";
     let is_catalog_filter = matches!(request.uri().path(), "/Items/Filters" | "/Items/Filters2");
+    let path = request.uri().path();
+    let is_private_catalog = path == "/Items"
+        || path == "/Playlists"
+        || path.starts_with("/Playlists/")
+        || path.strip_prefix("/Items/").is_some_and(|tail| {
+            tail.parse::<Uuid>().is_ok()
+                || tail.split_once('/').is_some_and(|(id, route)| {
+                    id.parse::<Uuid>().is_ok() && matches!(route, "Ancestors" | "ThemeMedia")
+                })
+        })
+        || (path.starts_with("/Users/") && (path.contains("/Items/") || path.ends_with("/Items")));
     let is_media_token_exchange_post =
         is_media_token_exchange && request.method() == axum::http::Method::POST;
     let (parts, body) = request.into_parts();
@@ -230,6 +248,15 @@ async fn add_response_security_headers(
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response
+            .headers_mut()
+            .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    }
+    if is_private_catalog {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
         response
             .headers_mut()
             .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
@@ -2676,12 +2703,73 @@ async fn user_views(
 async fn browse_items(
     State(state): State<AppState>,
     CurrentUser(current): CurrentUser,
+    RawQuery(raw_query): RawQuery,
     Query(params): Query<ItemsQueryParams>,
-) -> Result<Json<ItemsResultDto>, ApiError> {
+) -> Result<Response, ApiError> {
     let selected = selected_user(&state, &current, params.user_id).await?;
-    let query = item_query(params, &state)?;
+    let multiple_sorts = params
+        .sort_by
+        .as_deref()
+        .is_some_and(|value| value.contains(','));
+    let entry_sort_requested = params.sort_by.is_some() || params.sort_order.is_some();
+    let entry_limit = params
+        .limit
+        .unwrap_or(100)
+        .clamp(1, state.config.max_page_size.min(1_000));
+    let mut query = item_query(params, &state)?;
+    if query
+        .include_item_types
+        .iter()
+        .any(|kind| kind.eq_ignore_ascii_case("Playlist"))
+    {
+        crate::playlists::validate_catalog_query(raw_query.as_deref())?;
+        if selected.id != current.id {
+            return Err(ApiError::Forbidden);
+        }
+        if multiple_sorts {
+            return Err(ApiError::BadRequest(
+                "Playlist catalog supports one SortBy field".to_owned(),
+            ));
+        }
+        return crate::playlists::catalog_result(&state, &selected, query).await;
+    }
+    if let Some(parent_id) = query.parent_id
+        && selected.id == current.id
+        && crate::playlists::owns_playlist(&state, &current, parent_id).await?
+    {
+        crate::playlists::validate_catalog_children_query(raw_query.as_deref())?;
+        if entry_sort_requested {
+            return Err(ApiError::BadRequest(
+                "Playlist entries use saved playlist order".to_owned(),
+            ));
+        }
+        query.limit = entry_limit;
+        return crate::playlists::catalog_children_result(&state, &current, parent_id, query).await;
+    }
     ensure_parent_visible(&state, &selected, query.parent_id).await?;
-    Ok(Json(item_query_result(&state, &selected, query).await?))
+    Ok(Json(item_query_result(&state, &selected, query).await?).into_response())
+}
+
+async fn browse_user_items(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path(user_id): Path<Uuid>,
+    RawQuery(raw_query): RawQuery,
+    Query(mut params): Query<ItemsQueryParams>,
+) -> Result<Response, ApiError> {
+    if params.user_id.is_some_and(|requested| requested != user_id) {
+        return Err(ApiError::BadRequest(
+            "Conflicting user identifiers".to_owned(),
+        ));
+    }
+    params.user_id = Some(user_id);
+    browse_items(
+        State(state),
+        CurrentUser(current),
+        RawQuery(raw_query),
+        Query(params),
+    )
+    .await
 }
 
 pub(crate) async fn selected_user(
@@ -3427,7 +3515,7 @@ async fn get_item(
     Query(params): Query<UserViewsParams>,
 ) -> Result<Response, ApiError> {
     let user = selected_user(&state, &current, params.user_id).await?;
-    catalog_item_response(&state, &user, item_id).await
+    catalog_item_response(&state, &current, &user, item_id).await
 }
 
 async fn get_user_item(
@@ -3442,11 +3530,12 @@ async fn get_user_item(
         ));
     }
     let user = selected_user(&state, &current, Some(user_id)).await?;
-    catalog_item_response(&state, &user, item_id).await
+    catalog_item_response(&state, &current, &user, item_id).await
 }
 
 async fn catalog_item_response(
     state: &AppState,
+    current: &UserRecord,
     user: &UserRecord,
     item_id: Uuid,
 ) -> Result<Response, ApiError> {
@@ -3456,9 +3545,11 @@ async fn catalog_item_response(
         }
         return Ok(Json(library_view_dto(&library, state.server_id)).into_response());
     }
-    let item = db::get_item(&state.db, item_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let Some(item) = db::get_item(&state.db, item_id).await? else {
+        return crate::playlists::catalog_item_response(state, current, user, item_id)
+            .await?
+            .ok_or(ApiError::NotFound);
+    };
     if !db::item_visible_to_user(&state.db, user, &item).await? {
         return Err(ApiError::NotFound);
     }
