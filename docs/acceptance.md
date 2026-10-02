@@ -7,7 +7,7 @@ Puffinbox is partial and unreleased. The source and container checks below passe
 | Rust formatting and strict workspace Clippy | Passed |
 | Standard Rust workspace suite | 227 passed, 0 failed; 23 database cases skipped by default |
 | Disposable PostgreSQL regression suite | 22 integration cases and 1 database-backed unit test passed |
-| Python acceptance, route-report, and runtime-inventory tests | 32 passed |
+| Python acceptance, route-report, and runtime-inventory tests | 40 passed, including eight source-map regressions |
 | Experimental GNU process entry | C lifecycle, fork callback order, and Rust lifecycle fixtures passed; production packaging is unchanged |
 | Browser helpers, playlists, Live TV, offline cache, and book reader | Passed; book reader has 8 Node cases |
 | Strict Cargo dependency audit and full notices | Passed with MIT and Apache-2.0 as the only allowed licenses |
@@ -15,6 +15,7 @@ Puffinbox is partial and unreleased. The source and container checks below passe
 | Outbound HTTPS verification | Trusted CA accepted; wrong CA and wrong host rejected in both the source process and scratch container |
 | HTTPS proxy and remote-access policy | 29 local checks passed in an isolated Docker fixture |
 | Isolated container acceptance | 26 passed, 0 failed |
+| Bounded scanner indexing and stale cleanup | 20,000- and 99,000-file runs passed; see [scanner-scale.md](scanner-scale.md) |
 
 The latest audio image is core `sha256:b023b350118043c20e8c9c428bc0dd2eb856d29f7a6dfb9b328e34bebe1329ad`, with separate operator test image `sha256:0867110d8c4ee2da35cc68c943146b581ac9edd62e2d68eb727aefddd9ca35e9`. It passed all 26 container checks, including universal FLAC delivery, numeric playback events, active FFmpeg shutdown, and persisted resume, and all 29 local HTTPS checks. It was built from the dirty working tree at `01feac7`; no source overlay was mounted. The build manifest records Rust file hashes. Fresh source checks passed formatting, strict Clippy, 227 standard cases, 22 PostgreSQL integration cases plus one recorder unit case, and 32 Python cases. Browser/book-reader regressions cover the unchanged interface; their preceding Chrome run is preserved under `.local/playlist-final-source-20261002`. Current evidence is under `.local/audio-source-20261002`, `.local/audio-image-20261002`, `.local/audio-container-20261002`, and `.local/audio-https-20261002`. The HTTPS ledger's Git metadata belongs to its older isolated harness workspace; its recorded server image hash identifies this build.
 
@@ -92,9 +93,11 @@ The public recipe was repeated from a fresh disk-backed output directory and pas
 
 A later attempt to load the official interface in the installed desktop player remained unvalidated. Its connection screen exposed the local Host value in accessibility data, but Connect stayed disabled and the activated-window capture was blank. No normal-interface playback result was obtained. The player was closed and its original settings restored; the observation is under `.local/native-official-interface-20261002`. This does not replace the earlier stream and decoder/output observations or establish a server compatibility failure.
 
-Both main cloud jobs and the separate runtime experiment passed at [`01feac7`](https://github.com/peppermintish/puffinbox/actions/runs/36963322925), before the universal audio changes; [the experimental run is separate](https://github.com/peppermintish/puffinbox/actions/runs/36963322927). The audio increment's cloud result must be checked against its own commit.
+Both main cloud jobs and the separate runtime experiment passed at [`01feac7`](https://github.com/peppermintish/puffinbox/actions/runs/36963322925), before the universal audio changes; [the experimental run is separate](https://github.com/peppermintish/puffinbox/actions/runs/36963322927). [Both main jobs passed at `6560147`](https://github.com/peppermintish/puffinbox/actions/runs/36966765644), covering universal audio and opaque playback-session IDs, and [its runtime experiment passed](https://github.com/peppermintish/puffinbox/actions/runs/36966765614). The eight source-map regressions were added afterward and passed locally; their cloud result must be checked against their own commit.
 
 The installed Jellyfin Media Player 1.12 was retried against the current audio source preview. Its captured connection window remained blank; ordinary keyboard input changed the accessible Host value, but Connect stayed disabled. No normal-interface playback result was obtained. Its original configuration was restored and hash checked. Evidence is under `.local/audio-native-20261002`.
+
+An instrumented GNU build at `6560147` passed startup, link inventory, and all 4,096 numerical comparisons. DWARF locations map 1,463,499 instruction intervals to 2,427 source files, including 245 standard-library files with exact build hashes. No mapped generated Unicode or compiler-builtins source path was found. Line-zero intervals and anonymous constants remain outside that attribution; this is not complete runtime license clearance. The [runtime audit](runtime-link-audit.md) records the binary and inspection limits. Production remains the static musl image.
 
 ## Requirements
 

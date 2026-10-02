@@ -19,7 +19,7 @@
     },
     "operational_scale": {
       "passed": false,
-      "detail": "No 1 PB, billion-file, or thousand-stream load result is available."
+      "detail": "Bounded 20,000- and 99,000-file synthetic scanner runs passed. No real-storage 1 PB, billion-file, or thousand-stream load result is available."
     }
   }
 }

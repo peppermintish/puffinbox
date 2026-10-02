@@ -8,6 +8,7 @@ on:
       - 'experiments/linux-gnu-entry/**'
       - 'experiments/linux-gnu-runtime/**'
       - 'scripts/check_gnu_link_map.py'
+      - 'scripts/check_gnu_source_map.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
@@ -20,6 +21,7 @@ on:
       - 'experiments/linux-gnu-entry/**'
       - 'experiments/linux-gnu-runtime/**'
       - 'scripts/check_gnu_link_map.py'
+      - 'scripts/check_gnu_source_map.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
@@ -52,7 +54,17 @@ jobs:
           docker run --rm --workdir /work \
             --volume "$GITHUB_WORKSPACE:/work:ro" \
             --volume "$RUNNER_TEMP/gnu-probe:/probe" \
-            puffinbox:gnu-probe-builder --output /probe/output
+            puffinbox:gnu-probe-builder --output /probe/output --source-map
+
+      - name: Inspect source locations with an external audit tool
+        run: |
+          printf '%s\n' 'pyelftools==0.33 --hash=sha256:f215ad5f47d3f1373a21496a6c9e0707c622840d0622f23ff7ce08678b020036' \
+            | python3 -m pip install --only-binary=:all: --require-hashes \
+                --target "$RUNNER_TEMP/gnu-inspector" --requirement /dev/stdin
+          PYTHONPATH="$RUNNER_TEMP/gnu-inspector" python3 scripts/check_gnu_source_map.py \
+            --binary "$RUNNER_TEMP/gnu-probe/output/server" \
+            --source-hashes "$RUNNER_TEMP/gnu-probe/output/standard-library-source-hashes.json" \
+            --output "$RUNNER_TEMP/gnu-probe/output/source-line-inventory.json"
 
       - name: Save probe records without binaries or external runtime libraries
         if: always()
@@ -64,4 +76,7 @@ jobs:
             ${{ runner.temp }}/gnu-probe/output/runtime-input-inventory.json
             ${{ runner.temp }}/gnu-probe/output/server-elf.txt
             ${{ runner.temp }}/gnu-probe/output/server-dynamic-symbols.txt
+            ${{ runner.temp }}/gnu-probe/output/server-sections.txt
+            ${{ runner.temp }}/gnu-probe/output/standard-library-source-hashes.json
+            ${{ runner.temp }}/gnu-probe/output/source-line-inventory.json
           if-no-files-found: warn

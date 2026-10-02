@@ -38,6 +38,25 @@ def inspect(binary: Path, label: str, output: Path, environment: dict[str, str])
         run([utility, *options, str(binary)], cwd=output, env=environment, log=output / f"{label}-{suffix}.txt")
 
 
+def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, str]) -> dict[str, object]:
+    run(["readelf", "-SW", str(output / "server")], cwd=output, env=environment,
+        log=output / "server-sections.txt")
+    sections = (output / "server-sections.txt").read_text()
+    if ".debug_line " not in sections or ".debug_info " not in sections:
+        raise RuntimeError("The instrumented executable is missing its source-location sections.")
+    library = sysroot / "lib/rustlib/src/rust/library"
+    source_files = {str(path): digest(path) for path in sorted(library.rglob("*"))
+                    if path.is_file() and (path.suffix in {".rs", ".h", ".c", ".S"}
+                                           or "LICENSE" in path.name or "COPYRIGHT" in path.name)}
+    with (output / "standard-library-source-hashes.json").open("x") as ledger:
+        json.dump({"sysroot": str(sysroot), "sourceFiles": source_files,
+                   "scope": "Exact source bytes available to this disposable build; no license clearance inferred."},
+                  ledger, indent=2)
+        ledger.write("\n")
+    return {"sourceMappingPresent": True, "debugLevel": 2, "sourceFileCount": len(source_files),
+            "sourceHashesSha256": digest(output / "standard-library-source-hashes.json"), "licenseClearance": False}
+
+
 def startup_check(output: Path, environment: dict[str, str]) -> dict[str, object]:
     fixture_environment = {name: value for name, value in environment.items()
                            if name not in {"DATABASE_URL", "PUFFINBOX_DATABASE_URL"}}
@@ -107,6 +126,7 @@ def numeric_check(output: Path, root: Path, environment: dict[str, str]) -> dict
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="new output directory outside the mounted source and sysroot")
+    parser.add_argument("--source-map", action="store_true", help="retain debug locations and exact standard-library source hashes")
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64" or not Path("/.dockerenv").is_file():
         parser.error("Run inside a disposable Linux x86-64 Docker builder; this experiment changes its rust-src copy.")
@@ -141,6 +161,8 @@ def main() -> int:
         environment = {**os.environ, "CARGO_BUILD_JOBS": "2", "RUSTC_BOOTSTRAP": "1", "RUSTFLAGS": "-C prefer-dynamic",
                        "RUSTC_WRAPPER": str(root / "experiments/linux-gnu-runtime/compiler-wrapper.py"),
                        "PUFFINBOX_RUNTIME_PROBE_OUTPUT": str(output)}
+        if args.source_map:
+            environment["CARGO_PROFILE_RELEASE_DEBUG"] = "2"
         for name in ["entry", "compat"]:
             run(["cc", "-c", str(root / f"experiments/linux-gnu-entry/{name}.S"), "-o", str(output / f"{name}.o")],
                 cwd=root, env=environment, log=output / f"{name}-build.log")
@@ -168,6 +190,8 @@ def main() -> int:
              "--symbols", str(output / "server-symbols.txt"), "--output", str(output / "runtime-input-inventory.json")],
             cwd=root, env=environment, log=output / "inventory-check.log")
         record["numericCheck"] = numeric_check(output, root, environment)
+        if args.source_map:
+            record["sourceMapping"] = capture_source_mapping(output, sysroot, environment)
         result = 0
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         record["failure"] = str(error)

@@ -19,3 +19,22 @@ The script rejects a host invocation, an existing output directory, a changed Un
 The numeric fixture compares all 11 previously retained helper functions against a baseline that includes compiler-builtins. It covers signed zero, subnormals, infinities, NaNs, halfway rounding values, and 4,096 deterministic integer and floating inputs. Python integer arithmetic and conversion independently check the 128-bit modulo and signed-to-double results. Unicode trimming, alphabetic and numeric classification, and case conversion are also exercised.
 
 The link-map checker reports known retained runtime sections and generated Unicode definitions. It rejects an empty or unsupported map instead of inferring absence from it. A clean inventory is evidence for this particular executable, not complete license clearance: inlined source provenance, all bundled inputs, exact external-runtime requirements, packaging, and broader behavior remain separate release checks. See [the runtime audit](../../docs/runtime-link-audit.md).
+
+## Source-location inventory
+
+Pass `--source-map` to retain release debug data and record exact standard-library source hashes. This produces a larger test executable and does not change production packaging:
+
+```sh
+python3 experiments/linux-gnu-runtime/build.py --output /probe/output --source-map
+```
+
+The external [pyelftools inspector](https://github.com/eliben/pyelftools) reads DWARF source locations. CI installs version 0.33 with its wheel hash pinned; it is build infrastructure and is excluded from project runtime dependencies and release bundles. With that inspector available in a separate audit environment:
+
+```sh
+python3 scripts/check_gnu_source_map.py \
+  --binary /probe/output/server \
+  --source-hashes /probe/output/standard-library-source-hashes.json \
+  --output /probe/output/source-line-inventory.json
+```
+
+The checker resolves DWARF 4 and 5 file indexes, attributes only nonempty intervals inside executable load ranges, and requires hashes for every mapped standard-library source. Missing debug information, unresolved paths, empty mappings, and missing hashes fail. Known non-allowlisted mapped source paths also fail the check, including generated Unicode even if the link map names no Unicode archive. The inventory records line-zero and discarded-address intervals separately. Its byte counts can overlap; they are not a coverage percentage. Anonymous constants, unmapped instructions, assembler, generated code, included headers, and complete source-license classification remain outside this check. Every record keeps `licenseClearance: false`.

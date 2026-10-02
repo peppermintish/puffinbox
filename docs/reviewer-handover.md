@@ -18,4 +18,6 @@ Release gates remain open. Linked Unicode data is outside the license allowlist,
 
 An isolated local HTTPS proxy fixture passed 29 checks for certificate trust, forwarded-address handling, secure cookies, token exchange, logout, and remote-access policy, including a repeat against SDR core image `863e249f` with private Linux certificate permissions. It uses synthetic remote addresses and does not establish Internet deployment readiness. The check passed in both cloud jobs at `a0d5383`.
 
+Both main jobs and the runtime experiment passed at `6560147`, including universal audio and opaque session IDs. The source-location checker added afterward has eight regressions; the Python suite now passes 40 cases locally. A debug GNU build mapped 245 exact standard-library source files without mapped generated Unicode or compiler-builtins paths. Anonymous constants and unmapped code remain open, so this does not clear the runtime gate. Bounded 20,000- and 99,000-file scans passed exact indexing and stale cleanup; their local timings do not establish production scale. Details are in [the runtime audit](runtime-link-audit.md) and [scanner results](scanner-scale.md).
+
 Use the generated synthetic acceptance state for tests. Its database, credentials, media, and logs are ignored by Git. Existing personal libraries and older test stacks should be preserved.
