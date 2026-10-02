@@ -199,6 +199,13 @@ fn scoped_media_route(parts: &axum::http::request::Parts) -> bool {
     match segments.as_slice() {
         ["Items", item_id, "File"] => valid_id(item_id),
         ["Videos", item_id, "stream"] | ["Audio", item_id, "stream"] => valid_id(item_id),
+        ["Videos", item_id, resource] | ["Audio", item_id, resource]
+            if resource
+                .strip_prefix("stream.")
+                .is_some_and(crate::media_features::valid_stream_container) =>
+        {
+            valid_id(item_id)
+        }
         ["Audio", item_id, "universal"] => valid_id(item_id),
         ["Videos", item_id, "master.m3u8"] | ["Audio", item_id, "master.m3u8"] => valid_id(item_id),
         ["LiveTv", "Channels", item_id, "master.m3u8"] => valid_id(item_id),
@@ -1316,6 +1323,28 @@ mod tests {
         file.method = Method::POST;
         assert!(!scoped_media_route(&file));
         file.method = Method::GET;
+        for path in [
+            format!("/Audio/{item_id}/stream.flac"),
+            format!("/Videos/{item_id}/stream.mp4"),
+        ] {
+            file.uri = path.parse().unwrap();
+            assert!(scoped_media_route(&file));
+            file.method = Method::HEAD;
+            assert!(scoped_media_route(&file));
+            file.method = Method::POST;
+            assert!(!scoped_media_route(&file));
+            file.method = Method::GET;
+        }
+        for resource in [
+            "stream.",
+            "stream.flac.extra",
+            "stream.flac%2Fextra",
+            "stream.abcdefghijklmnopq",
+            "other.flac",
+        ] {
+            file.uri = format!("/Audio/{item_id}/{resource}").parse().unwrap();
+            assert!(!scoped_media_route(&file));
+        }
         file.uri = "/Audio/not-an-id/universal".parse().unwrap();
         assert!(!scoped_media_route(&file));
         file.uri = format!("/Videos/{item_id}/hls/{session_id}/playlist.m3u8")

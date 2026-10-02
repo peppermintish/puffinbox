@@ -10,7 +10,7 @@ The MIT/Apache-2.0 Cargo allowlist passes without exceptions. Linked Rust Unicod
 
 ## Jellyfin API target
 
-The target is the public [Jellyfin 12.0.0 OpenAPI document](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json). The [route report](generated-api-route-coverage.md) finds 88 exact method/path declarations among 364 operations. This counts declarations, not compatible behavior. Response semantics, query combinations, errors, and client expectations must be tested separately.
+The target is the public [Jellyfin 12.0.0 OpenAPI document](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json). The [route report](generated-api-route-coverage.md) finds 92 exact method/path declarations among 364 operations. This counts declarations, not compatible behavior. Response semantics, query combinations, errors, and client expectations must be tested separately.
 
 ## Requested scope
 

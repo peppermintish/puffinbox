@@ -240,6 +240,91 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
             .unwrap();
         assert_eq!(wrong_user.status(), axum::http::StatusCode::FORBIDDEN);
     }
+    // Opaque reader bytes exercise authorization and exact delivery here;
+    // decoding a real FLAC is covered by the separate client fixture.
+    let track_id = Uuid::new_v4();
+    let track_path = media_root.join("reader.flac");
+    let track_bytes = b"fLaC original reader fixture";
+    fs::write(&track_path, track_bytes).unwrap();
+    let track_metadata = fs::metadata(&track_path).unwrap();
+    sqlx::query("INSERT INTO items(id,library_id,name,sort_name,item_type,path,path_hash,size_bytes,date_modified) VALUES ($1,$2,'reader.flac','reader.flac','Audio',$3,$4,$5,$6)")
+        .bind(track_id).bind(library_id).bind(track_path.to_str().unwrap())
+        .bind(db::path_hash(track_path.to_str().unwrap())).bind(track_metadata.len() as i64)
+        .bind(DateTime::<Utc>::from(track_metadata.modified().unwrap())).execute(&pool).await.unwrap();
+    for method in ["GET", "HEAD"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(format!(
+                        "/Audio/{track_id}/stream.flac?Static=true&ApiKey={media_token}"
+                    ))
+                    .header("range", "bytes=1-5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-type"], "audio/flac");
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        assert_eq!(
+            response.headers()["content-range"],
+            format!("bytes 1-5/{}", track_bytes.len())
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        if method == "HEAD" {
+            assert!(body.is_empty());
+        } else {
+            assert_eq!(body.as_ref(), &track_bytes[1..6]);
+        }
+        for resource in [
+            format!("/Audio/{track_id}/stream.mp3"),
+            format!("/Videos/{track_id}/stream.flac"),
+            format!("/Audio/{item_id}/stream.png"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(format!("{resource}?ApiKey={media_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::NOT_FOUND,
+                "a suffix cannot convert original bytes or select another media type"
+            );
+        }
+    }
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let denied = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/Audio/{track_id}/stream.flac?ApiKey={media_token}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), axum::http::StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE libraries SET enabled=TRUE WHERE id=$1")
+        .bind(library_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     let expires_at: chrono::DateTime<Utc> =
         serde_json::from_value(minted_body["ExpiresAt"].clone()).unwrap();
     assert!(expires_at > Utc::now());
@@ -502,6 +587,22 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
         .await
         .unwrap();
     assert_eq!(after_logout.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let after_logout_audio = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/Audio/{track_id}/stream.flac?ApiKey={media_token}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        after_logout_audio.status(),
+        axum::http::StatusCode::UNAUTHORIZED
+    );
 
     pool.close().await;
     sqlx::query(format!("DROP SCHEMA \"{schema}\" CASCADE").as_str())

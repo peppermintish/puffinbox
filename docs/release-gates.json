@@ -7,7 +7,7 @@
     },
     "jellyfin_12_behavior": {
       "passed": false,
-      "detail": "88 of 364 operation declarations match. Bounded full-source HLS seeking, cached-detail resume, notifications, catalog filters, private playlists, and universal direct audio have local coverage. Universal audio transcoding, a transient movie playback notice, audio continuity, and full behavioral compatibility remain unresolved."
+      "detail": "92 of 364 operation declarations match. Bounded full-source HLS seeking, cached-detail resume, notifications, catalog filters, private playlists, and universal direct audio have local coverage. Container-suffixed original streams and empty native playback IDs have source/database regressions; current-image native acceptance remains pending. Universal audio transcoding, a transient movie playback notice, audio continuity, and full behavioral compatibility remain unresolved."
     },
     "feature_acceptance": {
       "passed": false,

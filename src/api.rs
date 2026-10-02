@@ -1279,7 +1279,10 @@ fn parse_play_session_id(
     user_id: Uuid,
     device_id: &str,
 ) -> Result<Option<Uuid>, ApiError> {
-    raw.map(|value| {
+    // Native desktop direct playback sends an empty ID. Treat it like an
+    // omitted ID: subsequent events still select only this user's active
+    // playback on the authenticated device, optionally restricted by item.
+    raw.filter(|value| !value.is_empty()).map(|value| {
         if value.len() > 256 || value.trim().is_empty() || value.chars().any(char::is_control) {
             return Err(ApiError::BadRequest(
                 "PlaySessionId must be nonempty, at most 256 bytes, and contain no control characters"

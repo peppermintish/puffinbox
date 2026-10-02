@@ -333,6 +333,13 @@ def verify_direct_play_acceptance(client: HttpClient, fixture_path: Path, timeou
     require(range_headers.get("Cache-Control", "").lower() == "private, no-store", "direct-play range cache policy was unexpected")
     require(range_content == expected_range and hashlib.sha256(range_content).digest() == hashlib.sha256(expected_range).digest(),
             "authenticated direct-play range did not return the original MP4 bytes")
+    suffixed_path = f"/Videos/{quoted_item_id}/stream.mp4?Static=true&mediaSourceId={quoted_item_id}"
+    suffix_status, suffix_headers, suffix_content = client.request("GET", suffixed_path, headers={"Range": f"bytes={range_start}-{range_end}"})
+    require(suffix_status == 206 and suffix_content == expected_range and suffix_headers.get("Content-Range") == f"bytes {range_start}-{range_end}/{total_length}",
+            "container-suffixed MP4 stream did not preserve the requested original range")
+    suffix_status, suffix_headers, suffix_content = client.request("HEAD", suffixed_path)
+    require(suffix_status == 200 and not suffix_content and suffix_headers.get("Content-Length") == str(total_length),
+            "container-suffixed MP4 HEAD did not return original source metadata")
     report("H.264/AAC direct-play negotiation and authenticated original MP4 full/range streaming", True,
            f"{total_length} source bytes; HTTP 200 full and HTTP 206 bytes {range_start}-{range_end}")
 
@@ -759,18 +766,32 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
     require(status == 400, "universal audio ignored the source bitrate limit")
     status, _, _ = HttpClient(client.base_url).request("GET", path + options)
     require(status == 401, "anonymous universal audio was accepted")
-    session_id = str(time.time_ns() // 1_000_000)
-    client.json("POST", "/Sessions/Playing", {
-        "ItemId": item_id, "PlaySessionId": session_id, "PositionTicks": 0, "PlayMethod": "DirectPlay",
-    }, expected=(204,))
-    for event in ("Progress", "Stopped"):
-        client.json("POST", f"/Sessions/Playing/{event}", {
-            "ItemId": item_id, "PlaySessionId": session_id, "PositionTicks": 50_000_000,
+    suffixed_path = f"/Audio/{urllib.parse.quote(item_id)}/stream.flac?Static=true&mediaSourceId={urllib.parse.quote(item_id)}"
+    status, headers, body = client.request("GET", suffixed_path)
+    require(status == 200 and body == source and headers.get("Content-Type") == "audio/flac",
+            "container-suffixed audio stream did not return original FLAC bytes")
+    status, headers, body = client.request("HEAD", suffixed_path)
+    require(status == 200 and not body and headers.get("Content-Length") == str(len(source)),
+            "container-suffixed audio HEAD did not return original source metadata")
+    status, headers, body = client.request("GET", suffixed_path, headers={"Range": "bytes=8-31"})
+    require(status == 206 and body == source[8:32] and headers.get("Content-Range") == f"bytes 8-31/{len(source)}",
+            "container-suffixed audio range differs from the source")
+    status, _, _ = client.request("GET", f"/Audio/{urllib.parse.quote(item_id)}/stream.mp3")
+    require(status == 404, "container-suffixed audio mislabeled original FLAC bytes as MP3")
+    status, _, _ = HttpClient(client.base_url).request("GET", suffixed_path)
+    require(status == 401, "anonymous container-suffixed audio was accepted")
+    for session_id in (str(time.time_ns() // 1_000_000), ""):
+        client.json("POST", "/Sessions/Playing", {
+            "ItemId": item_id, "PlaySessionId": session_id, "PositionTicks": 0, "PlayMethod": "DirectPlay",
         }, expected=(204,))
-    data = client.json("GET", f"/UserItems/{urllib.parse.quote(item_id)}")[2]
-    require(data.get("PlaybackPositionTicks") == 50_000_000,
-            "numeric audio session events did not preserve the stopped position")
-    report("Universal FLAC audio, byte ranges, format/bitrate limits, and numeric playback events", True,
+        for event in ("Progress", "Stopped"):
+            client.json("POST", f"/Sessions/Playing/{event}", {
+                "ItemId": item_id, "PlaySessionId": session_id, "PositionTicks": 50_000_000,
+            }, expected=(204,))
+        data = client.json("GET", f"/UserItems/{urllib.parse.quote(item_id)}")[2]
+        require(data.get("PlaybackPositionTicks") == 50_000_000,
+                "numeric or empty audio session events did not preserve the stopped position")
+    report("Universal and suffixed FLAC audio, byte ranges, format/bitrate limits, and numeric/empty playback events", True,
            "original bytes and HEAD metadata matched; stopping preserved five seconds; the source was delivered directly")
 
 

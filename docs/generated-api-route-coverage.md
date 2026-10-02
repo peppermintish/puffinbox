@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-02T04:34:46.356813+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-02T06:05:25.635510+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `176`
-- Declared pairs matching a schema method/path: `88`
+- Unique declared server method/path pairs: `180`
+- Declared pairs matching a schema method/path: `92`
 - Declared pairs outside the schema: `88`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -134,8 +134,12 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /LiveTv/Channels/{item_id}/hls/{session_id}/keepalive` | `src/media_features/livetv_runtime.rs` | custom / not in target schema |
 | `GET /Videos/{item_id}/stream` | `src/media_features/mod.rs` | match |
 | `HEAD /Videos/{item_id}/stream` | `src/media_features/mod.rs` | match |
+| `GET /Videos/{item_id}/stream.{container}` | `src/media_features/mod.rs` | match |
+| `HEAD /Videos/{item_id}/stream.{container}` | `src/media_features/mod.rs` | match |
 | `GET /Audio/{item_id}/stream` | `src/media_features/mod.rs` | match |
 | `HEAD /Audio/{item_id}/stream` | `src/media_features/mod.rs` | match |
+| `GET /Audio/{item_id}/stream.{container}` | `src/media_features/mod.rs` | match |
+| `HEAD /Audio/{item_id}/stream.{container}` | `src/media_features/mod.rs` | match |
 | `GET /Audio/{item_id}/universal` | `src/media_features/mod.rs` | match |
 | `HEAD /Audio/{item_id}/universal` | `src/media_features/mod.rs` | match |
 | `GET /Items/{item_id}/File` | `src/media_features/mod.rs` | match |

@@ -67,10 +67,12 @@ pub(crate) use self::secure_path::{AdjacentFileRead, OpenedMedia};
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/Videos/{item_id}/stream", get(stream_video).head(stream_video))
+        .route("/Videos/{item_id}/stream.{container}", get(stream_video_container).head(stream_video_container))
         .route(
             "/Audio/{item_id}/stream",
             get(stream_audio).head(stream_audio),
         )
+        .route("/Audio/{item_id}/stream.{container}", get(stream_audio_container).head(stream_audio_container))
         .route(
             "/Audio/{item_id}/universal",
             get(universal_audio::stream).head(universal_audio::stream),
@@ -161,6 +163,60 @@ async fn stream_audio(
         return Err(ApiError::NotFound);
     }
     stream_resolved(media, &headers, &method, false).await
+}
+
+async fn stream_video_container(
+    State(state): State<AppState>,
+    MediaUser(user): MediaUser,
+    Path((item_id, container)): Path<(Uuid, String)>,
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    stream_original_container(&state, &user, item_id, &container, true, &headers, &method).await
+}
+
+async fn stream_audio_container(
+    State(state): State<AppState>,
+    MediaUser(user): MediaUser,
+    Path((item_id, container)): Path<(Uuid, String)>,
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    stream_original_container(&state, &user, item_id, &container, false, &headers, &method).await
+}
+
+async fn stream_original_container(
+    state: &AppState,
+    user: &UserRecord,
+    item_id: Uuid,
+    container: &str,
+    video: bool,
+    headers: &HeaderMap,
+    method: &Method,
+) -> Result<Response, ApiError> {
+    if !valid_stream_container(container) {
+        return Err(ApiError::NotFound);
+    }
+    let media = authorized_media(state, user, item_id).await?;
+    let correct_type = if video {
+        is_video_type(&media.item.item_type)
+    } else {
+        is_audio_type(&media.item.item_type)
+    };
+    // This route serves original bytes. A different suffix would imply a
+    // remux or conversion, which this handler does not perform.
+    let source_container = media.relative.extension().and_then(|value| value.to_str());
+    if !correct_type || !source_container.is_some_and(|value| value.eq_ignore_ascii_case(container))
+    {
+        return Err(ApiError::NotFound);
+    }
+    stream_resolved(media, headers, method, false).await
+}
+
+pub(crate) fn valid_stream_container(container: &str) -> bool {
+    !container.is_empty()
+        && container.len() <= 16
+        && container.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 async fn stream_file(
