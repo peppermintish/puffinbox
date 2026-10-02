@@ -6,6 +6,8 @@ Puffinbox source is MIT OR Apache-2.0. The full texts are in [LICENSE-MIT](../LI
 
 The locked Linux Cargo graph now passes the strict policy in [deny.toml](../deny.toml). Only MIT and Apache-2.0 are allowed; no license exceptions were added. `scripts/build_license_bundle.py` also generated full dependency notices successfully.
 
+The GNU target's Cargo license audit also passes with the same policy, and source CI now checks it explicitly. That graph check does not clear the separate shared standard library or system runtime used by the [GNU experiment](../experiments/linux-gnu-runtime/README.md).
+
 ```sh
 cargo deny --locked check
 python3 scripts/build_license_bundle.py

@@ -29,4 +29,4 @@ CARGO_BUILD_JOBS=2 RUSTFLAGS='-C prefer-dynamic' cargo rustc --locked --release 
   -C "link-arg=-Wl,-Map,$probe_dir/server.map,--cref"
 ```
 
-Keep the map, symbols, ELF dependencies, compiler identity, and exact runtime hashes with any result. A dynamic link still requires its Rust shared standard library and GNU libraries. The server probe retains a generated Unicode whitespace lookup and compiler builtins. This experiment does not clear the MIT/Apache distribution boundary or authorize release packaging. See [the runtime audit](../../docs/runtime-link-audit.md).
+Keep the map, symbols, ELF dependencies, compiler identity, and exact runtime hashes with any result. A dynamic link still requires its Rust shared standard library and GNU libraries. This ordinary server probe retains a generated Unicode whitespace lookup and compiler builtins; the [shared-runtime follow-up](../linux-gnu-runtime/README.md) tests moving those inputs outside the executable. Neither experiment clears the MIT/Apache distribution boundary or authorizes release packaging. See [the runtime audit](../../docs/runtime-link-audit.md).

@@ -1,0 +1,67 @@
+name: Experimental GNU runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/runtime-probe.yml'
+      - 'experiments/linux-gnu-entry/**'
+      - 'experiments/linux-gnu-runtime/**'
+      - 'scripts/check_gnu_link_map.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'crates/**'
+      - 'vendor/**'
+      - 'migrations/**'
+  pull_request:
+    paths:
+      - '.github/workflows/runtime-probe.yml'
+      - 'experiments/linux-gnu-entry/**'
+      - 'experiments/linux-gnu-runtime/**'
+      - 'scripts/check_gnu_link_map.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'crates/**'
+      - 'vendor/**'
+      - 'migrations/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: puffinbox-gnu-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproduce:
+    name: Shared-runtime link inventory and numeric comparisons
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Build disposable probe infrastructure
+        run: docker build --tag puffinbox:gnu-probe-builder --file experiments/linux-gnu-runtime/Dockerfile .
+
+      - name: Reproduce the experimental server and helper comparisons
+        run: |
+          mkdir "$RUNNER_TEMP/gnu-probe"
+          docker run --rm --workdir /work \
+            --volume "$GITHUB_WORKSPACE:/work:ro" \
+            --volume "$RUNNER_TEMP/gnu-probe:/probe" \
+            puffinbox:gnu-probe-builder --output /probe/output
+
+      - name: Save probe records without binaries or external runtime libraries
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: experimental-gnu-runtime-records
+          path: |
+            ${{ runner.temp }}/gnu-probe/output/probe.json
+            ${{ runner.temp }}/gnu-probe/output/runtime-input-inventory.json
+            ${{ runner.temp }}/gnu-probe/output/server-elf.txt
+            ${{ runner.temp }}/gnu-probe/output/server-dynamic-symbols.txt
+          if-no-files-found: warn
