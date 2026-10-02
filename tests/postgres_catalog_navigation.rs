@@ -699,6 +699,466 @@ async fn navigation_and_theme_media_keep_library_rating_and_user_boundaries() {
         .status(),
         StatusCode::BAD_REQUEST
     );
+    // Instant Mix includes the seed before genuinely related music. Private,
+    // hidden and rating-restricted tracks must not influence this queue.
+    let genre_track = item(
+        &pool,
+        library,
+        None,
+        "Genre neighbour",
+        "Audio",
+        "/media/genre.flac",
+        None,
+    )
+    .await;
+    let blocked_track = item(
+        &pool,
+        library,
+        None,
+        "Restricted mix track",
+        "Audio",
+        "/media/blocked.flac",
+        Some(100),
+    )
+    .await;
+    let hidden_track = item(
+        &pool,
+        library,
+        None,
+        "Hidden mix track",
+        "Audio",
+        "/media/.private/track.flac",
+        None,
+    )
+    .await;
+    let private_track = item(
+        &pool,
+        private_library,
+        None,
+        "Private mix track",
+        "Audio",
+        "/media/private-mix.flac",
+        None,
+    )
+    .await;
+    for id in [
+        first_track,
+        genre_track,
+        blocked_track,
+        hidden_track,
+        private_track,
+    ] {
+        sqlx::query("INSERT INTO item_metadata(item_id,provider_key,genres) VALUES ($1,'local-nfo',$2) ON CONFLICT(item_id,provider_key) DO UPDATE SET genres=EXCLUDED.genres")
+            .bind(id).bind(json!([" Mix genre ", "", 42])).execute(&pool).await.unwrap();
+    }
+    let mix_path = format!("/Items/{first_track}/InstantMix");
+    for path in [
+        mix_path.clone(),
+        format!("/Songs/{first_track}/InstantMix"),
+        format!("/Albums/{first_album}/InstantMix"),
+        format!("/Artists/{artist}/InstantMix"),
+    ] {
+        let response = call(&router, &path, Some(&owner_token)).await;
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        let mix = body_json(response).await;
+        assert_eq!(mix["TotalRecordCount"], 3, "{path}");
+        assert_eq!(mix["StartIndex"], 0);
+        assert_eq!(mix["Items"][0]["Id"], first_track.to_string());
+        let ids = mix["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|track| track["Id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        for expected in [first_track, second_track, genre_track] {
+            assert!(ids.contains(&expected.to_string().as_str()));
+        }
+        assert!(
+            mix["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|track| track["Type"] == "Audio" && track.get("Path").is_none())
+        );
+    }
+    let genre_id: Uuid = sqlx::query_scalar("SELECT md5('puffinbox/genre/v1:Mix genre')::uuid")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    for path in [
+        "/MusicGenres/mix%20genre/InstantMix".to_owned(),
+        format!("/MusicGenres/InstantMix?id={genre_id}"),
+    ] {
+        let response = call(&router, &path, Some(&owner_token)).await;
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+        let mix = body_json(response).await;
+        assert_eq!(mix["TotalRecordCount"], 2);
+        let ids = mix["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|track| track["Id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&first_track.to_string().as_str()));
+        assert!(ids.contains(&genre_track.to_string().as_str()));
+    }
+    for (suffix, expected) in [
+        ("?limit=-1", StatusCode::BAD_REQUEST),
+        ("?limit=2147483648", StatusCode::BAD_REQUEST),
+        ("?imageTypeLimit=-1", StatusCode::BAD_REQUEST),
+        ("?enableImageTypes=Unknown", StatusCode::BAD_REQUEST),
+        ("?userId=invalid", StatusCode::BAD_REQUEST),
+    ] {
+        assert_eq!(
+            call(&router, &format!("{mix_path}{suffix}"), Some(&owner_token))
+                .await
+                .status(),
+            expected
+        );
+    }
+    let options = body_json(call(&router, &format!("{mix_path}?Limit=300&Fields=Genres,Path&EnableImages=false&EnableUserData=false&EnableImageTypes=Chapter"), Some(&owner_token)).await).await;
+    assert_eq!(options["TotalRecordCount"], 3);
+    assert!(
+        options["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|track| track.get("ImageTags").is_none() && track.get("UserData").is_none())
+    );
+    let no_page =
+        body_json(call(&router, &format!("{mix_path}?limit=0"), Some(&owner_token)).await).await;
+    assert_eq!(no_page["Items"], json!([]));
+    assert_eq!(no_page["TotalRecordCount"], 3);
+    let one =
+        body_json(call(&router, &format!("{mix_path}?limit=1"), Some(&owner_token)).await).await;
+    assert_eq!(one["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(one["TotalRecordCount"], 3);
+    assert_eq!(
+        call(&router, &mix_path, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&router, &mix_path, Some(&peer_token)).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &router,
+            &format!("{mix_path}?userId={peer}"),
+            Some(&owner_token)
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    for path in [
+        format!("/Items/{private_track}/InstantMix"),
+        format!("/Items/{blocked_track}/InstantMix"),
+        format!("/Items/{hidden_track}/InstantMix"),
+        format!("/Songs/{first_album}/InstantMix"),
+        "/MusicGenres/missing/InstantMix".to_owned(),
+        format!("/MusicGenres/InstantMix?id={}", Uuid::new_v4()),
+    ] {
+        assert_eq!(
+            call(&router, &path, Some(&owner_token)).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        call(&router, "/MusicGenres/InstantMix", Some(&owner_token))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &router,
+            &format!("/Items/{movie}/InstantMix"),
+            Some(&owner_token)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let head = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(&mix_path)
+                .header("authorization", format!("Bearer {owner_token}"))
+                .extension(ConnectInfo(
+                    "127.0.0.1:30000".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()["cache-control"], "private, no-store");
+    assert!(to_bytes(head.into_body(), 1024).await.unwrap().is_empty());
+
+    let playlist = Uuid::new_v4();
+    let empty_playlist = Uuid::new_v4();
+    for id in [playlist, empty_playlist] {
+        sqlx::query("INSERT INTO playlists(id,owner_user_id,name) VALUES ($1,$2,'Mix fixture')")
+            .bind(id)
+            .bind(peer)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for (position, id) in [
+        second_track,
+        first_track,
+        first_track,
+        private_track,
+        blocked_track,
+        hidden_track,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sqlx::query(
+            "INSERT INTO playlist_items(id,playlist_id,item_id,position) VALUES($1,$2,$3,$4)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(playlist)
+        .bind(id)
+        .bind(position as i32)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let playlist_path = format!("/Playlists/{playlist}/InstantMix");
+    assert_eq!(
+        call(&router, &playlist_path, Some(&owner_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    for id in [playlist, empty_playlist] {
+        sqlx::query("INSERT INTO playlist_users(playlist_id,user_id,can_edit) VALUES($1,$2,FALSE)")
+            .bind(id)
+            .bind(owner)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for path in [
+        playlist_path.clone(),
+        format!("/Items/{playlist}/InstantMix"),
+    ] {
+        let mix = body_json(call(&router, &path, Some(&owner_token)).await).await;
+        assert_eq!(mix["TotalRecordCount"], 3);
+        assert_eq!(mix["Items"][0]["Id"], second_track.to_string());
+        assert_eq!(mix["Items"][1]["Id"], first_track.to_string());
+    }
+    let empty = body_json(
+        call(
+            &router,
+            &format!("/Playlists/{empty_playlist}/InstantMix"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(empty["TotalRecordCount"], 0);
+    assert_eq!(empty["Items"], json!([]));
+    // An administrator selecting someone else's private queue cannot borrow it.
+    assert_eq!(
+        call(
+            &router,
+            &format!("{playlist_path}?userId={owner}"),
+            Some(&admin_token)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("DELETE FROM playlist_users WHERE playlist_id=$1 AND user_id=$2")
+        .bind(playlist)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&router, &playlist_path, Some(&owner_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(library)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&router, &mix_path, Some(&owner_token)).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &router,
+            "/MusicGenres/mix%20genre/InstantMix",
+            Some(&owner_token)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE libraries SET enabled=TRUE WHERE id=$1")
+        .bind(library)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE items SET path='/media/.hidden-artist' WHERE id=$1")
+        .bind(artist)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let private_parent_mix = body_json(call(&router, &mix_path, Some(&owner_token)).await).await;
+    assert_eq!(private_parent_mix["TotalRecordCount"], 2);
+    assert_eq!(
+        private_parent_mix["Items"][0]["ArtistItems"],
+        json!([]),
+        "a visible track must not disclose its hidden artist"
+    );
+    assert_eq!(private_parent_mix["Items"][0]["AlbumArtists"], json!([]));
+    let detail = body_json(
+        call(
+            &router,
+            &format!("/Items/{first_track}"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(detail["ArtistItems"], json!([]));
+    let list = body_json(
+        call(
+            &router,
+            &format!("/Items?Ids={first_track}"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(list["Items"][0]["ArtistItems"], json!([]));
+    sqlx::query("UPDATE items SET path='/media/artist' WHERE id=$1")
+        .bind(artist)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE items SET path='/media/.hidden-album' WHERE id=$1")
+        .bind(first_album)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let detail = body_json(
+        call(
+            &router,
+            &format!("/Items/{first_track}"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert!(detail.get("AlbumId").is_none());
+    assert!(detail.get("Album").is_none());
+    assert_eq!(detail["ArtistItems"], json!([]));
+    assert_eq!(
+        call(
+            &router,
+            &format!("/Albums/{first_album}/InstantMix"),
+            Some(&owner_token)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE items SET path='/media/artist/first' WHERE id=$1")
+        .bind(first_album)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,policy_rating_scale,policy_rating_value) VALUES($1,'local-nfo','US-MPAA-v1',100)").bind(artist).execute(&pool).await.unwrap();
+    let detail = body_json(
+        call(
+            &router,
+            &format!("/Items/{first_track}"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(detail["ArtistItems"], json!([]));
+    let restricted_parent_mix = body_json(call(&router, &mix_path, Some(&owner_token)).await).await;
+    assert_eq!(restricted_parent_mix["TotalRecordCount"], 2);
+    sqlx::query("DELETE FROM item_metadata WHERE item_id=$1")
+        .bind(artist)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET block_unrated_items=ARRAY['Music'] WHERE id=$1")
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&router, &mix_path, Some(&owner_token)).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &router,
+            "/MusicGenres/mix%20genre/InstantMix",
+            Some(&owner_token)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE users SET block_unrated_items=ARRAY[]::text[] WHERE id=$1")
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for ordinal in 0..101 {
+        let extra = item(
+            &pool,
+            library,
+            None,
+            &format!("Extra mix {ordinal}"),
+            "Audio",
+            &format!("/media/extra-mix-{ordinal}.flac"),
+            None,
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO item_metadata(item_id,provider_key,genres) VALUES($1,'local-nfo',$2)",
+        )
+        .bind(extra)
+        .bind(json!(["Mix genre"]))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let capped = body_json(
+        call(
+            &router,
+            &format!("{mix_path}?limit=2147483647"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(capped["TotalRecordCount"], 104);
+    assert_eq!(capped["Items"].as_array().unwrap().len(), 100);
+    assert_eq!(capped["Items"][0]["Id"], first_track.to_string());
+
     let outer_set = item(
         &pool,
         library,

@@ -981,6 +981,55 @@ def verify_item_relations(admin: HttpClient, library_id: str, item_id: str) -> N
         reader.json("POST", "/Sessions/Logout", expected=(204,))
 
 
+def verify_instant_mix(admin: HttpClient, library_id: str, item_id: str) -> None:
+    suffix = uuid.uuid4().hex
+    username, password = "mix-reader-" + suffix, "Synthetic-" + uuid.uuid4().hex
+    user_id = str(ensure_user(admin, username, password, library_id, playback=True)["Id"])
+    reader = HttpClient(admin.base_url)
+    login(reader, username, password)
+    playlists = []
+    try:
+        for prefix in ("Items", "Songs"):
+            path = f"/{prefix}/{item_id}/InstantMix"
+            status, headers, result = reader.json("GET", path + "?limit=300&fields=Path,Genres")
+            require(status == 200 and headers.get("Cache-Control") == "private, no-store"
+                    and result["StartIndex"] == 0 and result["Items"][0]["Id"] == item_id
+                    and all(entry.get("Type") == "Audio" and "Path" not in entry for entry in result["Items"])
+                    and len(result["Items"]) <= 100, "Instant Mix omitted its seed or returned unbounded/private data")
+            total = result["TotalRecordCount"]
+            require(total >= len(result["Items"]), "Instant Mix's matching count is smaller than its queue")
+            empty = reader.json("GET", path + "?limit=0")[2]
+            require(empty["Items"] == [] and empty["TotalRecordCount"] == total,
+                    "zero-length Instant Mix lost its matching count")
+            options = reader.json("GET", path + "?enableImages=false&enableUserData=false&enableImageTypes=Chapter")[2]
+            require(all("ImageTags" not in entry and "UserData" not in entry for entry in options["Items"]),
+                    "Instant Mix ignored disabled images/user data")
+            status, headers, body = reader.request("HEAD", path)
+            require(status == 200 and not body and headers.get("Cache-Control") == "private, no-store",
+                    "Instant Mix HEAD returned a body or omitted private headers")
+            require(HttpClient(admin.base_url).request("GET", path)[0] == 401,
+                    "anonymous Instant Mix was accepted")
+            for options in ("limit=-1", "imageTypeLimit=-1", "enableImageTypes=Unknown"):
+                require(reader.request("GET", path + "?" + options)[0] == 400,
+                        "Instant Mix ignored invalid options")
+        for ids in ([item_id], []):
+            playlist_id = str(reader.json("POST", "/Playlists", {
+                "Name": "Synthetic Instant Mix queue", "Ids": ids,
+            })[2]["Id"])
+            playlists.append(playlist_id)
+            for prefix in ("Items", "Playlists"):
+                result = reader.json("GET", f"/{prefix}/{playlist_id}/InstantMix?userId={user_id}")[2]
+                require((bool(result["Items"]) and result["Items"][0]["Id"] == item_id) if ids else
+                        result["Items"] == [] and result["TotalRecordCount"] == 0,
+                        "playlist Instant Mix lost the seed or invented music for an empty queue")
+        report("Instant Mix music seed, private options, bounded queues, HEAD, empty playlists, and anonymous rejection", True,
+               "album/artist relationships, genre lookup, hidden/rating/library boundaries and shared revocation have PostgreSQL fixtures")
+    finally:
+        for playlist_id in playlists:
+            reader.json("DELETE", "/Playlists/" + playlist_id, expected=(204,))
+        reader.json("POST", "/Sessions/Logout", expected=(204,))
+
+
 def verify_playlist_sharing(admin: HttpClient, library_id: str, item_id: str) -> None:
     suffix = uuid.uuid4().hex
     username, password = "playlist-recipient-" + suffix, "Synthetic-" + uuid.uuid4().hex
@@ -1000,6 +1049,8 @@ def verify_playlist_sharing(admin: HttpClient, library_id: str, item_id: str) ->
                 "shared playlist permissions were not persisted privately")
         items = recipient.json("GET", path + "/Items")[2]
         require([entry["Id"] for entry in items["Items"]] == [item_id], "recipient's shared queue changed its media selection")
+        mix = recipient.json("GET", path + "/InstantMix")[2]
+        require(mix["Items"][0]["Id"] == item_id, "read-only recipient could not mix a shared music queue")
         catalog = recipient.json("GET", "/Items?IncludeItemTypes=Playlist")[2]
         require(any(str(entry["Id"]).replace("-", "") == playlist_id.replace("-", "")
                     and entry.get("CanDelete") is False for entry in catalog["Items"]),
@@ -1016,6 +1067,8 @@ def verify_playlist_sharing(admin: HttpClient, library_id: str, item_id: str) ->
         admin.json("DELETE", permission, expected=(204,))
         require(recipient.request("GET", path)[0] == 404 and recipient.request("GET", path + "/Items")[0] == 404,
                 "revoked recipient retained playlist access on an existing session")
+        require(recipient.request("GET", path + "/InstantMix")[0] == 404,
+                "revoked recipient retained Instant Mix access on an existing session")
         report("Shared music playlist read/edit permissions, catalog visibility, owner-only management, and revocation", True)
     finally:
         recipient.json("POST", "/Sessions/Logout", expected=(204,))
@@ -1236,6 +1289,7 @@ def run(args: argparse.Namespace) -> int:
         require(bool(audio_ffprobe), "ffprobe is required to inspect converted audio")
         verify_universal_audio_transcode(client, audio_library_id, audio_item_id, fixture_root, audio_ffprobe)
     verify_item_relations(client, audio_library_id, audio_item_id)
+    verify_instant_mix(client, audio_library_id, audio_item_id)
     verify_playlist_sharing(client, audio_library_id, audio_item_id)
     verify_catalog_filters(client, library_id)
     verify_scanner_root_identity(

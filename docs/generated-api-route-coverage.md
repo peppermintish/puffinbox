@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-02T17:07:12.904660+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-02T19:26:29.902465+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `185`
-- Declared pairs matching a schema method/path: `97`
+- Unique declared server method/path pairs: `192`
+- Declared pairs matching a schema method/path: `104`
 - Declared pairs outside the schema: `88`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -173,6 +173,13 @@ This is a source declaration comparison only. It does not establish that a match
 | `GET /Puffinbox/Metadata/Items/{item_id}` | `src/metadata/mod.rs` | custom / not in target schema |
 | `GET /Puffinbox/Metadata/Items/{item_id}/Artwork` | `src/metadata/mod.rs` | custom / not in target schema |
 | `GET /Items/{item_id}/Images/Primary` | `src/metadata/mod.rs` | custom / not in target schema |
+| `GET /Items/{item_id}/InstantMix` | `src/music_mix.rs` | match |
+| `GET /Songs/{item_id}/InstantMix` | `src/music_mix.rs` | match |
+| `GET /Albums/{item_id}/InstantMix` | `src/music_mix.rs` | match |
+| `GET /Artists/{item_id}/InstantMix` | `src/music_mix.rs` | match |
+| `GET /Playlists/{item_id}/InstantMix` | `src/music_mix.rs` | match |
+| `GET /MusicGenres/{name}/InstantMix` | `src/music_mix.rs` | match |
+| `GET /MusicGenres/InstantMix` | `src/music_mix.rs` | match |
 | `GET /Puffinbox/Offline/Settings` | `src/offline.rs` | custom / not in target schema |
 | `GET /Puffinbox/Offline/Packages` | `src/offline.rs` | custom / not in target schema |
 | `POST /Puffinbox/Offline/Packages` | `src/offline.rs` | custom / not in target schema |

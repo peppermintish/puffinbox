@@ -7,6 +7,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod library;
+pub(crate) mod music_mix;
 pub mod state;
 pub mod user_settings;
 pub(crate) mod websocket;

@@ -924,6 +924,19 @@ pub(crate) async fn can_read_playlist(
     }
 }
 
+pub(crate) async fn mix_seed_items(
+    state: &AppState,
+    user: &UserRecord,
+    playlist_id: Uuid,
+) -> Result<Vec<crate::library::ItemRecord>, ApiError> {
+    playlist_access(state, user, playlist_id).await?;
+    Ok(visible_entries(state, user, playlist_id)
+        .await?
+        .into_iter()
+        .map(|entry| entry.item)
+        .collect())
+}
+
 async fn ensure_editable(
     state: &AppState,
     user: &UserRecord,

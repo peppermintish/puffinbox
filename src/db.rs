@@ -13,6 +13,8 @@ mod catalog_filters;
 pub(crate) use catalog_filters::{CatalogFacets, GenreFacet, catalog_facets};
 mod catalog_relations;
 pub(crate) use catalog_relations::similar_items;
+mod music_mix;
+pub(crate) use music_mix::{MusicMixSeed, instant_mix, visible_music_genre};
 
 use crate::{
     auth::UserRecord,
@@ -928,15 +930,37 @@ pub(crate) async fn theme_media_items(
 
 pub async fn item_navigation_links(
     pool: &PgPool,
+    user: &UserRecord,
     item_ids: &[Uuid],
 ) -> Result<HashMap<Uuid, ItemNavigationLinks>, sqlx::Error> {
     if item_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let rows = sqlx::query("SELECT i.id,i.name,i.item_type,CASE WHEN i.item_type='Episode' THEN COALESCE(season.parent_id,i.parent_id) WHEN i.item_type='Season' THEN i.parent_id END AS series_id,CASE WHEN i.item_type='Episode' THEN season.id WHEN i.item_type='Season' THEN i.id END AS season_id,season.name AS season_name,CASE WHEN i.item_type='Audio' THEN album.id WHEN i.item_type='MusicAlbum' THEN i.id END AS album_id,CASE WHEN i.item_type='Audio' THEN album.name END AS album,artist.id AS artist_id,artist.name AS artist FROM items i LEFT JOIN items season ON season.id=i.parent_id AND season.item_type='Season' LEFT JOIN items album ON (i.item_type='Audio' AND album.id=i.parent_id AND album.item_type='MusicAlbum') OR (i.item_type='MusicAlbum' AND album.id=i.id) LEFT JOIN items artist ON artist.id=CASE WHEN i.item_type='MusicAlbum' THEN i.parent_id WHEN i.item_type='Audio' THEN album.parent_id END AND artist.item_type='MusicArtist' WHERE i.id=ANY($1)")
-        .bind(item_ids)
-        .fetch_all(pool)
-        .await?;
+    let mut builder = QueryBuilder::<Postgres>::new(
+        "WITH targets AS (SELECT id,parent_id FROM items WHERE id=ANY(",
+    );
+    builder.push_bind(item_ids.to_vec()).push(
+        "::uuid[])), candidate_ids AS (SELECT id FROM targets UNION SELECT parent_id FROM targets \
+         UNION SELECT parent.parent_id FROM targets JOIN items parent ON parent.id=targets.parent_id), \
+         visible_nodes AS (SELECT i.id,i.name,i.item_type,i.parent_id,i.library_id \
+         FROM items i JOIN libraries l ON l.id=i.library_id",
+    );
+    push_item_conditions(&mut builder, user, &ItemQuery::default(), None, true);
+    builder.push(
+        " AND i.id IN (SELECT id FROM candidate_ids)) \
+         SELECT i.id,i.name,i.item_type,series.id AS series_id,\
+         CASE WHEN i.item_type='Episode' THEN season.id WHEN i.item_type='Season' THEN i.id END AS season_id,\
+         season.name AS season_name,CASE WHEN i.item_type='Audio' THEN album.id WHEN i.item_type='MusicAlbum' THEN i.id END AS album_id,\
+         CASE WHEN i.item_type='Audio' THEN album.name END AS album,artist.id AS artist_id,artist.name AS artist \
+         FROM visible_nodes i LEFT JOIN visible_nodes season ON season.id=i.parent_id AND season.item_type='Season' \
+         LEFT JOIN visible_nodes series ON series.id=CASE WHEN i.item_type='Episode' THEN COALESCE(season.parent_id,i.parent_id) \
+         WHEN i.item_type='Season' THEN i.parent_id END AND series.item_type='Series' AND series.library_id=i.library_id \
+         LEFT JOIN visible_nodes album ON album.id=CASE WHEN i.item_type='Audio' THEN i.parent_id WHEN i.item_type='MusicAlbum' THEN i.id END \
+         AND album.item_type='MusicAlbum' AND album.library_id=i.library_id \
+         LEFT JOIN visible_nodes artist ON artist.id=album.parent_id AND artist.item_type='MusicArtist' AND artist.library_id=i.library_id \
+         WHERE i.id=ANY(",
+    ).push_bind(item_ids.to_vec()).push("::uuid[])");
+    let rows = builder.build().fetch_all(pool).await?;
     rows.into_iter()
         .map(|row| {
             let id: Uuid = row.try_get("id")?;

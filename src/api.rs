@@ -142,6 +142,7 @@ pub fn router(state: AppState) -> Router {
     });
     core.merge(crate::media_features::router(state.clone()))
         .merge(crate::catalog_navigation::router(state.clone()))
+        .merge(crate::music_mix::router(state.clone()))
         .merge(crate::catalog_filters::router(state.clone()))
         .merge(crate::client_connection::router(state.clone()))
         .merge(crate::user_settings::router(state.clone()))
@@ -216,10 +217,19 @@ async fn add_response_security_headers(
                     id.parse::<Uuid>().is_ok()
                         && matches!(
                             route,
-                            "Ancestors" | "ThemeMedia" | "PlaybackInfo" | "Similar" | "Collections"
+                            "Ancestors"
+                                | "ThemeMedia"
+                                | "PlaybackInfo"
+                                | "Similar"
+                                | "Collections"
+                                | "InstantMix"
                         )
                 })
         })
+        || (["/Songs/", "/Albums/", "/Artists/", "/MusicGenres/"]
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
+            && path.ends_with("/InstantMix"))
         || (path.starts_with("/Users/") && (path.contains("/Items/") || path.ends_with("/Items")));
     let is_media_token_exchange_post =
         is_media_token_exchange && request.method() == axum::http::Method::POST;
@@ -2502,6 +2512,17 @@ pub(crate) struct BaseItemDto {
     user_data: Option<UserDataDto>,
 }
 
+impl BaseItemDto {
+    pub(crate) fn include_images_and_user_data(&mut self, images: bool, user_data: bool) {
+        if !images {
+            self.image_tags = None;
+        }
+        if !user_data {
+            self.user_data = None;
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct ItemImageTagsDto {
@@ -2969,7 +2990,7 @@ async fn item_query_result(
     let (items, total_record_count) = db::browse_items(&state.db, user, query).await?;
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
     let user_data = db::item_user_data(&state.db, user.id, &item_ids).await?;
-    let navigation = db::item_navigation_links(&state.db, &item_ids).await?;
+    let navigation = db::item_navigation_links(&state.db, user, &item_ids).await?;
     let display_metadata = crate::metadata::load_display_metadata(&state.db, &item_ids).await?;
     let items = items
         .iter()
@@ -3298,7 +3319,7 @@ async fn list_music_persons(
         let artist_id = if source.item_type == "MusicArtist" {
             Some(source.id)
         } else if matches!(source.item_type.as_str(), "Audio" | "MusicAlbum") {
-            let linked_artist = db::item_navigation_links(&state.db, &[source.id])
+            let linked_artist = db::item_navigation_links(&state.db, &user, &[source.id])
                 .await?
                 .get(&source.id)
                 .and_then(|links| links.artist_id);
@@ -3737,7 +3758,7 @@ pub(crate) async fn item_dto_for_user(
         .await?
         .remove(&item_id)
         .map(|data| user_data_dto(&data, item_id, item.runtime_ticks));
-    let navigation = db::item_navigation_links(&state.db, &[item_id]).await?;
+    let navigation = db::item_navigation_links(&state.db, user, &[item_id]).await?;
     let display_metadata = crate::metadata::load_display_metadata(&state.db, &[item_id]).await?;
     Ok(item_dto(
         item,
@@ -3842,7 +3863,7 @@ async fn search_hints(
     };
     let (items, total) = db::browse_items(&state.db, &user, query).await?;
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
-    let navigation = db::item_navigation_links(&state.db, &item_ids).await?;
+    let navigation = db::item_navigation_links(&state.db, &user, &item_ids).await?;
     let display_metadata = crate::metadata::load_display_metadata(&state.db, &item_ids).await?;
     let search_hints = items
         .iter()

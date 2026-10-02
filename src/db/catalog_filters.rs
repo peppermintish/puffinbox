@@ -11,7 +11,7 @@ use crate::{
 
 const MAX_FACET_VALUES: usize = 4096;
 // IDs are opaque catalog keys derived from an exact, trimmed UTF-8 genre name.
-const GENRE_ID_SQL: &str = "md5('puffinbox/genre/v1:' || value)::uuid";
+pub(super) const GENRE_ID_SQL: &str = "md5('puffinbox/genre/v1:' || value)::uuid";
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
