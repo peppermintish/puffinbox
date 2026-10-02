@@ -119,8 +119,13 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         id: None,
         item_id: Some(track_id),
     };
-    let pending_progress = db::wait_for_playback_start(&pool, &early_selector);
-    tokio::pin!(pending_progress);
+    // Keep polling progress independently after the timeout. Pausing its
+    // future can retain a transaction lock that the following start needs.
+    let progress_pool = pool.clone();
+    let mut pending_progress =
+        tokio::spawn(
+            async move { db::wait_for_playback_start(&progress_pool, &early_selector).await },
+        );
     assert!(
         tokio::time::timeout(Duration::from_millis(30), &mut pending_progress)
             .await
@@ -129,18 +134,28 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
     );
     let empty_start = json!({"ItemId":track_id,"PlaySessionId":"","PositionTicks":0});
     assert_eq!(
-        post(
-            &router,
-            Some(&first.token),
-            "/Sessions/Playing",
-            &empty_start
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing",
+                &empty_start,
+            ),
         )
         .await
+        .expect("start must not deadlock with the independently scheduled progress request")
         .status(),
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        pending_progress.await.unwrap().unwrap().item_id,
+        tokio::time::timeout(Duration::from_secs(5), pending_progress)
+            .await
+            .expect("early progress must finish after start")
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .item_id,
         Some(track_id)
     );
     assert_eq!(

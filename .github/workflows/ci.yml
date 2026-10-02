@@ -137,6 +137,8 @@ jobs:
 
       - name: Check playlists in Chromium
         timeout-minutes: 5
+        env:
+          PUFFINBOX_BROWSER_BODY_DELAY_MS: '500'
         run: node scripts/test_playlists_browser.js
 
       - name: Compare declared routes with the pinned public API schema

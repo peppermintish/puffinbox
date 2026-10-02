@@ -12,6 +12,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
+const BODY_DELAY_MS = Number(process.env.PUFFINBOX_BROWSER_BODY_DELAY_MS || 0);
+assert.ok(Number.isInteger(BODY_DELAY_MS) && BODY_DELAY_MS >= 0 && BODY_DELAY_MS <= 1000,
+  'synthetic response body delay must be between 0 and 1000 milliseconds');
 const USER_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const AUDIO_ITEMS = [
   { Id: 'b6d9a7e1-c3c9-43cb-9e55-2dd19619fd01', Name: 'Track One', Type: 'Audio', MediaType: 'Audio', Container: 'wav' },
@@ -38,6 +41,7 @@ const apiRequests = [];
 const playbackItems = [];
 let failPlaylistItemGetFor = null;
 let delayedMutation = null;
+let bodyProbeSent = false;
 
 function holdNextMutation(playlistId, method, pathnamePart) {
   let startedResolve;
@@ -56,10 +60,16 @@ async function delayMutationResponse(playlistId, method, pathname) {
   await gate.pending;
 }
 
-function jsonResponse(response, status, value) {
+function jsonResponse(response, status, value, onBodySent) {
   const body = Buffer.from(JSON.stringify(value));
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
-  response.end(body);
+  const sendBody = () => { response.end(body); onBodySent?.(); };
+  if (BODY_DELAY_MS) {
+    response.flushHeaders();
+    setTimeout(sendBody, BODY_DELAY_MS);
+    return;
+  }
+  sendBody();
 }
 
 function emptyResponse(response, status = 204) {
@@ -114,7 +124,8 @@ function createTestServer() {
     if (url.pathname === '/Playlists' && request.method === 'GET') {
       const start = Number(url.searchParams.get('StartIndex') || 0);
       const limit = Math.min(100, Number(url.searchParams.get('Limit') || 100));
-      jsonResponse(response, 200, { Items: playlists.slice(start, start + limit), TotalRecordCount: playlists.length, StartIndex: start });
+      jsonResponse(response, 200, { Items: playlists.slice(start, start + limit), TotalRecordCount: playlists.length, StartIndex: start },
+        url.searchParams.get('BodyProbe') === 'true' ? () => { bodyProbeSent = true; } : undefined);
       return;
     }
     if (url.pathname === '/Playlists' && request.method === 'POST') {
@@ -279,23 +290,28 @@ class DevTools {
 
 async function main() {
   const server = createTestServer();
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const serverPort = server.address().port;
-  const debugPort = await freePort();
-  const profilePath = fs.mkdtempSync(path.join(os.tmpdir(), 'puffinbox-playlists-browser-'));
-  const chrome = spawn(findChrome(), [
-    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-    '--autoplay-policy=no-user-gesture-required', '--mute-audio', `--remote-debugging-port=${debugPort}`,
-    '--remote-allow-origins=*', `--user-data-dir=${profilePath}`,
-    ...(process.platform === 'win32' ? [] : ['--no-sandbox']), 'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+  let profilePath;
+  let chrome;
   let chromeOutput = '';
-  chrome.stderr.on('data', (chunk) => { chromeOutput += chunk.toString(); });
+  let launchError;
   let socket;
   try {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const serverPort = server.address().port;
+    const debugPort = await freePort();
+    profilePath = fs.mkdtempSync(path.join(os.tmpdir(), 'puffinbox-playlists-browser-'));
+    chrome = spawn(findChrome(), [
+      '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+      '--autoplay-policy=no-user-gesture-required', '--mute-audio', `--remote-debugging-port=${debugPort}`,
+      '--remote-allow-origins=*', `--user-data-dir=${profilePath}`,
+      ...(process.platform === 'win32' ? [] : ['--no-sandbox']), 'about:blank',
+    ], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+    chrome.stderr.on('data', (chunk) => { chromeOutput += chunk.toString(); });
+    chrome.on('error', (error) => { launchError = error; });
     let devtoolsUrl = null;
     for (let attempt = 0; attempt < 150; attempt += 1) {
+      if (launchError) throw launchError;
       if (chrome.exitCode != null) throw new Error(`Chrome exited before its debugging endpoint was ready: ${chromeOutput}`);
       try {
         const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`);
@@ -316,10 +332,13 @@ async function main() {
         const tracked = url.pathname.startsWith('/Playlists');
         if (tracked) window.__playlistPending += 1;
         const result = originalFetch(input, init);
-        return tracked ? result.finally(() => { window.__playlistPending -= 1; }) : result;
+        return tracked ? result.then(async (response) => { await response.clone().arrayBuffer(); return response; }).finally(() => { window.__playlistPending -= 1; }) : result;
       };
     `);
     await cdp.waitFor(page, 'document.querySelector("[data-screen=music]") !== null', Boolean, 'the signed-in music browser');
+    await cdp.evaluate(page.sessionId, 'fetch("/Playlists?BodyProbe=true").then((response) => response.json()); true');
+    await cdp.waitFor(page, 'window.__playlistPending === 0', Boolean, 'the complete playlist response body');
+    assert.equal(bodyProbeSent, true, 'playlist request tracking completed before the response body was sent');
     await cdp.evaluate(page.sessionId, 'document.querySelector("[data-screen=users]").click(); true');
     await cdp.waitFor(page, 'document.querySelector("#user-form") !== null', Boolean, 'the People account form');
     assert.equal(await cdp.evaluate(page.sessionId, 'document.querySelector("#user-form [name=EnableRemoteAccess]").checked'), false, 'new accounts should have remote access unchecked by default');
@@ -411,13 +430,23 @@ async function main() {
     throw new Error(details, { cause: error });
   } finally {
     socket?.close();
-    chrome.kill();
-    await Promise.race([once(chrome, 'exit').catch(() => {}), new Promise((resolve) => setTimeout(resolve, 3000))]);
+    if (chrome) {
+      chrome.kill();
+      await Promise.race([once(chrome, 'exit').catch(() => {}), new Promise((resolve) => setTimeout(resolve, 3000))]);
+    }
     const closed = new Promise((resolve) => server.close(() => resolve()));
     server.closeAllConnections();
     await closed;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      try { fs.rmSync(profilePath, { recursive: true, force: true }); break; }
+    for (let attempt = 0; profilePath && attempt < 10; attempt += 1) {
+      try {
+        if (!fs.existsSync(profilePath)) break;
+        const absolute = fs.realpathSync(profilePath);
+        const normalize = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
+        assert.equal(normalize(path.dirname(absolute)), normalize(fs.realpathSync(os.tmpdir())));
+        assert.ok(path.basename(absolute).startsWith('puffinbox-playlists-browser-'));
+        fs.rmSync(absolute, { recursive: true, force: true });
+        break;
+      }
       catch (error) { if (error.code !== 'EPERM' || attempt === 9) break; await new Promise((resolve) => setTimeout(resolve, 150)); }
     }
   }

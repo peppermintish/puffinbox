@@ -760,6 +760,9 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
     })[2]["MediaSources"][0]
     require(resumed.get("SupportsDirectPlay") is True and resumed.get("DirectStreamUrl") == f"/Audio/{item_id}/stream",
             "resuming a matching FLAC source lost its original-file direct playback URL")
+    audio_stream = next((entry for entry in resumed.get("MediaStreams", []) if entry.get("Type") == "Audio"), {})
+    require(audio_stream.get("SampleRate") == 44_100 and audio_stream.get("BitDepth") == 16,
+            "the synthetic FLAC's sample rate or valid sample depth was not reported")
     path = f"/Audio/{urllib.parse.quote(item_id)}/universal"
     options = "?Container=flac&MaxStreamingBitrate=1911466591&StartTimeTicks=0&TranscodingContainer=mp4&TranscodingProtocol=hls&AudioCodec=aac"
     source = fixture.read_bytes()
@@ -774,6 +777,21 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
     status, headers, body = client.request("GET", path + options, headers={"Range": "bytes=8-31"})
     require(status == 206 and body == source[8:32] and headers.get("Content-Range") == f"bytes 8-31/{len(source)}",
             "universal audio byte range differs from the source")
+    limited = "?Container=flac&MaxAudioSampleRate=44100&MaxAudioBitDepth=16"
+    status, headers, body = client.request("GET", path + limited)
+    require(status == 200 and body == source and headers.get("Cache-Control") == "private, no-store",
+            "matching audio rate/depth limits changed or rejected the original source")
+    status, headers, body = client.request("HEAD", path + limited)
+    require(status == 200 and not body and headers.get("Content-Length") == str(len(source)),
+            "constrained universal audio HEAD omitted the original source metadata")
+    status, headers, body = client.request("GET", path + "?Container=flac&MaxAudioSampleRate=48000&MaxAudioBitDepth=24",
+                                         headers={"Range": "bytes=8-31"})
+    require(status == 206 and body == source[8:32] and headers.get("Content-Range") == f"bytes 8-31/{len(source)}",
+            "looser audio limits changed original byte-range delivery")
+    for limits in ["MaxAudioSampleRate=44099", "MaxAudioBitDepth=15", "MaxAudioSampleRate=0",
+                   "MaxAudioBitDepth=0", "MaxAudioSampleRate=2147483648", "MaxAudioBitDepth=16.5"]:
+        status, _, _ = client.request("GET", path + "?Container=flac&" + limits)
+        require(status == 400, "universal audio ignored an incompatible or invalid rate/depth limit")
     status, _, _ = client.request("GET", path + "?Container=mp3")
     require(status == 400, "universal audio ignored an incompatible container")
     status, _, _ = client.request("GET", path + "?Container=flac&MaxStreamingBitrate=1")
@@ -805,7 +823,7 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
         data = client.json("GET", f"/UserItems/{urllib.parse.quote(item_id)}")[2]
         require(data.get("PlaybackPositionTicks") == 50_000_000,
                 "numeric or empty audio session events did not preserve the stopped position")
-    report("Universal and suffixed FLAC audio, byte ranges, format/bitrate limits, and numeric/empty playback events", True,
+    report("Universal and suffixed FLAC audio, byte ranges, format/bitrate/rate/depth limits, and numeric/empty playback events", True,
            "original bytes and HEAD metadata matched; stopping preserved five seconds; the source was delivered directly")
 
 

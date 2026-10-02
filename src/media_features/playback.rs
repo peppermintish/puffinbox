@@ -173,7 +173,23 @@ pub(super) fn audio_direct_request(
     containers: Vec<(String, Option<String>)>,
     max_streaming_bitrate: Option<u64>,
     max_audio_channels: Option<u32>,
+    max_audio_sample_rate: Option<u32>,
+    max_audio_bit_depth: Option<u32>,
 ) -> PlaybackInfoRequest {
+    let conditions = [
+        ("AudioSampleRate", max_audio_sample_rate),
+        ("AudioBitDepth", max_audio_bit_depth),
+    ]
+    .into_iter()
+    .filter_map(|(property, limit)| {
+        limit.map(|limit| {
+            serde_json::json!({
+                "Property": property, "Condition": "LessThanEqual",
+                "Value": limit.to_string(), "IsRequired": true,
+            })
+        })
+    })
+    .collect::<Vec<_>>();
     PlaybackInfoRequest {
         device_profile: Some(DeviceProfile {
             direct_play_profiles: containers
@@ -203,6 +219,15 @@ pub(super) fn audio_direct_request(
                     }
                 })
                 .collect(),
+            codec_profiles: if conditions.is_empty() {
+                Vec::new()
+            } else {
+                vec![CodecProfile {
+                    kind: Some("Audio".to_owned()),
+                    conditions,
+                    ..Default::default()
+                }]
+            },
             ..Default::default()
         }),
         max_streaming_bitrate,
@@ -341,6 +366,7 @@ struct MediaStream {
     height: Option<u32>,
     channels: Option<u32>,
     sample_rate: Option<u32>,
+    bit_depth: Option<u32>,
     bit_rate: Option<u64>,
     is_external: bool,
     is_text_subtitle_stream: bool,
@@ -637,6 +663,7 @@ pub(super) async fn negotiate(
         height: None,
         channels: None,
         sample_rate: None,
+        bit_depth: None,
         bit_rate: None,
         is_external: true,
         is_text_subtitle_stream: true,
@@ -1583,6 +1610,39 @@ fn source_condition_matches(condition: &serde_json::Value, stream: &ProbedStream
     else {
         return false;
     };
+    if property.eq_ignore_ascii_case("AudioSampleRate")
+        || property.eq_ignore_ascii_case("AudioBitDepth")
+    {
+        if stream.kind != "audio" {
+            return false;
+        }
+        let actual = if property.eq_ignore_ascii_case("AudioSampleRate") {
+            stream.sample_rate
+        } else {
+            stream.bit_depth
+        };
+        let Some(actual) = actual.filter(|value| *value > 0) else {
+            return false;
+        };
+        let Some(wanted) = condition
+            .get("Value")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0 && *value <= i32::MAX as u32)
+        else {
+            return false;
+        };
+        return match condition
+            .get("Condition")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(operator) if operator.eq_ignore_ascii_case("Equals") => actual == wanted,
+            Some(operator) if operator.eq_ignore_ascii_case("NotEquals") => actual != wanted,
+            Some(operator) if operator.eq_ignore_ascii_case("LessThanEqual") => actual <= wanted,
+            Some(operator) if operator.eq_ignore_ascii_case("GreaterThanEqual") => actual >= wanted,
+            _ => false,
+        };
+    }
     if !property.eq_ignore_ascii_case("VideoRangeType") || stream.kind != "video" {
         return false;
     }
@@ -1713,6 +1773,7 @@ impl MediaStream {
             height: stream.height,
             channels: stream.channels,
             sample_rate: stream.sample_rate,
+            bit_depth: stream.bit_depth,
             bit_rate: stream.bit_rate,
             is_external: false,
             is_text_subtitle_stream,
@@ -1841,6 +1902,7 @@ mod tests {
                 height: None,
                 channels: Some(2),
                 sample_rate: Some(44_100),
+                bit_depth: Some(16),
                 bit_rate: Some(256_000),
             }],
         }
@@ -1914,6 +1976,7 @@ mod tests {
                 height: Some(1080),
                 channels: None,
                 sample_rate: None,
+                bit_depth: None,
                 bit_rate: Some(1_000_000),
             },
             ProbedStream {
@@ -1930,6 +1993,7 @@ mod tests {
                 height: Some(720),
                 channels: None,
                 sample_rate: None,
+                bit_depth: None,
                 bit_rate: Some(500_000),
             },
         ];
@@ -1966,6 +2030,7 @@ mod tests {
                     height: Some(720),
                     channels: None,
                     sample_rate: None,
+                    bit_depth: None,
                     bit_rate: None,
                 },
                 ProbedStream {
@@ -1982,6 +2047,7 @@ mod tests {
                     height: None,
                     channels: Some(2),
                     sample_rate: Some(48000),
+                    bit_depth: None,
                     bit_rate: None,
                 },
             ],
@@ -2073,6 +2139,8 @@ mod tests {
                 vec![(container.to_owned(), codec.map(str::to_owned))],
                 None,
                 None,
+                None,
+                None,
             );
             let profile = request.device_profile.unwrap();
             assert_eq!(
@@ -2088,6 +2156,105 @@ mod tests {
             assert_eq!(request.enable_transcoding, Some(false));
             assert_eq!(request.enable_direct_stream, Some(false));
         }
+    }
+
+    #[test]
+    fn audio_limits_require_known_values_for_every_audio_stream() {
+        let mut metadata = audio_probe(Some("flac"), "flac");
+        for (rate, depth, blocked) in [
+            (None, None, false),
+            (Some(44_100), Some(16), false),
+            (Some(48_000), Some(24), false),
+            (Some(44_099), Some(16), true),
+            (Some(44_100), Some(15), true),
+        ] {
+            let profile = super::audio_direct_request(
+                vec![("flac".to_owned(), None)],
+                None,
+                None,
+                rate,
+                depth,
+            )
+            .device_profile
+            .unwrap();
+            assert_eq!(
+                has_unhandled_codec_constraints(&profile, &metadata),
+                blocked
+            );
+        }
+        let profile = super::audio_direct_request(
+            vec![("flac".to_owned(), None)],
+            None,
+            None,
+            Some(44_100),
+            Some(16),
+        )
+        .device_profile
+        .unwrap();
+        for (rate, depth) in [
+            (None, Some(16)),
+            (Some(44_100), None),
+            (Some(0), Some(16)),
+            (Some(44_100), Some(0)),
+        ] {
+            metadata.streams[0].sample_rate = rate;
+            metadata.streams[0].bit_depth = depth;
+            assert!(has_unhandled_codec_constraints(&profile, &metadata));
+        }
+        metadata = audio_probe(Some("flac"), "flac");
+        let mut second = metadata.streams[0].clone();
+        second.index = 1;
+        second.sample_rate = Some(48_000);
+        metadata.streams.push(second);
+        assert!(has_unhandled_codec_constraints(&profile, &metadata));
+        metadata.streams[1].sample_rate = Some(44_100);
+        metadata.streams[1].bit_depth = Some(24);
+        assert!(has_unhandled_codec_constraints(&profile, &metadata));
+        metadata.streams[1].kind = "video".to_owned();
+        metadata.streams[1].sample_rate = None;
+        metadata.streams[1].bit_depth = None;
+        assert!(!has_unhandled_codec_constraints(&profile, &metadata));
+    }
+
+    #[test]
+    fn numeric_audio_conditions_keep_unknown_values_and_operators_conservative() {
+        let metadata = audio_probe(Some("flac"), "flac");
+        let stream = &metadata.streams[0];
+        for (operator, value, expected) in [
+            ("Equals", "44100", true),
+            ("NotEquals", "44100", false),
+            ("LessThanEqual", "48000", true),
+            ("LessThanEqual", "44099", false),
+            ("GreaterThanEqual", "44100", true),
+            ("GreaterThanEqual", "48000", false),
+            ("EqualsAny", "44100", false),
+            ("Unknown", "44100", false),
+            ("LessThanEqual", "0", false),
+            ("LessThanEqual", "-1", false),
+            ("LessThanEqual", "2147483648", false),
+            ("LessThanEqual", "44.1", false),
+        ] {
+            let condition = serde_json::json!({
+                "Property": "AudioSampleRate", "Condition": operator,
+                "Value": value, "IsRequired": false,
+            });
+            assert_eq!(
+                super::source_condition_matches(&condition, stream),
+                expected
+            );
+        }
+        let depth = serde_json::json!({"Property":"AudioBitDepth","Condition":"LessThanEqual","Value":"16"});
+        assert!(super::source_condition_matches(&depth, stream));
+        let mut unknown = stream.clone();
+        unknown.bit_depth = None;
+        assert!(!super::source_condition_matches(&depth, &unknown));
+        unknown.bit_depth = Some(16);
+        unknown.kind = "video".to_owned();
+        assert!(!super::source_condition_matches(&depth, &unknown));
+        assert!(!super::source_condition_matches(
+            &serde_json::json!({"Property":"AudioBitDepth","Condition":"LessThanEqual","Value":16}),
+            stream,
+        ));
     }
 
     #[test]
@@ -2185,6 +2352,7 @@ mod tests {
                 height: Some(720),
                 channels: None,
                 sample_rate: None,
+                bit_depth: None,
                 bit_rate: Some(500_000),
             }],
         };
@@ -2231,6 +2399,7 @@ mod tests {
                     height: Some(720),
                     channels: None,
                     sample_rate: None,
+                    bit_depth: None,
                     bit_rate: None,
                 },
                 ProbedStream {
@@ -2247,6 +2416,7 @@ mod tests {
                     height: None,
                     channels: Some(2),
                     sample_rate: Some(48000),
+                    bit_depth: None,
                     bit_rate: Some(96_000),
                 },
             ],
@@ -2288,6 +2458,7 @@ mod tests {
                 height: Some(1080),
                 channels: None,
                 sample_rate: None,
+                bit_depth: None,
                 bit_rate: Some(500_000),
             }],
         };
@@ -2344,6 +2515,7 @@ mod tests {
                     height: Some(720),
                     channels: None,
                     sample_rate: None,
+                    bit_depth: None,
                     bit_rate: Some(500_000),
                 },
                 ProbedStream {
@@ -2360,6 +2532,7 @@ mod tests {
                     height: None,
                     channels: Some(2),
                     sample_rate: Some(48_000),
+                    bit_depth: None,
                     bit_rate: Some(128_000),
                 },
             ],
@@ -2559,6 +2732,7 @@ mod tests {
             height: None,
             channels: None,
             sample_rate: None,
+            bit_depth: None,
             bit_rate: None,
         };
         assert_eq!(
@@ -2583,6 +2757,7 @@ mod tests {
             height: None,
             channels: None,
             sample_rate: None,
+            bit_depth: None,
             bit_rate: None,
         };
         let item = uuid::Uuid::new_v4();
@@ -2654,6 +2829,7 @@ mod tests {
                 height: None,
                 channels: None,
                 sample_rate: None,
+                bit_depth: None,
                 bit_rate: None,
             },
             uuid::Uuid::nil(),

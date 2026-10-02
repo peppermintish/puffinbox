@@ -20,6 +20,8 @@ struct AudioRequest {
     media_source_id: Option<Uuid>,
     max_streaming_bitrate: Option<u64>,
     max_audio_channels: Option<u32>,
+    max_audio_sample_rate: Option<u32>,
+    max_audio_bit_depth: Option<u32>,
 }
 
 pub(super) async fn stream(
@@ -48,6 +50,8 @@ pub(super) async fn stream(
             request.containers,
             request.max_streaming_bitrate,
             request.max_audio_channels,
+            request.max_audio_sample_rate,
+            request.max_audio_bit_depth,
         ),
     )
     .await?;
@@ -130,6 +134,12 @@ fn parse_request(raw: Option<&str>) -> Result<AudioRequest, ApiError> {
             "maxaudiochannels" => {
                 request.max_audio_channels = Some(positive(&value, 32)? as u32);
             }
+            "maxaudiosamplerate" => {
+                request.max_audio_sample_rate = Some(positive(&value, i32::MAX as u64)? as u32);
+            }
+            "maxaudiobitdepth" => {
+                request.max_audio_bit_depth = Some(positive(&value, i32::MAX as u64)? as u32);
+            }
             "starttimeticks" => {
                 if value.parse::<i64>().map_err(|_| invalid())? != 0 {
                     return Err(invalid());
@@ -165,9 +175,6 @@ fn parse_request(raw: Option<&str>) -> Result<AudioRequest, ApiError> {
                     return Err(invalid());
                 }
             }
-            // These source limits need probe fields and negotiation rules that
-            // are not implemented yet. Do not silently ignore them.
-            "maxaudiosamplerate" | "maxaudiobitdepth" => return Err(invalid()),
             _ => return Err(invalid()),
         }
     }
@@ -180,6 +187,23 @@ fn parse_request(raw: Option<&str>) -> Result<AudioRequest, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::parse_request;
+
+    #[test]
+    fn accepts_audio_sample_rate_and_bit_depth_limits() {
+        for query in [
+            "Container=flac&MaxAudioSampleRate=44100",
+            "Container=flac&MaxAudioBitDepth=16",
+            "Container=flac&MaxAudioSampleRate=48000&MaxAudioBitDepth=24",
+        ] {
+            assert!(parse_request(Some(query)).is_ok(), "rejected {query}");
+        }
+        let request = parse_request(Some(
+            "Container=flac&MaxAudioSampleRate=48000&MaxAudioBitDepth=24",
+        ))
+        .unwrap();
+        assert_eq!(request.max_audio_sample_rate, Some(48_000));
+        assert_eq!(request.max_audio_bit_depth, Some(24));
+    }
 
     #[test]
     fn accepts_observed_official_web_audio_options() {
@@ -205,8 +229,13 @@ mod tests {
             "Container=flac&MaxStreamingBitrate=0",
             "Container=flac&MaxAudioChannels=33",
             "Container=flac&StartTimeTicks=1",
-            "Container=flac&MaxAudioSampleRate=48000",
-            "Container=flac&MaxAudioBitDepth=16",
+            "Container=flac&MaxAudioSampleRate=0",
+            "Container=flac&MaxAudioSampleRate=-1",
+            "Container=flac&MaxAudioSampleRate=2147483648",
+            "Container=flac&MaxAudioBitDepth=0",
+            "Container=flac&MaxAudioBitDepth=16.5",
+            "Container=flac&MaxAudioBitDepth=2147483648",
+            "Container=flac&MaxAudioBitDepth=16&maxaudiobitdepth=24",
             "Container=flac&DeviceId=x%0Ay",
             "Container=flac&EnableRemoteMedia=maybe",
             "Container=flac&UnknownOption=1",

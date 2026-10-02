@@ -384,7 +384,9 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
         assert_eq!(image.status(), expected);
     }
     for method in ["GET", "HEAD"] {
-        let audio_uri = format!("/Audio/{item_id}/universal?Container=flac&ApiKey={media_token}");
+        let audio_uri = format!(
+            "/Audio/{item_id}/universal?Container=flac&MaxAudioSampleRate=44100&MaxAudioBitDepth=16&ApiKey={media_token}"
+        );
         let response = router
             .clone()
             .oneshot(

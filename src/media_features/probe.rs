@@ -50,6 +50,7 @@ pub(super) struct ProbedStream {
     pub height: Option<u32>,
     pub channels: Option<u32>,
     pub sample_rate: Option<u32>,
+    pub bit_depth: Option<u32>,
     pub bit_rate: Option<u64>,
 }
 
@@ -83,6 +84,8 @@ struct RawStream {
     height: Option<u32>,
     channels: Option<u32>,
     sample_rate: Option<String>,
+    bits_per_raw_sample: Option<String>,
+    bits_per_sample: Option<u32>,
     bit_rate: Option<String>,
     tags: Option<std::collections::HashMap<String, String>>,
     disposition: Option<RawDisposition>,
@@ -93,6 +96,26 @@ struct RawDisposition {
     default: Option<i32>,
     forced: Option<i32>,
     attached_pic: Option<i32>,
+}
+
+fn audio_bit_depth(stream: &RawStream) -> Option<u32> {
+    if stream.codec_type.as_deref() != Some("audio") {
+        return None;
+    }
+    let valid = |depth: u32| (1..=64).contains(&depth);
+    match stream.bits_per_raw_sample.as_deref() {
+        Some(value) if value != "0" && !value.is_empty() => {
+            return value.parse().ok().filter(|depth| valid(*depth));
+        }
+        _ => {}
+    }
+    // Coded bits can describe compressed codewords rather than sample
+    // precision. Only PCM can use that value when raw precision is absent.
+    stream
+        .codec_name
+        .as_deref()
+        .filter(|codec| codec.starts_with("pcm_"))?;
+    stream.bits_per_sample.filter(|depth| valid(*depth))
 }
 
 #[derive(Deserialize)]
@@ -413,6 +436,7 @@ fn parse_output(output: &[u8], extension: &str) -> Option<ProbeInfo> {
     let mut streams = Vec::with_capacity(raw.streams.len());
     for stream in raw.streams {
         let video_range_type = explicit_video_range(&stream);
+        let bit_depth = audio_bit_depth(&stream);
         let index = u32::try_from(stream.index?).ok()?;
         let raw_kind = stream.codec_type?.to_ascii_lowercase();
         let disposition = stream.disposition.unwrap_or(RawDisposition {
@@ -450,7 +474,11 @@ fn parse_output(output: &[u8], extension: &str) -> Option<ProbeInfo> {
             width: stream.width,
             height: stream.height,
             channels: stream.channels,
-            sample_rate: stream.sample_rate.and_then(|v| v.parse().ok()),
+            sample_rate: stream
+                .sample_rate
+                .and_then(|v| v.parse().ok())
+                .filter(|rate| *rate > 0 && *rate <= i32::MAX as u32),
+            bit_depth,
             bit_rate: stream.bit_rate.and_then(|v| v.parse().ok()),
         });
     }
@@ -571,6 +599,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(missing.streams[0].video_range_type, None);
+    }
+
+    #[test]
+    fn audio_depth_uses_valid_precision_without_treating_compressed_codewords_as_samples() {
+        for (codec, raw, coded, expected) in [
+            ("flac", Some("16"), 0, Some(16)),
+            ("pcm_s32le", Some("24"), 32, Some(24)),
+            ("pcm_s16le", None, 16, Some(16)),
+            ("pcm_s24le", Some("0"), 24, Some(24)),
+            ("pcm_f64le", None, 64, Some(64)),
+            ("adpcm_ima_wav", None, 4, None),
+            ("aac", None, 0, None),
+            ("flac", Some("0"), 16, None),
+            ("pcm_s16le", Some("N/A"), 16, None),
+            ("pcm_s16le", Some("999"), 16, None),
+            ("pcm_s16le", Some("-1"), 16, None),
+            ("pcm_s16le", None, 0, None),
+            ("pcm_s16le", None, 65, None),
+        ] {
+            let output = serde_json::to_vec(&serde_json::json!({
+                "streams":[{"index":0,"codec_type":"audio","codec_name":codec,
+                    "bits_per_raw_sample":raw,"bits_per_sample":coded,"sample_rate":"44100"}],
+                "format":{"format_name":"wav"},
+            }))
+            .unwrap();
+            let parsed = parse_output(&output, "wav").unwrap();
+            assert_eq!(
+                parsed.streams[0].bit_depth, expected,
+                "codec={codec}, raw={raw:?}, coded={coded}"
+            );
+            assert_eq!(parsed.streams[0].sample_rate, Some(44_100));
+        }
+        for rate in ["0", "-1", "invalid", "2147483648"] {
+            let output = serde_json::to_vec(&serde_json::json!({
+                "streams":[{"index":0,"codec_type":"audio","codec_name":"flac","sample_rate":rate}],
+                "format":{"format_name":"flac"},
+            }))
+            .unwrap();
+            assert_eq!(
+                parse_output(&output, "flac").unwrap().streams[0].sample_rate,
+                None
+            );
+        }
     }
 
     #[tokio::test]
