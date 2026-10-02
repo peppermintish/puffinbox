@@ -64,7 +64,7 @@ jobs:
           PYTHONPATH="$RUNNER_TEMP/gnu-inspector" python3 scripts/check_gnu_source_map.py \
             --binary "$RUNNER_TEMP/gnu-probe/output/server" \
             --source-hashes "$RUNNER_TEMP/gnu-probe/output/standard-library-source-hashes.json" \
-            --output "$RUNNER_TEMP/gnu-probe/output/source-line-inventory.json"
+            --output "$RUNNER_TEMP/source-line-inventory.json"
 
       - name: Save probe records without binaries or external runtime libraries
         if: always()
@@ -78,5 +78,5 @@ jobs:
             ${{ runner.temp }}/gnu-probe/output/server-dynamic-symbols.txt
             ${{ runner.temp }}/gnu-probe/output/server-sections.txt
             ${{ runner.temp }}/gnu-probe/output/standard-library-source-hashes.json
-            ${{ runner.temp }}/gnu-probe/output/source-line-inventory.json
+            ${{ runner.temp }}/source-line-inventory.json
           if-no-files-found: warn
