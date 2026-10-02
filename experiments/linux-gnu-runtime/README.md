@@ -24,7 +24,7 @@ The link-map checker reports known retained runtime sections and generated Unico
 
 ## Source-location inventory
 
-Pass `--source-map` to retain release debug data and record exact standard-library source hashes. This produces a larger test executable and does not change production packaging:
+Pass `--source-map` to retain release debug data, record exact standard-library source hashes, and capture the same compiler's `COPYRIGHT-library.html` notice. The hash record binds that notice to this build. This produces a larger test executable and does not change production packaging:
 
 ```sh
 python3 experiments/linux-gnu-runtime/build.py --output /probe/output --source-map
@@ -40,3 +40,17 @@ python3 scripts/check_gnu_source_map.py \
 ```
 
 The checker resolves DWARF 4 and 5 file indexes, attributes only nonempty intervals inside executable load ranges, and requires hashes for every mapped standard-library source. Missing debug information, unresolved paths, empty mappings, and missing hashes fail. Known non-allowlisted mapped source paths also fail the check, including generated Unicode even if the link map names no Unicode archive. Mapped instructions from `/usr/include/` fail as unreviewed system-header inputs. This catches header code that an archive-only inventory misses; it does not assign one license to all system headers. The inventory records line-zero and discarded-address intervals separately. Its byte counts can overlap; they are not a coverage percentage. Anonymous constants, unmapped instructions, assembler, generated code, headers without mapped instructions, and complete source-license classification remain outside this check. Every record keeps `licenseClearance: false`.
+
+Then classify the mapped standard-library paths against the exact compiler's hierarchical notices:
+
+```sh
+python3 scripts/check_gnu_notices.py \
+  --inventory /probe/output/source-line-inventory.json \
+  --source-hashes /probe/output/standard-library-source-hashes.json \
+  --notice /probe/output/COPYRIGHT-library.html \
+  --output /probe/output/compiler-notice-classification.json
+```
+
+The notice checker verifies both input hashes and each mapped source hash, then uses the most specific path rule. The Unicode directory's exception does not override its separately licensed `mod.rs`. License choices follow [SPDX expression precedence](https://spdx.github.io/spdx-spec/v3.0.1/annexes/spdx-license-expressions/): `OR` allows an MIT or Apache-2.0 option, `AND` requires every component to fit, and `WITH` additions remain outside the allowlist. Unknown identifiers do not count as allowed licenses. Malformed expressions, unsupported notice trees, unsafe paths, and changed hashes fail. Vendored crates remain unreviewed until their package/version notices are joined; they cannot inherit Rust's default license.
+
+This classifies the compiler's declared path notices. Individual files may carry additional exceptions, and the source inventory does not cover every instruction or constant. Other dependencies, included headers, external-runtime distribution, and production adoption still need review. CI saves the notice and classification as audit records, excluding server and runtime binaries. A passing notice report retains `licenseClearance: false`.

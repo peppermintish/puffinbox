@@ -9,6 +9,8 @@ on:
       - 'experiments/linux-gnu-runtime/**'
       - 'scripts/check_gnu_link_map.py'
       - 'scripts/check_gnu_source_map.py'
+      - 'scripts/check_gnu_notices.py'
+      - 'scripts/test_gnu_notices.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
@@ -22,6 +24,8 @@ on:
       - 'experiments/linux-gnu-runtime/**'
       - 'scripts/check_gnu_link_map.py'
       - 'scripts/check_gnu_source_map.py'
+      - 'scripts/check_gnu_notices.py'
+      - 'scripts/test_gnu_notices.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
@@ -45,6 +49,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Check runtime inventory and notice regressions
+        run: python3 -m unittest discover -s scripts -p 'test_gnu_*.py'
+
       - name: Build disposable probe infrastructure
         run: docker build --tag puffinbox:gnu-probe-builder --file experiments/linux-gnu-runtime/Dockerfile .
 
@@ -66,6 +73,14 @@ jobs:
             --source-hashes "$RUNNER_TEMP/gnu-probe/output/standard-library-source-hashes.json" \
             --output "$RUNNER_TEMP/source-line-inventory.json"
 
+      - name: Classify exact mapped standard-library paths against compiler notices
+        run: |
+          python3 scripts/check_gnu_notices.py \
+            --inventory "$RUNNER_TEMP/source-line-inventory.json" \
+            --source-hashes "$RUNNER_TEMP/gnu-probe/output/standard-library-source-hashes.json" \
+            --notice "$RUNNER_TEMP/gnu-probe/output/COPYRIGHT-library.html" \
+            --output "$RUNNER_TEMP/compiler-notice-classification.json"
+
       - name: Save probe records without binaries or external runtime libraries
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -78,5 +93,7 @@ jobs:
             ${{ runner.temp }}/gnu-probe/output/server-dynamic-symbols.txt
             ${{ runner.temp }}/gnu-probe/output/server-sections.txt
             ${{ runner.temp }}/gnu-probe/output/standard-library-source-hashes.json
+            ${{ runner.temp }}/gnu-probe/output/COPYRIGHT-library.html
             ${{ runner.temp }}/source-line-inventory.json
+            ${{ runner.temp }}/compiler-notice-classification.json
           if-no-files-found: warn

@@ -49,12 +49,18 @@ def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, s
     source_files = {str(path): digest(path) for path in sorted(library.rglob("*"))
                     if path.is_file() and (path.suffix in {".rs", ".h", ".c", ".S"}
                                            or "LICENSE" in path.name or "COPYRIGHT" in path.name)}
+    notice = sysroot / "share/doc/rust/COPYRIGHT-library.html"
+    if not notice.is_file():
+        raise RuntimeError("The exact compiler's standard-library notice is missing.")
+    shutil.copyfile(notice, output / notice.name)
+    compiler_notices = {notice.name: digest(output / notice.name)}
     with (output / "standard-library-source-hashes.json").open("x") as ledger:
-        json.dump({"sysroot": str(sysroot), "sourceFiles": source_files,
+        json.dump({"sysroot": str(sysroot), "sourceFiles": source_files, "compilerNotices": compiler_notices,
                    "scope": "Exact source bytes available to this disposable build; no license clearance inferred."},
                   ledger, indent=2)
         ledger.write("\n")
     return {"sourceMappingPresent": True, "debugLevel": 2, "sourceFileCount": len(source_files),
+            "compilerNotices": compiler_notices,
             "sourceHashesSha256": digest(output / "standard-library-source-hashes.json"), "licenseClearance": False}
 
 
