@@ -911,6 +911,19 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
     .await;
     assert_eq!(no_playback.status(), axum::http::StatusCode::FORBIDDEN);
 
+    shared_playlists_keep_permissions_and_media_visibility_separate(
+        &router,
+        &pool,
+        owner_id,
+        peer_id,
+        &owner_token,
+        &peer_token,
+        first,
+        second,
+        third,
+    )
+    .await;
+
     let delete = send(
         &router,
         "DELETE",
@@ -935,6 +948,513 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
         .execute(&admin_pool)
         .await
         .unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn shared_playlists_keep_permissions_and_media_visibility_separate(
+    router: &axum::Router,
+    pool: &sqlx::PgPool,
+    owner_id: Uuid,
+    peer_id: Uuid,
+    owner_token: &str,
+    peer_token: &str,
+    first: Uuid,
+    second: Uuid,
+    third: Uuid,
+) {
+    use axum::http::StatusCode;
+    sqlx::query("UPDATE users SET restrict_libraries=FALSE WHERE id=$1")
+        .bind(owner_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let created = send(
+        router,
+        "POST",
+        "/Playlists",
+        Some(owner_token),
+        Some(json!({
+            "Name":"Shared music", "Ids":[first,second],
+            "Users":[{"UserId":peer_id,"CanEdit":false}]
+        })),
+    )
+    .await;
+    assert_eq!(
+        created.status(),
+        StatusCode::OK,
+        "explicit playlist sharing must be accepted"
+    );
+    let id = Uuid::parse_str(response_json(created).await["Id"].as_str().unwrap()).unwrap();
+    let uri = format!("/Playlists/{id}");
+    let permission = format!("{uri}/Users/{peer_id}");
+    let entries_uri = format!("{uri}/Items");
+    let detail = response_json(
+        send(
+            router,
+            "GET",
+            &format!("/Items/{id}"),
+            Some(peer_token),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(detail["CanDelete"], false);
+    assert_eq!(detail["Name"], "Shared music");
+    assert_eq!(
+        item_ids(&playlist_items(router, id, peer_token).await),
+        vec![first, second]
+    );
+    let catalog = response_json(
+        send(
+            router,
+            "GET",
+            "/Items?IncludeItemTypes=Playlist",
+            Some(peer_token),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(item_ids(&catalog).contains(&id));
+    assert_eq!(
+        response_json(send(router, "GET", &permission, Some(peer_token), None).await).await,
+        json!({"UserId":peer_id,"CanEdit":false})
+    );
+    let shares = send(
+        router,
+        "GET",
+        &format!("{uri}/Users"),
+        Some(owner_token),
+        None,
+    )
+    .await;
+    assert_eq!(shares.status(), StatusCode::OK);
+    assert_eq!(shares.headers()["cache-control"], "private, no-store");
+    assert_eq!(
+        response_json(shares).await,
+        json!([{"UserId":peer_id,"CanEdit":false}])
+    );
+    assert_eq!(
+        send(
+            router,
+            "GET",
+            &format!("{uri}/Users"),
+            Some(peer_token),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    for suffix in ["Ancestors", "ThemeMedia"] {
+        assert_eq!(
+            send(
+                router,
+                "GET",
+                &format!("/Items/{id}/{suffix}"),
+                Some(peer_token),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        item_ids(
+            &response_json(
+                send(
+                    router,
+                    "GET",
+                    &format!("/Items?ParentId={id}"),
+                    Some(peer_token),
+                    None
+                )
+                .await
+            )
+            .await
+        ),
+        vec![first, second]
+    );
+    for (method, path, body) in [
+        (
+            "POST",
+            uri.clone(),
+            Some(json!({"Name":"Reader cannot rename"})),
+        ),
+        ("POST", format!("{entries_uri}?Ids={third}"), None),
+        (
+            "DELETE",
+            format!("{entries_uri}?EntryIds={}", Uuid::new_v4()),
+            None,
+        ),
+        ("POST", permission.clone(), Some(json!({"CanEdit":true}))),
+    ] {
+        assert_eq!(
+            send(router, method, &path, Some(peer_token), body)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        send(router, "DELETE", &uri, Some(peer_token), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &permission,
+            Some(owner_token),
+            Some(json!({"CanEdit":true}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &uri,
+            Some(peer_token),
+            Some(json!({"Name":"Edited by peer"}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &format!("{entries_uri}?Ids={third}"),
+            Some(peer_token),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        item_ids(&playlist_items(router, id, owner_token).await),
+        vec![first, second, third]
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &uri,
+            Some(peer_token),
+            Some(json!({"Users":[]}))
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &format!("{uri}/Users/{owner_id}"),
+            Some(owner_token),
+            Some(json!({"CanEdit":false}))
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(
+            router,
+            "DELETE",
+            &format!("{uri}/Users/{owner_id}"),
+            Some(owner_token),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let invalid = send(
+        router,
+        "POST",
+        &uri,
+        Some(owner_token),
+        Some(json!({"Name":"Must roll back","Users":[{"UserId":Uuid::new_v4(),"CanEdit":true}]})),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let detail = response_json(
+        send(
+            router,
+            "GET",
+            &format!("/Items/{id}"),
+            Some(owner_token),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(detail["Name"], "Edited by peer");
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &permission,
+            Some(owner_token),
+            Some(json!({"CanEdit":null}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &permission,
+            Some(owner_token),
+            Some(json!({"CanEdit":"false"}))
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    sqlx::query("UPDATE items SET path='/music/.hidden/second.flac' WHERE id=$1")
+        .bind(second)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        item_ids(&playlist_items(router, id, peer_token).await),
+        vec![first, third]
+    );
+    let hidden_replacement = send(
+        router,
+        "POST",
+        &uri,
+        Some(peer_token),
+        Some(json!({"Ids":[first]})),
+    )
+    .await;
+    assert_eq!(hidden_replacement.status(), StatusCode::FORBIDDEN);
+    let visible_entries = playlist_items(router, id, peer_token).await;
+    let entry_id = visible_entries["Items"][0]["PlaylistItemId"]
+        .as_str()
+        .unwrap();
+    for (method, path) in [
+        ("POST", format!("{entries_uri}?Ids={third}")),
+        ("DELETE", format!("{entries_uri}?EntryIds={entry_id}")),
+        ("POST", format!("{entries_uri}/{entry_id}/Move/0")),
+    ] {
+        assert_eq!(
+            send(router, method, &path, Some(peer_token), None)
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM playlist_items WHERE playlist_id=$1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        3
+    );
+    sqlx::query("UPDATE items SET path='/music/second.flac' WHERE id=$1")
+        .bind(second)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET restrict_libraries=TRUE WHERE id=$1")
+        .bind(peer_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert!(item_ids(&playlist_items(router, id, peer_token).await).is_empty());
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &format!("{entries_uri}?Ids={first}"),
+            Some(peer_token),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE users SET restrict_libraries=FALSE WHERE id=$1")
+        .bind(peer_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(router, "DELETE", &permission, Some(owner_token), None)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    for path in [
+        &uri,
+        &entries_uri,
+        &format!("/Items/{id}"),
+        &format!("/Items?ParentId={id}"),
+    ] {
+        assert_eq!(
+            send(router, "GET", path, Some(peer_token), None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert!(
+        !item_ids(
+            &response_json(
+                send(
+                    router,
+                    "GET",
+                    "/Items?IncludeItemTypes=Playlist",
+                    Some(peer_token),
+                    None
+                )
+                .await
+            )
+            .await
+        )
+        .contains(&id)
+    );
+    assert_eq!(send(router,"POST", &uri,Some(owner_token),Some(json!({"Users":[{"UserId":peer_id,"CanEdit":false},{"UserId":peer_id,"CanEdit":true}]}))).await.status(),StatusCode::BAD_REQUEST);
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &uri,
+            Some(owner_token),
+            Some(json!({"Users":[{"UserId":peer_id,"CanEdit":false}]}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &uri,
+            Some(owner_token),
+            Some(json!({"Users":null}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(router, "GET", &uri, Some(peer_token), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &uri,
+            Some(owner_token),
+            Some(json!({"Users":[]}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(router, "GET", &uri, Some(peer_token), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(
+            router,
+            "POST",
+            &permission,
+            Some(owner_token),
+            Some(json!({"CanEdit":true}))
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    let mut revocation = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM playlists WHERE id=$1 FOR UPDATE")
+        .bind(id)
+        .execute(&mut *revocation)
+        .await
+        .unwrap();
+    let waiting_router = router.clone();
+    let waiting_token = peer_token.to_owned();
+    let waiting_uri = uri.clone();
+    let editor = tokio::spawn(async move {
+        send(
+            &waiting_router,
+            "POST",
+            &waiting_uri,
+            Some(&waiting_token),
+            Some(json!({"Name":"Revoked writer"})),
+        )
+        .await
+        .status()
+    });
+    tokio::time::timeout(Duration::from_secs(5),async {
+        loop {
+            let waiting = sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query='SELECT owner_user_id FROM playlists WHERE id=$1 FOR UPDATE')")
+                .fetch_one(pool).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("editor must wait behind the playlist row lock");
+    sqlx::query("DELETE FROM playlist_users WHERE playlist_id=$1 AND user_id=$2")
+        .bind(id)
+        .bind(peer_id)
+        .execute(&mut *revocation)
+        .await
+        .unwrap();
+    revocation.commit().await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), editor)
+            .await
+            .unwrap()
+            .unwrap(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT name FROM playlists WHERE id=$1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        "Edited by peer"
+    );
+    assert_eq!(
+        send(router, "DELETE", &uri, Some(owner_token), None)
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM playlist_users WHERE playlist_id=$1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        0
+    );
 }
 
 async fn insert_audio(pool: &sqlx::PgPool, library_id: Uuid, name: &str, path: &str) -> Uuid {

@@ -741,7 +741,7 @@ def ensure_user(admin: HttpClient, username: str, password: str, library_id: str
     return user
 
 
-def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: str, scan_timeout: int) -> None:
+def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: str, scan_timeout: int) -> tuple[str, str]:
     fixture = fixture_root / "Music" / "Puffinbox Original Acceptance Track.flac"
     require(fixture.is_file(), "generated universal audio fixture is missing")
     name = "Puffinbox Acceptance Music"
@@ -833,6 +833,48 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
                 "numeric or empty audio session events did not preserve the stopped position")
     report("Universal and suffixed FLAC audio, byte ranges, format/bitrate/rate/depth limits, and numeric/empty playback events", True,
            "original bytes and HEAD metadata matched; stopping preserved five seconds; the source was delivered directly")
+    return library_id, item_id
+
+
+def verify_playlist_sharing(admin: HttpClient, library_id: str, item_id: str) -> None:
+    suffix = uuid.uuid4().hex
+    username, password = "playlist-recipient-" + suffix, "Synthetic-" + uuid.uuid4().hex
+    recipient_id = str(ensure_user(admin, username, password, library_id, playback=True)["Id"])
+    recipient = HttpClient(admin.base_url)
+    login(recipient, username, password)
+    playlist_id = str(admin.json("POST", "/Playlists", {
+        "Name": "Synthetic shared music", "Ids": [item_id],
+        "Users": [{"UserId": recipient_id, "CanEdit": False}],
+    })[2]["Id"])
+    path = "/Playlists/" + playlist_id
+    permission = path + "/Users/" + recipient_id
+    try:
+        status, headers, shares = admin.json("GET", path + "/Users")
+        require(status == 200 and headers.get("Cache-Control") == "private, no-store"
+                and shares == [{"UserId": recipient_id, "CanEdit": False}],
+                "shared playlist permissions were not persisted privately")
+        items = recipient.json("GET", path + "/Items")[2]
+        require([entry["Id"] for entry in items["Items"]] == [item_id], "recipient's shared queue changed its media selection")
+        catalog = recipient.json("GET", "/Items?IncludeItemTypes=Playlist")[2]
+        require(any(str(entry["Id"]).replace("-", "") == playlist_id.replace("-", "")
+                    and entry.get("CanDelete") is False for entry in catalog["Items"]),
+                "recipient's catalog omitted the shared playlist or granted deletion")
+        require(recipient.request("POST", path, {"Name": "Denied rename"})[0] == 403,
+                "read-only recipient could edit the playlist")
+        require(recipient.request("POST", permission, {"CanEdit": True})[0] == 403,
+                "recipient could elevate its own playlist permission")
+        require(recipient.request("DELETE", path)[0] == 404, "recipient could delete the owner's playlist")
+        admin.json("POST", permission, {"CanEdit": True}, expected=(204,))
+        recipient.json("POST", path, {"Name": "Synthetic recipient edit"}, expected=(204,))
+        require(admin.json("GET", "/Items/" + playlist_id)[2]["Name"] == "Synthetic recipient edit",
+                "recipient's permitted edit did not persist")
+        admin.json("DELETE", permission, expected=(204,))
+        require(recipient.request("GET", path)[0] == 404 and recipient.request("GET", path + "/Items")[0] == 404,
+                "revoked recipient retained playlist access on an existing session")
+        report("Shared music playlist read/edit permissions, catalog visibility, owner-only management, and revocation", True)
+    finally:
+        recipient.json("POST", "/Sessions/Logout", expected=(204,))
+        admin.json("DELETE", path, expected=(204,))
 
 
 def verify_playback_sessions(admin: HttpClient, viewer: HttpClient, item_id: str) -> None:
@@ -1041,9 +1083,10 @@ def run(args: argparse.Namespace) -> int:
     verify_direct_play_acceptance(client, direct_play_fixture_path, args.scan_timeout)
     verify_video_range_acceptance(client, sdr_direct_play_fixture_path, direct_play_fixture_path, args.scan_timeout)
     verify_scan_lifecycle(client, library_id, fixture_path.parent, args.scan_timeout)
-    verify_universal_audio(
+    audio_library_id, audio_item_id = verify_universal_audio(
         client, fixture_root, values.get("PUFFINBOX_ACCEPTANCE_MUSIC_ROOT", "/media/Music"), args.scan_timeout,
     )
+    verify_playlist_sharing(client, audio_library_id, audio_item_id)
     verify_catalog_filters(client, library_id)
     verify_scanner_root_identity(
         client,

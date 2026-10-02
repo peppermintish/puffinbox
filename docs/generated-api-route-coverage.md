@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-02T06:05:25.635510+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-02T13:48:53.704977+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `180`
-- Declared pairs matching a schema method/path: `92`
+- Unique declared server method/path pairs: `183`
+- Declared pairs matching a schema method/path: `95`
 - Declared pairs outside the schema: `88`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -186,7 +186,10 @@ This is a source declaration comparison only. It does not establish that a match
 | `DELETE /Playlists/{playlist_id}/Items` | `src/playlists.rs` | match |
 | `GET /Playlists/{playlist_id}/Items` | `src/playlists.rs` | match |
 | `POST /Playlists/{playlist_id}/Items` | `src/playlists.rs` | match |
+| `DELETE /Playlists/{playlist_id}/Users/{user_id}` | `src/playlists.rs` | match |
 | `GET /Playlists/{playlist_id}/Users/{user_id}` | `src/playlists.rs` | match |
+| `POST /Playlists/{playlist_id}/Users/{user_id}` | `src/playlists.rs` | match |
+| `GET /Playlists/{playlist_id}/Users` | `src/playlists.rs` | match |
 | `POST /Playlists/{playlist_id}/Items/{entry_id}/Move/{new_index}` | `src/playlists.rs` | match |
 | `GET /Puffinbox/Plugins` | `src/plugins.rs` | custom / not in target schema |
 | `POST /Puffinbox/Plugins/TrustStaged` | `src/plugins.rs` | custom / not in target schema |

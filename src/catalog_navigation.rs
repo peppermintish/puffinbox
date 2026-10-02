@@ -88,7 +88,7 @@ async fn ancestors(
         Ok(item) => item,
         Err(ApiError::NotFound) => {
             if current.id == user.id
-                && crate::playlists::owns_playlist(&state, &current, id).await?
+                && crate::playlists::can_read_playlist(&state, &current, id).await?
             {
                 return Ok(Json(Vec::new()));
             }
@@ -207,7 +207,7 @@ async fn theme_media(
         Ok(item) => item,
         Err(ApiError::NotFound) => {
             if current.id == user.id
-                && crate::playlists::owns_playlist(&state, &current, id).await?
+                && crate::playlists::can_read_playlist(&state, &current, id).await?
             {
                 return Ok(Json(result));
             }

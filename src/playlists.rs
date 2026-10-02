@@ -20,8 +20,9 @@ use crate::{
 
 const MAX_PLAYLIST_ITEMS: usize = 1_000;
 const MAX_PAGE_SIZE: i64 = 100;
+const MAX_PLAYLIST_USERS: usize = 1_000;
 
-/// User-owned music playlists. The collection GET and playlist DELETE routes
+/// Owned and explicitly shared music playlists. The collection GET and playlist DELETE routes
 /// are Puffinbox extensions; the item and metadata routes follow Jellyfin 12.
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -40,8 +41,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/Playlists/{playlist_id}/Users/{user_id}",
-            get(get_playlist_user),
+            get(get_playlist_user)
+                .post(update_playlist_user)
+                .delete(remove_playlist_user),
         )
+        .route("/Playlists/{playlist_id}/Users", get(get_playlist_users))
         .route(
             "/Playlists/{playlist_id}/Items/{entry_id}/Move/{new_index}",
             post(move_playlist_item),
@@ -77,12 +81,13 @@ struct UpdatePlaylistRequest {
     is_public: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, sqlx::FromRow)]
+#[serde(deny_unknown_fields)]
 struct PlaylistUserPermission {
     #[serde(rename = "UserId", alias = "userId")]
-    _user_id: Uuid,
+    user_id: Uuid,
     #[serde(rename = "CanEdit", alias = "canEdit")]
-    _can_edit: bool,
+    can_edit: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -105,7 +110,7 @@ struct PlaylistCreationResult {
 #[serde(rename_all = "PascalCase")]
 struct PlaylistDto {
     open_access: bool,
-    shares: Vec<serde_json::Value>,
+    shares: Vec<PlaylistUserPermission>,
     item_ids: Vec<Uuid>,
 }
 
@@ -121,14 +126,25 @@ async fn get_playlist_user(
     CurrentUser(user): CurrentUser,
     Path((playlist_id, user_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<PlaylistOwnerPermissionDto>, ApiError> {
-    ensure_owned(&state, &user, playlist_id).await?;
-    if user_id != user.id {
-        return Err(ApiError::NotFound);
+    let access = playlist_access(&state, &user, playlist_id).await?;
+    if user_id != user.id && access.owner_user_id != user.id {
+        return Err(ApiError::Forbidden);
     }
-    Ok(Json(PlaylistOwnerPermissionDto {
-        user_id,
-        can_edit: true,
-    }))
+    let can_edit = if user_id == access.owner_user_id {
+        true
+    } else if let Some(can_edit) = sqlx::query_scalar::<_, bool>(
+        "SELECT can_edit FROM playlist_users WHERE playlist_id=$1 AND user_id=$2",
+    )
+    .bind(playlist_id)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?
+    {
+        can_edit
+    } else {
+        return Err(ApiError::NotFound);
+    };
+    Ok(Json(PlaylistOwnerPermissionDto { user_id, can_edit }))
 }
 
 #[derive(Serialize)]
@@ -198,10 +214,11 @@ struct PlaylistRecord {
     name: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    owner_user_id: Uuid,
 }
 
 impl PlaylistRecord {
-    fn into_dto(self, server_id: Uuid) -> PlaylistListItemDto {
+    fn into_dto(self, server_id: Uuid, user_id: Uuid) -> PlaylistListItemDto {
         PlaylistListItemDto {
             id: self.id,
             name: self.name,
@@ -211,7 +228,7 @@ impl PlaylistRecord {
             media_type: "Audio",
             date_created: self.created_at,
             date_modified: self.updated_at,
-            can_delete: true,
+            can_delete: self.owner_user_id == user_id,
         }
     }
 }
@@ -240,7 +257,7 @@ pub(crate) async fn catalog_children_result(
     playlist_id: Uuid,
     query: ItemQuery,
 ) -> Result<Response, ApiError> {
-    ensure_owned(state, user, playlist_id).await?;
+    playlist_access(state, user, playlist_id).await?;
     if query.is_folder.is_some()
         || query.is_played.is_some()
         || query.is_favorite
@@ -311,7 +328,7 @@ fn validate_catalog_options(raw_query: Option<&str>, entries: bool) -> Result<()
     Ok(())
 }
 
-/// Playlists are owned catalog objects, separate from scanned library files.
+/// Playlists are permission-checked catalog objects, separate from scanned library files.
 pub(crate) async fn catalog_result(
     state: &AppState,
     user: &UserRecord,
@@ -379,7 +396,7 @@ pub(crate) async fn catalog_result(
         "ASC"
     };
     let mut page = QueryBuilder::<Postgres>::new(
-        "SELECT p.id,p.name,p.created_at,p.updated_at FROM playlists p",
+        "SELECT p.id,p.name,p.created_at,p.updated_at,p.owner_user_id FROM playlists p",
     );
     push_catalog_conditions(&mut page, user, &query, audio_selected);
     page.push(format!(
@@ -395,7 +412,7 @@ pub(crate) async fn catalog_result(
     Ok(Json(PlaylistCatalogResultDto {
         items: records
             .into_iter()
-            .map(|record| record.into_dto(state.server_id))
+            .map(|record| record.into_dto(state.server_id, user.id))
             .collect(),
         total_record_count,
         start_index: query.start_index,
@@ -409,7 +426,9 @@ fn push_catalog_conditions(
     query: &ItemQuery,
     audio_selected: bool,
 ) {
-    builder.push(" WHERE p.owner_user_id=").push_bind(user.id);
+    builder.push(" WHERE (p.owner_user_id=").push_bind(user.id)
+        .push(" OR EXISTS (SELECT 1 FROM playlist_users share WHERE share.playlist_id=p.id AND share.user_id=")
+        .push_bind(user.id).push("))");
     if !audio_selected {
         builder.push(" AND FALSE");
     }
@@ -421,7 +440,7 @@ fn push_catalog_conditions(
     }
     if let Some(parent_id) = query.parent_id {
         // A music-library view includes playlists with a visible track in that
-        // library. Root queries also include the owner's empty playlists.
+        // library. Root queries also include accessible empty playlists.
         builder.push(" AND EXISTS (SELECT 1 FROM playlist_items entry JOIN items i ON i.id=entry.item_id JOIN libraries l ON l.id=i.library_id WHERE entry.playlist_id=p.id AND l.enabled=TRUE AND i.item_type='Audio' AND i.path !~ '(^|/)[.]' AND i.library_id=")
             .push_bind(parent_id);
         db::push_user_visibility_filters(builder, user);
@@ -439,13 +458,13 @@ pub(crate) async fn catalog_item_response(
         return Ok(None);
     }
     Ok(sqlx::query_as::<_, PlaylistRecord>(
-        "SELECT id,name,created_at,updated_at FROM playlists WHERE id=$1 AND owner_user_id=$2",
+        "SELECT p.id,p.name,p.created_at,p.updated_at,p.owner_user_id FROM playlists p WHERE p.id=$1 AND (p.owner_user_id=$2 OR EXISTS (SELECT 1 FROM playlist_users share WHERE share.playlist_id=p.id AND share.user_id=$2))",
     )
     .bind(playlist_id)
     .bind(current.id)
     .fetch_optional(&state.db)
     .await?
-    .map(|record| Json(record.into_dto(state.server_id)).into_response()))
+    .map(|record| Json(record.into_dto(state.server_id, current.id)).into_response()))
 }
 
 pub(crate) async fn delete_catalog_playlists(
@@ -507,7 +526,8 @@ async fn create_playlist(
     let query_media_type = query_single(raw_query.as_deref(), "MediaType")?;
     ensure_self_user(&user, query_user.or(body.user_id))?;
     ensure_audio_media_type(query_media_type.as_deref().or(body.media_type.as_deref()))?;
-    ensure_private_playlist_request(&body.users, body.is_public)?;
+    ensure_private_playlist_request(body.is_public)?;
+    validate_playlist_users(user.id, &body.users)?;
 
     let query_ids = query_uuids(raw_query.as_deref(), "Ids")?;
     let item_ids = if query_ids.is_empty() {
@@ -528,6 +548,7 @@ async fn create_playlist(
     .bind(name)
     .execute(&mut *tx)
     .await?;
+    persist_playlist_users(&mut tx, playlist_id, user.id, &body.users).await?;
     let entries = item_ids
         .into_iter()
         .map(|item_id| PlaylistEntry {
@@ -557,12 +578,12 @@ async fn list_playlists(
     }
     let limit = query.limit.unwrap_or(MAX_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
     let total_record_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE owner_user_id=$1")
+        sqlx::query_scalar("SELECT COUNT(*) FROM playlists p WHERE p.owner_user_id=$1 OR EXISTS (SELECT 1 FROM playlist_users share WHERE share.playlist_id=p.id AND share.user_id=$1)")
             .bind(user.id)
             .fetch_one(&state.db)
             .await?;
     let records = sqlx::query_as::<_, PlaylistRecord>(
-        "SELECT id,name,created_at,updated_at FROM playlists WHERE owner_user_id=$1 ORDER BY lower(name),id OFFSET $2 LIMIT $3",
+        "SELECT p.id,p.name,p.created_at,p.updated_at,p.owner_user_id FROM playlists p WHERE p.owner_user_id=$1 OR EXISTS (SELECT 1 FROM playlist_users share WHERE share.playlist_id=p.id AND share.user_id=$1) ORDER BY lower(p.name),p.id OFFSET $2 LIMIT $3",
     )
     .bind(user.id)
     .bind(start_index)
@@ -571,7 +592,7 @@ async fn list_playlists(
     .await?;
     let items = records
         .into_iter()
-        .map(|record| record.into_dto(state.server_id))
+        .map(|record| record.into_dto(state.server_id, user.id))
         .collect();
     Ok(Json(PlaylistsResultDto {
         items,
@@ -585,11 +606,18 @@ async fn get_playlist(
     CurrentUser(user): CurrentUser,
     Path(playlist_id): Path<Uuid>,
 ) -> Result<Json<PlaylistDto>, ApiError> {
-    ensure_owned(&state, &user, playlist_id).await?;
+    let access = playlist_access(&state, &user, playlist_id).await?;
     let items = visible_entries(&state, &user, playlist_id).await?;
     Ok(Json(PlaylistDto {
         open_access: false,
-        shares: Vec::new(),
+        shares: if access.owner_user_id == user.id {
+            read_playlist_users(&state, playlist_id).await?
+        } else {
+            vec![PlaylistUserPermission {
+                user_id: user.id,
+                can_edit: access.can_edit,
+            }]
+        },
         item_ids: items.into_iter().map(|entry| entry.item.id).collect(),
     }))
 }
@@ -600,8 +628,14 @@ async fn update_playlist(
     Path(playlist_id): Path<Uuid>,
     Json(body): Json<UpdatePlaylistRequest>,
 ) -> Result<StatusCode, ApiError> {
-    ensure_owned(&state, &user, playlist_id).await?;
-    ensure_private_playlist_request(body.users.as_deref().unwrap_or_default(), body.is_public)?;
+    let access = ensure_editable(&state, &user, playlist_id).await?;
+    if (body.users.is_some() || body.is_public.is_some()) && access.owner_user_id != user.id {
+        return Err(ApiError::Forbidden);
+    }
+    ensure_private_playlist_request(body.is_public)?;
+    if let Some(users) = &body.users {
+        validate_playlist_users(user.id, users)?;
+    }
     let name = body
         .name
         .map(|name| validate_name(Some(name)))
@@ -611,16 +645,23 @@ async fn update_playlist(
     }
 
     let mut tx = state.db.begin().await?;
-    lock_owned_playlist(&mut tx, &user, playlist_id).await?;
+    let access = lock_editable_playlist(&mut tx, &user, playlist_id).await?;
+    if body.ids.is_some() {
+        ensure_editable_entries_visible(&state, &mut tx, &user, playlist_id, &access).await?;
+    }
+    if let Some(users) = &body.users {
+        persist_playlist_users(&mut tx, playlist_id, user.id, users).await?;
+        sqlx::query("UPDATE playlists SET updated_at=NOW() WHERE id=$1")
+            .bind(playlist_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     if let Some(name) = name {
-        sqlx::query(
-            "UPDATE playlists SET name=$3,updated_at=NOW() WHERE id=$1 AND owner_user_id=$2",
-        )
-        .bind(playlist_id)
-        .bind(user.id)
-        .bind(name)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("UPDATE playlists SET name=$2,updated_at=NOW() WHERE id=$1")
+            .bind(playlist_id)
+            .bind(name)
+            .execute(&mut *tx)
+            .await?;
     }
     if let Some(ids) = body.ids {
         let entries = ids
@@ -654,7 +695,7 @@ async fn get_playlist_items(
     Path(playlist_id): Path<Uuid>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<PlaylistItemsResultDto>, ApiError> {
-    ensure_owned(&state, &user, playlist_id).await?;
+    playlist_access(&state, &user, playlist_id).await?;
     ensure_playback_allowed(&user)?;
     ensure_self_user(&user, query.user_id)?;
     let start_index = query.start_index.unwrap_or(0);
@@ -731,7 +772,7 @@ async fn add_playlist_items(
     Path(playlist_id): Path<Uuid>,
     RawQuery(raw_query): RawQuery,
 ) -> Result<StatusCode, ApiError> {
-    ensure_owned(&state, &user, playlist_id).await?;
+    ensure_editable(&state, &user, playlist_id).await?;
     ensure_playback_allowed(&user)?;
     ensure_self_user(&user, query_uuid(raw_query.as_deref(), "UserId")?)?;
     let item_ids = query_uuids(raw_query.as_deref(), "Ids")?;
@@ -742,7 +783,8 @@ async fn add_playlist_items(
     let requested_position = query_i32(raw_query.as_deref(), "Position")?;
 
     let mut tx = state.db.begin().await?;
-    lock_owned_playlist(&mut tx, &user, playlist_id).await?;
+    let access = lock_editable_playlist(&mut tx, &user, playlist_id).await?;
+    ensure_editable_entries_visible(&state, &mut tx, &user, playlist_id, &access).await?;
     let mut entries = read_entries(&mut tx, playlist_id).await?;
     if entries.len().saturating_add(item_ids.len()) > MAX_PLAYLIST_ITEMS {
         return Err(ApiError::BadRequest(
@@ -778,13 +820,14 @@ async fn remove_playlist_items(
     Path(playlist_id): Path<Uuid>,
     RawQuery(raw_query): RawQuery,
 ) -> Result<StatusCode, ApiError> {
-    ensure_owned(&state, &user, playlist_id).await?;
+    ensure_editable(&state, &user, playlist_id).await?;
     let entry_ids = query_uuids(raw_query.as_deref(), "EntryIds")?;
     if entry_ids.is_empty() {
         return Err(ApiError::BadRequest("EntryIds is required".to_owned()));
     }
     let mut tx = state.db.begin().await?;
-    lock_owned_playlist(&mut tx, &user, playlist_id).await?;
+    let access = lock_editable_playlist(&mut tx, &user, playlist_id).await?;
+    ensure_editable_entries_visible(&state, &mut tx, &user, playlist_id, &access).await?;
     let mut entries = read_entries(&mut tx, playlist_id).await?;
     let original_len = entries.len();
     entries.retain(|entry| !entry_ids.contains(&entry.id));
@@ -804,14 +847,15 @@ async fn move_playlist_item(
     CurrentUser(user): CurrentUser,
     Path((playlist_id, entry_id, new_index)): Path<(Uuid, Uuid, i32)>,
 ) -> Result<StatusCode, ApiError> {
-    ensure_owned(&state, &user, playlist_id).await?;
+    ensure_editable(&state, &user, playlist_id).await?;
     if new_index < 0 {
         return Err(ApiError::BadRequest(
             "NewIndex cannot be negative".to_owned(),
         ));
     }
     let mut tx = state.db.begin().await?;
-    lock_owned_playlist(&mut tx, &user, playlist_id).await?;
+    let access = lock_editable_playlist(&mut tx, &user, playlist_id).await?;
+    ensure_editable_entries_visible(&state, &mut tx, &user, playlist_id, &access).await?;
     let mut entries = read_entries(&mut tx, playlist_id).await?;
     let old_index = entries
         .iter()
@@ -833,33 +877,6 @@ async fn move_playlist_item(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn ensure_owned(
-    state: &AppState,
-    user: &UserRecord,
-    playlist_id: Uuid,
-) -> Result<(), ApiError> {
-    if owns_playlist(state, user, playlist_id).await? {
-        Ok(())
-    } else {
-        Err(ApiError::NotFound)
-    }
-}
-
-pub(crate) async fn owns_playlist(
-    state: &AppState,
-    user: &UserRecord,
-    playlist_id: Uuid,
-) -> Result<bool, ApiError> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM playlists WHERE id=$1 AND owner_user_id=$2)",
-    )
-    .bind(playlist_id)
-    .bind(user.id)
-    .fetch_one(&state.db)
-    .await?;
-    Ok(exists)
-}
-
 async fn lock_owned_playlist(
     tx: &mut Transaction<'_, Postgres>,
     user: &UserRecord,
@@ -875,6 +892,269 @@ async fn lock_owned_playlist(
     } else {
         Err(ApiError::NotFound)
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct PlaylistAccess {
+    owner_user_id: Uuid,
+    can_edit: bool,
+}
+
+async fn playlist_access(
+    state: &AppState,
+    user: &UserRecord,
+    playlist_id: Uuid,
+) -> Result<PlaylistAccess, ApiError> {
+    sqlx::query_as::<_, PlaylistAccess>(
+        "SELECT p.owner_user_id,(p.owner_user_id=$2 OR COALESCE(share.can_edit,FALSE)) AS can_edit FROM playlists p LEFT JOIN playlist_users share ON share.playlist_id=p.id AND share.user_id=$2 WHERE p.id=$1 AND (p.owner_user_id=$2 OR share.user_id IS NOT NULL)",
+    )
+    .bind(playlist_id).bind(user.id).fetch_optional(&state.db).await?
+    .ok_or(ApiError::NotFound)
+}
+
+pub(crate) async fn can_read_playlist(
+    state: &AppState,
+    user: &UserRecord,
+    playlist_id: Uuid,
+) -> Result<bool, ApiError> {
+    match playlist_access(state, user, playlist_id).await {
+        Ok(_) => Ok(true),
+        Err(ApiError::NotFound) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+async fn ensure_editable(
+    state: &AppState,
+    user: &UserRecord,
+    playlist_id: Uuid,
+) -> Result<PlaylistAccess, ApiError> {
+    let access = playlist_access(state, user, playlist_id).await?;
+    if !access.can_edit {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(access)
+}
+
+async fn lock_editable_playlist(
+    tx: &mut Transaction<'_, Postgres>,
+    user: &UserRecord,
+    playlist_id: Uuid,
+) -> Result<PlaylistAccess, ApiError> {
+    // Sharing writes take this same row lock. Read permissions after acquiring
+    // it so an editor waiting behind a revocation cannot use stale access.
+    let owner_user_id =
+        sqlx::query_scalar::<_, Uuid>("SELECT owner_user_id FROM playlists WHERE id=$1 FOR UPDATE")
+            .bind(playlist_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+    let can_edit = if owner_user_id == user.id {
+        true
+    } else {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT can_edit FROM playlist_users WHERE playlist_id=$1 AND user_id=$2",
+        )
+        .bind(playlist_id)
+        .bind(user.id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(ApiError::NotFound)?
+    };
+    if !can_edit {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(PlaylistAccess {
+        owner_user_id,
+        can_edit,
+    })
+}
+
+async fn ensure_editable_entries_visible(
+    state: &AppState,
+    tx: &mut Transaction<'_, Postgres>,
+    user: &UserRecord,
+    playlist_id: Uuid,
+    access: &PlaylistAccess,
+) -> Result<(), ApiError> {
+    if access.owner_user_id == user.id {
+        return Ok(());
+    }
+    ensure_playback_allowed(user)?;
+    // A recipient sees a filtered queue. Reject whole-queue mutations when
+    // that view omits entries rather than deleting or reordering hidden media.
+    for entry in read_entries(tx, playlist_id).await? {
+        let item = db::get_item(&state.db, entry.item_id)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+        if item.item_type != "Audio" || !db::item_visible_to_user(&state.db, user, &item).await? {
+            return Err(ApiError::Forbidden);
+        }
+    }
+    Ok(())
+}
+
+fn validate_playlist_users(
+    owner_id: Uuid,
+    users: &[PlaylistUserPermission],
+) -> Result<(), ApiError> {
+    if users.len() > MAX_PLAYLIST_USERS {
+        return Err(ApiError::BadRequest(
+            "Playlist cannot have more than 1000 shared users".to_owned(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for permission in users {
+        if !seen.insert(permission.user_id) {
+            return Err(ApiError::BadRequest(
+                "Playlist users must be unique".to_owned(),
+            ));
+        }
+        if permission.user_id == owner_id && !permission.can_edit {
+            return Err(ApiError::BadRequest(
+                "The playlist owner retains edit access".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn persist_playlist_users(
+    tx: &mut Transaction<'_, Postgres>,
+    playlist_id: Uuid,
+    owner_id: Uuid,
+    users: &[PlaylistUserPermission],
+) -> Result<(), ApiError> {
+    let ids = users
+        .iter()
+        .filter(|permission| permission.user_id != owner_id)
+        .map(|permission| permission.user_id)
+        .collect::<Vec<_>>();
+    let existing = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM users WHERE id=ANY($1) AND disabled=FALSE FOR KEY SHARE",
+    )
+    .bind(&ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    if existing.len() != ids.len() {
+        return Err(ApiError::BadRequest(
+            "Unknown or disabled playlist user".to_owned(),
+        ));
+    }
+    sqlx::query("DELETE FROM playlist_users WHERE playlist_id=$1")
+        .bind(playlist_id)
+        .execute(&mut **tx)
+        .await?;
+    for permission in users
+        .iter()
+        .filter(|permission| permission.user_id != owner_id)
+    {
+        sqlx::query("INSERT INTO playlist_users(playlist_id,user_id,can_edit) VALUES ($1,$2,$3)")
+            .bind(playlist_id)
+            .bind(permission.user_id)
+            .bind(permission.can_edit)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn read_playlist_users(
+    state: &AppState,
+    playlist_id: Uuid,
+) -> Result<Vec<PlaylistUserPermission>, ApiError> {
+    Ok(sqlx::query_as::<_, PlaylistUserPermission>(
+        "SELECT user_id,can_edit FROM playlist_users WHERE playlist_id=$1 ORDER BY user_id",
+    )
+    .bind(playlist_id)
+    .fetch_all(&state.db)
+    .await?)
+}
+
+async fn get_playlist_users(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(playlist_id): Path<Uuid>,
+) -> Result<Json<Vec<PlaylistUserPermission>>, ApiError> {
+    let access = playlist_access(&state, &user, playlist_id).await?;
+    if access.owner_user_id != user.id {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(Json(read_playlist_users(&state, playlist_id).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdatePlaylistUserRequest {
+    #[serde(default, rename = "CanEdit", alias = "canEdit")]
+    can_edit: Option<bool>,
+}
+
+async fn update_playlist_user(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((playlist_id, user_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<UpdatePlaylistUserRequest>,
+) -> Result<StatusCode, ApiError> {
+    let access = playlist_access(&state, &user, playlist_id).await?;
+    if access.owner_user_id != user.id {
+        return Err(ApiError::Forbidden);
+    }
+    let mut tx = state.db.begin().await?;
+    lock_owned_playlist(&mut tx, &user, playlist_id).await?;
+    let mut shares = sqlx::query_as::<_, PlaylistUserPermission>(
+        "SELECT user_id,can_edit FROM playlist_users WHERE playlist_id=$1 ORDER BY user_id",
+    )
+    .bind(playlist_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    if let Some(can_edit) = body.can_edit {
+        if user_id == user.id {
+            if !can_edit {
+                return Err(ApiError::BadRequest(
+                    "The playlist owner retains edit access".to_owned(),
+                ));
+            }
+        } else if let Some(share) = shares.iter_mut().find(|share| share.user_id == user_id) {
+            share.can_edit = can_edit;
+        } else {
+            shares.push(PlaylistUserPermission { user_id, can_edit });
+        }
+        validate_playlist_users(user.id, &shares)?;
+        persist_playlist_users(&mut tx, playlist_id, user.id, &shares).await?;
+        sqlx::query("UPDATE playlists SET updated_at=NOW() WHERE id=$1")
+            .bind(playlist_id)
+            .execute(&mut *tx)
+            .await?;
+    } else if user_id != user.id && !shares.iter().any(|share| share.user_id == user_id) {
+        return Err(ApiError::NotFound);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_playlist_user(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((playlist_id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    let access = playlist_access(&state, &user, playlist_id).await?;
+    if access.owner_user_id != user.id || user_id == user.id {
+        return Err(ApiError::Forbidden);
+    }
+    let mut tx = state.db.begin().await?;
+    lock_owned_playlist(&mut tx, &user, playlist_id).await?;
+    sqlx::query("DELETE FROM playlist_users WHERE playlist_id=$1 AND user_id=$2")
+        .bind(playlist_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE playlists SET updated_at=NOW() WHERE id=$1")
+        .bind(playlist_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn read_entries(
@@ -992,15 +1272,8 @@ fn ensure_audio_media_type(media_type: Option<&str>) -> Result<(), ApiError> {
     }
 }
 
-fn ensure_private_playlist_request(
-    users: &[PlaylistUserPermission],
-    is_public: Option<bool>,
-) -> Result<(), ApiError> {
-    if !users.is_empty() {
-        Err(ApiError::BadRequest(
-            "Playlist sharing is not supported".to_owned(),
-        ))
-    } else if is_public == Some(true) {
+fn ensure_private_playlist_request(is_public: Option<bool>) -> Result<(), ApiError> {
+    if is_public == Some(true) {
         Err(ApiError::BadRequest(
             "Public playlists are not supported".to_owned(),
         ))

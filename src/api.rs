@@ -2871,7 +2871,7 @@ async fn browse_items(
     }
     if let Some(parent_id) = query.parent_id
         && selected.id == current.id
-        && crate::playlists::owns_playlist(&state, &current, parent_id).await?
+        && crate::playlists::can_read_playlist(&state, &current, parent_id).await?
     {
         crate::playlists::validate_catalog_children_query(raw_query.as_deref())?;
         if entry_sort_requested {
