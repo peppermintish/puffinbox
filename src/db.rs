@@ -42,7 +42,7 @@ pub async fn try_server_instance_lock(pool: &PgPool) -> Result<Option<PgConnecti
     Ok(acquired.then_some(connection))
 }
 
-fn is_folder_item_type(item_type: &str) -> bool {
+pub(crate) fn is_folder_item_type(item_type: &str) -> bool {
     matches!(
         item_type,
         "Folder"
@@ -2123,6 +2123,15 @@ fn push_item_conditions(
                 .push(") ");
         }
         builder.push(") ");
+    }
+    if let Some(folder) = query.is_folder {
+        builder
+            .push(if folder {
+                " AND i.item_type IN "
+            } else {
+                " AND i.item_type NOT IN "
+            })
+            .push(FOLDER_ITEM_TYPES_SQL);
     }
     if let Some(played) = query.is_played {
         builder.push(if played {

@@ -1030,10 +1030,35 @@ def run(args: argparse.Namespace) -> int:
     photo = find_item(client, photo_path)
     require(photo is not None, "scanner did not index the synthetic raster photo")
     photo_id = urllib.parse.quote(str(photo.get("Id") or ""))
+    photo_parent = urllib.parse.quote(str(photo.get("ParentId") or ""))
+    require(bool(photo_parent), "photo fixture has no catalog parent")
+    _, _, photo_page = client.json("GET", f"/Users/{admin_user['Id']}/Items?ParentId={photo_parent}&Filters=IsNotFolder&Recursive=false&SortBy=SortName&MediaTypes=Photo,Video&SortOrder=Ascending&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false&CollapseBoxSetItems=false")
+    require([item["Id"] for item in photo_page["Items"]] == [photo["Id"]]
+            and all(item["IsFolder"] is False for item in photo_page["Items"])
+            and "TotalRecordCount" not in photo_page,
+            "official photo viewer query did not select its visible nonfolder fixture")
+    _, _, folder_page = client.json("GET", f"/Items?ParentId={library_id}&IsFolder=true&Recursive=true&Limit=1000")
+    require(folder_page["Items"] and all(item["IsFolder"] is True for item in folder_page["Items"]),
+            "folder selection returned a nonfolder or no synthetic folders")
+    require(client.request("GET", "/Items?IsFolder=true&Filters=IsNotFolder")[0] == 400,
+            "conflicting folder selectors were accepted")
     photo_status, photo_headers, photo_bytes = client.request("GET", f"/Items/{photo_id}/File")
     require(photo_status == 200 and photo_headers.get("Content-Type", "").startswith("image/png") and photo_bytes.startswith(b"\x89PNG\r\n\x1a\n"),
             "safe raster preview did not return the expected PNG bytes and MIME type")
     require(photo_headers.get("X-Content-Type-Options", "").lower() == "nosniff", "raster preview did not include nosniff")
+    primary_status, primary_headers, primary_bytes = client.request("GET", f"/Items/{photo_id}/Images/Primary")
+    require(primary_status == 200 and primary_bytes == photo_bytes
+            and primary_headers.get("Content-Type", "").startswith("image/png")
+            and primary_headers.get("Cache-Control", "").lower() == "private, no-store",
+            "primary photo route did not serve the private original raster")
+    primary_head, head_headers, head_bytes = client.request("HEAD", f"/Items/{photo_id}/Images/Primary")
+    require(primary_head == 200 and not head_bytes
+            and head_headers.get("Content-Length") == str(len(photo_bytes)),
+            "primary photo HEAD did not preserve original metadata")
+    range_status, range_headers, range_bytes = client.request("GET", f"/Items/{photo_id}/Images/Primary", headers={"Range": "bytes=1-5"})
+    require(range_status == 206 and range_bytes == photo_bytes[1:6]
+            and range_headers.get("Content-Range") == f"bytes 1-5/{len(photo_bytes)}",
+            "primary photo range did not return the selected original bytes")
     download_status, download_headers, _ = client.request("GET", f"/Items/{photo_id}/Download")
     require(download_status == 200 and download_headers.get("Content-Disposition", "").lower().startswith("attachment"),
             "explicit photo download was not forced to an attachment")

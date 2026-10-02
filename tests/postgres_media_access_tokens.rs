@@ -175,6 +175,37 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
         "the existing HttpOnly session cookie must authorize media-file delivery"
     );
 
+    let cookie_primary = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/Items/{item_id}/Images/Primary"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cookie_primary.status(), axum::http::StatusCode::OK);
+    assert_eq!(cookie_primary.headers()["content-type"], "image/png");
+    assert_eq!(
+        cookie_primary.headers()["cache-control"],
+        "private, no-store"
+    );
+    assert_eq!(
+        cookie_primary.headers()["x-content-type-options"],
+        "nosniff"
+    );
+    assert_eq!(
+        cookie_primary
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes(),
+        media_bytes.as_slice()
+    );
+
     let origin = "http://media.example";
     let minted = router
         .clone()
@@ -196,6 +227,162 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
     let minted_body = minted.into_body().collect().await.unwrap().to_bytes();
     let minted_body: serde_json::Value = serde_json::from_slice(&minted_body).unwrap();
     let media_token = minted_body["AccessToken"].as_str().unwrap().to_owned();
+    for credential in [&parent_session.token, &media_token] {
+        for method in ["GET", "HEAD"] {
+            let image = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(format!(
+                            "/Items/{item_id}/Images/Primary?ApiKey={credential}"
+                        ))
+                        .header("range", "bytes=1-5")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(image.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+            assert_eq!(image.headers()["content-type"], "image/png");
+            assert_eq!(image.headers()["content-length"], "5");
+            assert_eq!(image.headers()["referrer-policy"], "no-referrer");
+            let bytes = image.into_body().collect().await.unwrap().to_bytes();
+            if method == "GET" {
+                assert_eq!(bytes, &media_bytes[1..6]);
+            } else {
+                assert!(bytes.is_empty());
+            }
+        }
+    }
+    let anonymous_image = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/Items/{item_id}/Images/Primary"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        anonymous_image.status(),
+        axum::http::StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        anonymous_image.headers()["cache-control"],
+        "private, no-store"
+    );
+    let conflicting_image = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/Items/{item_id}/Images/Primary?ApiKey={media_token}"
+                ))
+                .header("x-emby-token", &peer_session.token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        conflicting_image.status(),
+        axum::http::StatusCode::UNAUTHORIZED
+    );
+    let unsafe_id = Uuid::new_v4();
+    let unsafe_path = media_root.join("legacy.svg");
+    fs::write(
+        &unsafe_path,
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+    )
+    .unwrap();
+    sqlx::query("INSERT INTO items(id,library_id,name,sort_name,item_type,path,path_hash) VALUES ($1,$2,'legacy.svg','legacy.svg','Photo',$3,$4)")
+        .bind(unsafe_id).bind(library_id).bind(unsafe_path.to_str().unwrap())
+        .bind(db::path_hash(unsafe_path.to_str().unwrap())).execute(&pool).await.unwrap();
+    let unsafe_image = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/Items/{unsafe_id}/Images/Primary?ApiKey={media_token}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unsafe_image.status(), axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(unsafe_image.headers()["cache-control"], "private, no-store");
+    sqlx::query("UPDATE users SET allow_media_playback=FALSE WHERE id=$1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let blocked_image = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/Items/{item_id}/Images/Primary?ApiKey={media_token}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked_image.status(), axum::http::StatusCode::FORBIDDEN);
+    sqlx::query("UPDATE users SET allow_media_playback=TRUE WHERE id=$1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let restricted_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,username,username_norm,password_hash,enable_remote_access,restrict_libraries) VALUES ($1,'photo-viewer','photo-viewer','unused',TRUE,TRUE)")
+        .bind(restricted_id).execute(&pool).await.unwrap();
+    let restricted_user = db::get_user(&pool, restricted_id).await.unwrap().unwrap();
+    let restricted_session = auth::issue_token(
+        &state,
+        &restricted_user,
+        "test",
+        "photo-viewer",
+        "photo-device",
+    )
+    .await
+    .unwrap();
+    for (allowed, expected) in [
+        (false, axum::http::StatusCode::NOT_FOUND),
+        (true, axum::http::StatusCode::OK),
+        (false, axum::http::StatusCode::NOT_FOUND),
+    ] {
+        if allowed {
+            sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES ($1,$2)")
+                .bind(restricted_id)
+                .bind(library_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        } else {
+            sqlx::query("DELETE FROM user_library_access WHERE user_id=$1 AND library_id=$2")
+                .bind(restricted_id)
+                .bind(library_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let image = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/Items/{item_id}/Images/Primary"))
+                    .header("x-emby-token", &restricted_session.token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(image.status(), expected);
+    }
     for method in ["GET", "HEAD"] {
         let audio_uri = format!("/Audio/{item_id}/universal?Container=flac&ApiKey={media_token}");
         let response = router
@@ -307,6 +494,19 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
         .execute(&pool)
         .await
         .unwrap();
+    let disabled_image = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/Items/{item_id}/Images/Primary?ApiKey={media_token}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled_image.status(), axum::http::StatusCode::NOT_FOUND);
     let denied = router
         .clone()
         .oneshot(
@@ -587,6 +787,22 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
         .await
         .unwrap();
     assert_eq!(after_logout.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let after_logout_image = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/Items/{item_id}/Images/Primary?ApiKey={media_token}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        after_logout_image.status(),
+        axum::http::StatusCode::UNAUTHORIZED
+    );
     let after_logout_audio = router
         .clone()
         .oneshot(

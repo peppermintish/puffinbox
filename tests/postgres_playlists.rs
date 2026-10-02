@@ -297,6 +297,8 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
     for query in [
         "SortBy=Name",
         "Filters=IsFavorite",
+        "Filters=IsFolder",
+        "Filters=IsNotFolder",
         "SearchTerm=First",
         "Ids=invalid",
         "ExcludeLocationTypes=FileSystem",
@@ -444,6 +446,8 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
     for query in [
         "Filters=IsFavorite",
         "IsPlayed=false",
+        "Filters=IsFolder",
+        "Filters=IsNotFolder",
         "Genres=Rock",
         "Tags=Road",
         "SortBy=LastPlayedDate",

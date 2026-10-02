@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::Response,
     routing::get,
 };
@@ -18,7 +18,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
-    auth::{AdminUser, CurrentUser, UserRecord},
+    auth::{AdminUser, CurrentUser, MediaUser, UserRecord},
     db,
     error::ApiError,
     library::ItemRecord,
@@ -45,7 +45,7 @@ pub fn router(state: AppState) -> Router<()> {
             "/Puffinbox/Metadata/Items/{item_id}/Artwork",
             get(get_item_artwork),
         )
-        .route("/Items/{item_id}/Images/Primary", get(get_item_artwork))
+        .route("/Items/{item_id}/Images/Primary", get(get_primary_image))
         .with_state(state)
 }
 
@@ -305,6 +305,33 @@ async fn get_item_metadata(
             providers,
         }),
     ))
+}
+
+async fn get_primary_image(
+    State(state): State<AppState>,
+    MediaUser(user): MediaUser,
+    Path(item_id): Path<Uuid>,
+    method: Method,
+    request_headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let item = authorized_item(&state, &user, item_id).await?;
+    if item.item_type == "Photo" {
+        return crate::media_features::stream_photo(
+            &state,
+            &user,
+            item_id,
+            &method,
+            &request_headers,
+        )
+        .await;
+    }
+    get_item_artwork(
+        State(state),
+        CurrentUser(user),
+        Path(item_id),
+        request_headers,
+    )
+    .await
 }
 
 async fn get_item_artwork(

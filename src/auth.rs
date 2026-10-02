@@ -198,6 +198,7 @@ fn scoped_media_route(parts: &axum::http::request::Parts) -> bool {
     let valid_id = |value: &&str| Uuid::parse_str(value).is_ok();
     match segments.as_slice() {
         ["Items", item_id, "File"] => valid_id(item_id),
+        ["Items", item_id, "Images", "Primary"] => valid_id(item_id),
         ["Videos", item_id, "stream"] | ["Audio", item_id, "stream"] => valid_id(item_id),
         ["Videos", item_id, resource] | ["Audio", item_id, resource]
             if resource
@@ -1326,6 +1327,7 @@ mod tests {
         for path in [
             format!("/Audio/{item_id}/stream.flac"),
             format!("/Videos/{item_id}/stream.mp4"),
+            format!("/Items/{item_id}/Images/Primary"),
         ] {
             file.uri = path.parse().unwrap();
             assert!(scoped_media_route(&file));
@@ -1347,6 +1349,15 @@ mod tests {
         }
         file.uri = "/Audio/not-an-id/universal".parse().unwrap();
         assert!(!scoped_media_route(&file));
+        for path in [
+            "/Items/not-an-id/Images/Primary".to_owned(),
+            format!("/Items/{item_id}/Images/Backdrop"),
+            format!("/Items/{item_id}/Images/Primary/extra"),
+            format!("/Puffinbox/Metadata/Items/{item_id}/Artwork"),
+        ] {
+            file.uri = path.parse().unwrap();
+            assert!(!scoped_media_route(&file));
+        }
         file.uri = format!("/Videos/{item_id}/hls/{session_id}/playlist.m3u8")
             .parse()
             .unwrap();

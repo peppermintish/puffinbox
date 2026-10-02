@@ -241,7 +241,8 @@ pub(crate) async fn catalog_children_result(
     query: ItemQuery,
 ) -> Result<Response, ApiError> {
     ensure_owned(state, user, playlist_id).await?;
-    if query.is_played.is_some()
+    if query.is_folder.is_some()
+        || query.is_played.is_some()
         || query.is_favorite
         || query.is_resumable
         || query.search_term.is_some()
@@ -330,6 +331,7 @@ pub(crate) async fn catalog_result(
         }
     }
     if query.include_item_types.len() != 1
+        || query.is_folder.is_some()
         || query.is_played.is_some()
         || query.is_favorite
         || query.is_resumable

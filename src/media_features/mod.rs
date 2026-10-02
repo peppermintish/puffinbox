@@ -230,6 +230,25 @@ async fn stream_file(
     stream_resolved(media, &headers, &method, false).await
 }
 
+/// Deliver a raster photo through the same confined reader and admission
+/// limits as the original-file endpoint. Primary images do not imply that an
+/// arbitrary file can be rendered inline.
+pub(crate) async fn stream_photo(
+    state: &AppState,
+    user: &UserRecord,
+    item_id: Uuid,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let media = authorized_media(state, user, item_id).await?;
+    if media.item.item_type != "Photo"
+        || !content_type_for(&media.absolute_path).starts_with("image/")
+    {
+        return Err(ApiError::NotFound);
+    }
+    stream_resolved(media, headers, method, false).await
+}
+
 async fn download_item(
     State(state): State<AppState>,
     MediaUser(user): MediaUser,

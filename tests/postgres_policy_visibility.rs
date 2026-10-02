@@ -999,6 +999,7 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
     assert_eq!(song_json["ArtistItems"][0]["Id"], artist.id.to_string());
     assert_eq!(song_json["IndexNumber"], 1);
 
+    verify_folder_filters(&router, &pool, run_id, user_id, token).await;
     drop(router);
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
@@ -1006,6 +1007,271 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
         .await
         .unwrap();
     admin_pool.close().await;
+}
+
+async fn verify_folder_filters(
+    router: &axum::Router,
+    pool: &PgPool,
+    run_id: Uuid,
+    user_id: Uuid,
+    token: &str,
+) {
+    let library_id = Uuid::new_v4();
+    db::insert_library(
+        pool,
+        run_id,
+        library_id,
+        "Folder filter fixture",
+        "photos",
+        &[PathBuf::from("/photos")],
+        true,
+    )
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES ($1,$2)")
+        .bind(user_id)
+        .bind(library_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let mut folders = Vec::new();
+    for kind in [
+        "Folder",
+        "CollectionFolder",
+        "Season",
+        "BoxSet",
+        "Series",
+        "MusicArtist",
+        "MusicAlbum",
+    ] {
+        let folder = insert_item(
+            pool,
+            library_id,
+            None,
+            &format!("00 {kind}"),
+            kind,
+            &format!("/photos/{kind}"),
+            None,
+        )
+        .await;
+        insert_item(
+            pool,
+            library_id,
+            Some(folder.id),
+            "Nested photo",
+            "Photo",
+            &format!("/photos/{kind}/nested.png"),
+            None,
+        )
+        .await;
+        folders.push(folder.id.to_string());
+    }
+    let first = insert_item(
+        pool,
+        library_id,
+        None,
+        "01 Photo",
+        "Photo",
+        "/photos/first.png",
+        None,
+    )
+    .await;
+    let second = insert_item(
+        pool,
+        library_id,
+        None,
+        "02 Photo",
+        "Photo",
+        "/photos/second.png",
+        None,
+    )
+    .await;
+    let video = insert_item(
+        pool,
+        library_id,
+        None,
+        "03 Video",
+        "Movie",
+        "/photos/video.mp4",
+        Some(40),
+    )
+    .await;
+    set_local_policy_rating(pool, video.id, "PG", 40).await;
+    let blocked = insert_item(
+        pool,
+        library_id,
+        None,
+        "00 Blocked",
+        "Photo",
+        "/photos/blocked.png",
+        Some(100),
+    )
+    .await;
+    set_local_policy_rating(pool, blocked.id, "R", 100).await;
+    insert_item(
+        pool,
+        library_id,
+        None,
+        "00 Hidden",
+        "Photo",
+        "/photos/.hidden.png",
+        None,
+    )
+    .await;
+    let blocked_folder = insert_item(
+        pool,
+        library_id,
+        None,
+        "00 Blocked folder",
+        "Folder",
+        "/photos/blocked",
+        None,
+    )
+    .await;
+    let blocked_child = insert_item(
+        pool,
+        library_id,
+        Some(blocked_folder.id),
+        "Blocked child",
+        "Photo",
+        "/photos/blocked/child.png",
+        Some(100),
+    )
+    .await;
+    set_local_policy_rating(pool, blocked_child.id, "R", 100).await;
+
+    // Match the official photo viewer's request, including filters before paging.
+    let (status, page) = get_json(router, &format!("/Users/{user_id}/Items?ParentId={library_id}&Filters=IsNotFolder&Recursive=false&SortBy=SortName&MediaTypes=Photo,Video&SortOrder=Ascending&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&CollapseBoxSetItems=false&StartIndex=1&Limit=1"), token).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(page["TotalRecordCount"], 3);
+    assert_eq!(page["StartIndex"], 1);
+    assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["Items"][0]["Id"], second.id.to_string());
+    assert_eq!(page["Items"][0]["IsFolder"], false);
+    for selection in [
+        "Filters=IsNotFolder",
+        "IsFolder=false",
+        "isFolder=false&filters=isnotfolder",
+    ] {
+        let (status, result) = get_json(router, &format!("/Items?ParentId={library_id}&{selection}&MediaTypes=Photo&Recursive=false&SortBy=SortName"), token).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(result["TotalRecordCount"], 2);
+        assert_eq!(result["Items"][0]["Id"], first.id.to_string());
+        assert_eq!(result["Items"][1]["Id"], second.id.to_string());
+    }
+    let (status, result) = get_json(router, &format!("/Items?ParentId={library_id}&Filters=IsNotFolder&MediaTypes=Photo&Recursive=true&EnableTotalRecordCount=false"), token).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert!(result.get("TotalRecordCount").is_none());
+    assert_eq!(result["Items"].as_array().unwrap().len(), 9);
+    assert!(
+        result["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["IsFolder"] == false)
+    );
+    for selection in ["Filters=IsFolder", "IsFolder=true&Filters=isfolder"] {
+        let (status, result) = get_json(
+            router,
+            &format!("/Items?ParentId={library_id}&{selection}&Recursive=true"),
+            token,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(result["TotalRecordCount"], 7);
+        let mut actual = result["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                assert_eq!(item["IsFolder"], true);
+                item["Id"].as_str().unwrap().to_owned()
+            })
+            .collect::<Vec<_>>();
+        actual.sort();
+        folders.sort();
+        assert_eq!(actual, folders);
+    }
+    let (status, result) = get_json(
+        router,
+        &format!("/Items?ParentId={library_id}&Filters=IsFolder&MediaTypes=Photo&Recursive=true"),
+        token,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(result["TotalRecordCount"], 0);
+    assert!(result["Items"].as_array().unwrap().is_empty());
+    for selection in [
+        "Filters=IsFolder,IsNotFolder",
+        "Filters=IsNotFolder,IsFolder",
+        "IsFolder=true&Filters=IsNotFolder",
+        "isFolder=false&filters=isfolder",
+        "Filters=Likes",
+        "IsFolder=invalid",
+    ] {
+        assert_eq!(
+            get_status(
+                router,
+                &format!("/Items?ParentId={library_id}&{selection}"),
+                token
+            )
+            .await,
+            axum::http::StatusCode::BAD_REQUEST
+        );
+    }
+    let private_library = Uuid::new_v4();
+    db::insert_library(
+        pool,
+        run_id,
+        private_library,
+        "Private photos",
+        "photos",
+        &[PathBuf::from("/private-photos")],
+        true,
+    )
+    .await
+    .unwrap();
+    insert_item(
+        pool,
+        private_library,
+        None,
+        "Private photo",
+        "Photo",
+        "/private-photos/private.png",
+        None,
+    )
+    .await;
+    assert_eq!(
+        get_status(
+            router,
+            &format!("/Items?ParentId={private_library}&Filters=IsNotFolder"),
+            token
+        )
+        .await,
+        axum::http::StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(library_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        get_status(
+            router,
+            &format!("/Items?ParentId={library_id}&Filters=IsNotFolder"),
+            token
+        )
+        .await,
+        axum::http::StatusCode::NOT_FOUND
+    );
+    let (status, result) = get_json(
+        router,
+        "/Items?Filters=IsNotFolder&MediaTypes=Photo&Recursive=true",
+        token,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(result["TotalRecordCount"], 0);
 }
 
 async fn insert_item(

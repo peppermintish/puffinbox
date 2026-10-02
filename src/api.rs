@@ -203,6 +203,10 @@ async fn add_response_security_headers(
     let is_media_token_exchange = request.uri().path() == "/Users/Me/MediaAccessToken";
     let is_catalog_filter = matches!(request.uri().path(), "/Items/Filters" | "/Items/Filters2");
     let path = request.uri().path();
+    let is_private_image = path.strip_prefix("/Items/").is_some_and(|tail| {
+        tail.split_once('/')
+            .is_some_and(|(id, route)| id.parse::<Uuid>().is_ok() && route == "Images/Primary")
+    });
     let is_private_catalog = path == "/Items"
         || path == "/Playlists"
         || path.starts_with("/Playlists/")
@@ -254,7 +258,9 @@ async fn add_response_security_headers(
             .headers_mut()
             .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     }
-    if is_private_catalog {
+    if is_private_catalog
+        || (is_private_image && !response.headers().contains_key(header::CACHE_CONTROL))
+    {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static("private, no-store"),
@@ -2330,6 +2336,8 @@ pub(crate) struct ItemsQueryParams {
     sort_order: Option<String>,
     #[serde(default, rename = "IsPlayed", alias = "isPlayed")]
     is_played: Option<bool>,
+    #[serde(default, rename = "IsFolder", alias = "isFolder")]
+    is_folder: Option<bool>,
     #[serde(default, rename = "Filters", alias = "filters")]
     filters: Option<String>,
     #[serde(default, rename = "UserId", alias = "userId")]
@@ -2467,16 +2475,7 @@ fn item_dto(
             .and_then(|metadata| metadata.name.clone())
             .unwrap_or_else(|| item.name.clone()),
         item_type: item.item_type.clone(),
-        is_folder: matches!(
-            item.item_type.as_str(),
-            "Folder"
-                | "CollectionFolder"
-                | "Season"
-                | "BoxSet"
-                | "Series"
-                | "MusicArtist"
-                | "MusicAlbum"
-        ),
+        is_folder: db::is_folder_item_type(&item.item_type),
         media_type: crate::library::MediaType::for_item_type(&item.item_type)
             .map(crate::library::MediaType::name),
         parent_id: item.parent_id,
@@ -2621,6 +2620,7 @@ pub(crate) fn item_query(
         ));
     }
     let mut is_played = params.is_played;
+    let mut is_folder = params.is_folder;
     let mut is_favorite = false;
     let mut is_resumable = false;
     if let Some(filters) = params.filters {
@@ -2630,6 +2630,15 @@ pub(crate) fn item_query(
             .filter(|value| !value.is_empty())
         {
             match filter.to_ascii_lowercase().as_str() {
+                "isfolder" | "isnotfolder" => {
+                    let folder = filter.eq_ignore_ascii_case("IsFolder");
+                    if is_folder.is_some_and(|current| current != folder) {
+                        return Err(ApiError::BadRequest(
+                            "Filters conflicts with IsFolder".to_owned(),
+                        ));
+                    }
+                    is_folder = Some(folder);
+                }
                 "isplayed" => {
                     if is_played == Some(false) {
                         return Err(ApiError::BadRequest(
@@ -2668,6 +2677,7 @@ pub(crate) fn item_query(
         enable_total_record_count: params.enable_total_record_count,
         sort_by,
         sort_order,
+        is_folder,
         is_played,
         is_favorite,
         is_resumable,
@@ -2960,6 +2970,7 @@ async fn latest_items(
         enable_total_record_count: false,
         sort_by: "DateCreated".to_owned(),
         sort_order: "Descending".to_owned(),
+        is_folder: None,
         is_played: params.is_played,
         is_favorite: false,
         is_resumable: false,
@@ -3008,6 +3019,7 @@ async fn resume_items(
         enable_total_record_count: true,
         sort_by: "LastPlayedDate".to_owned(),
         sort_order: "Descending".to_owned(),
+        is_folder: None,
         is_played: None,
         is_favorite: false,
         is_resumable: true,
@@ -3055,6 +3067,7 @@ async fn show_seasons(
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        is_folder: None,
         is_played: None,
         is_favorite: false,
         is_resumable: false,
@@ -3093,6 +3106,7 @@ async fn show_episodes(
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        is_folder: None,
         is_played: None,
         is_favorite: false,
         is_resumable: false,
@@ -3255,6 +3269,7 @@ async fn list_music_persons(
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        is_folder: None,
         is_played: None,
         is_favorite: false,
         is_resumable: false,
@@ -3468,6 +3483,7 @@ async fn list_music_artists(
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        is_folder: None,
         is_played: None,
         is_favorite: false,
         is_resumable: false,
@@ -3707,6 +3723,7 @@ async fn search_hints(
         enable_total_record_count: true,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
+        is_folder: None,
         is_played: None,
         is_favorite: false,
         is_resumable: false,

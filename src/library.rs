@@ -65,6 +65,7 @@ pub struct ItemQuery {
     pub enable_total_record_count: bool,
     pub sort_by: String,
     pub sort_order: String,
+    pub is_folder: Option<bool>,
     pub is_played: Option<bool>,
     pub is_favorite: bool,
     pub is_resumable: bool,
