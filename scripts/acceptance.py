@@ -296,6 +296,14 @@ def verify_direct_play_acceptance(client: HttpClient, fixture_path: Path, timeou
     require(video_codec == "h264" and audio_codec == "aac",
             f"PlaybackInfo codecs were video={video_codec!r}, audio={audio_codec!r}; expected H.264/AAC")
 
+    resumed = client.json("POST", f"/Items/{quoted_item_id}/PlaybackInfo", {
+        "DeviceProfile": device_profile, "StartTimeTicks": 12_345_678, "EnableTranscoding": False,
+    })[2]["MediaSources"][0]
+    require(resumed.get("SupportsDirectPlay") is True and resumed.get("DirectStreamUrl") == source.get("DirectStreamUrl"),
+            "resuming a matching MP4 source lost its original-file direct playback URL")
+    require(resumed.get("RunTimeTicks") == source.get("RunTimeTicks"),
+            "direct playback resume changed the source timeline duration")
+
     expected_bytes = fixture_path.read_bytes()
     total_length = len(expected_bytes)
     require(total_length > 128, "synthetic direct-play MP4 is too small for a useful byte-range check")
@@ -746,6 +754,12 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
     track = next((entry for entry in tracks if entry.get("Name") in (fixture.name, fixture.stem)), None)
     require(track is not None, "FLAC audio fixture was not indexed")
     item_id = str(track["Id"])
+    resumed = client.json("POST", f"/Items/{urllib.parse.quote(item_id)}/PlaybackInfo", {
+        "DeviceProfile": {"DirectPlayProfiles": [{"Type": "Audio", "Container": "flac", "AudioCodec": "flac"}]},
+        "StartTimeTicks": 50_000_000, "EnableTranscoding": False,
+    })[2]["MediaSources"][0]
+    require(resumed.get("SupportsDirectPlay") is True and resumed.get("DirectStreamUrl") == f"/Audio/{item_id}/stream",
+            "resuming a matching FLAC source lost its original-file direct playback URL")
     path = f"/Audio/{urllib.parse.quote(item_id)}/universal"
     options = "?Container=flac&MaxStreamingBitrate=1911466591&StartTimeTicks=0&TranscodingContainer=mp4&TranscodingProtocol=hls&AudioCodec=aac"
     source = fixture.read_bytes()
@@ -1122,6 +1136,23 @@ def run(args: argparse.Namespace) -> int:
     require(source.get("TranscodingContainer") == "ts", "PlaybackInfo does not identify its MPEG-TS HLS segments")
     require(source.get("DefaultAudioStreamIndex") == audio_index, "PlaybackInfo does not preserve the selected audio track")
     require(source.get("DefaultSubtitleStreamIndex") == subtitle_index, "PlaybackInfo does not preserve the selected subtitle track")
+
+    # Native decoders do not share the authenticated web view's cookie jar.
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(transcode_url).query)
+    require(len(query.get("ApiKey", [])) == 1, "negotiated HLS URL omitted its scoped media credential")
+    native = HttpClient(base_url)
+    native_status, native_headers, native_master = native.request("GET", transcode_url)
+    require(native_status == 200 and b"#EXTM3U" in native_master,
+            "negotiated HLS URL could not authenticate a decoder without cookies or headers")
+    require(native_headers.get("Cache-Control") == "private, no-store", "native HLS master omitted private cache controls")
+    native_variant = next((line for line in native_master.decode("utf-8").splitlines() if line.startswith("/") and "playlist.m3u8" in line), None)
+    require(native_variant is not None, "native HLS master omitted its media variant")
+    status, _, native_playlist = native.request("GET", native_variant)
+    require(status == 200 and b"#EXTM3U" in native_playlist, "native HLS variant lost its scoped credential")
+    native_segment = next((line for line in native_playlist.decode("utf-8").splitlines() if line.startswith("/") and ".ts?" in line), None)
+    require(native_segment is not None, "native HLS variant omitted authenticated segments")
+    status, _, native_bytes = native.request("GET", native_segment)
+    require(status == 200 and len(native_bytes) > 188, "native HLS segment lost its scoped credential")
 
     master_url = urllib.parse.urljoin(base_url + "/", transcode_url.lstrip("/"))
     status, _, master = client.request("GET", urllib.parse.urlsplit(master_url).path + ("?" + urllib.parse.urlsplit(master_url).query if urllib.parse.urlsplit(master_url).query else ""))

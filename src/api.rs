@@ -209,7 +209,8 @@ async fn add_response_security_headers(
         || path.strip_prefix("/Items/").is_some_and(|tail| {
             tail.parse::<Uuid>().is_ok()
                 || tail.split_once('/').is_some_and(|(id, route)| {
-                    id.parse::<Uuid>().is_ok() && matches!(route, "Ancestors" | "ThemeMedia")
+                    id.parse::<Uuid>().is_ok()
+                        && matches!(route, "Ancestors" | "ThemeMedia" | "PlaybackInfo")
                 })
         })
         || (path.starts_with("/Users/") && (path.contains("/Items/") || path.ends_with("/Items")));

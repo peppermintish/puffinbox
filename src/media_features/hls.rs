@@ -3423,6 +3423,30 @@ mod tests {
         );
         let audio_id = Uuid::new_v4();
         let audio_media = resolved_fixture(&base, &audio_path, audio_id, "Audio");
+        for start_ticks in [0, 12_345_678] {
+            let request = serde_json::from_value(serde_json::json!({
+                "DeviceProfile": {
+                    "DirectPlayProfiles": [{"Type": "Audio", "Container": "flac", "AudioCodec": "flac"}]
+                },
+                "StartTimeTicks": start_ticks,
+                "EnableTranscoding": false
+            }))
+            .unwrap();
+            let response = super::super::playback::negotiate(&state, audio_media.clone(), request)
+                .await
+                .expect("a matching original FLAC remains directly playable at a resume position");
+            let wire = serde_json::to_value(response).unwrap();
+            let source = &wire["MediaSources"][0];
+            assert_eq!(source["SupportsDirectPlay"], true);
+            assert_eq!(source["SupportsTranscoding"], false);
+            assert_eq!(
+                source["DirectStreamUrl"],
+                format!("/Audio/{audio_id}/stream")
+            );
+            // This fixture deliberately has no matching catalog identity.
+            assert!(source["RunTimeTicks"].is_null());
+            assert!(source.get("TranscodingUrl").is_none());
+        }
         let audio_session_id = start_hls(
             &state,
             audio_media,

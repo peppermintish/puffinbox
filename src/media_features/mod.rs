@@ -248,21 +248,47 @@ async fn playback_info(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(item_id): Path<Uuid>,
+    headers: HeaderMap,
     Json(mut request): Json<PlaybackInfoRequest>,
 ) -> Result<Json<PlaybackInfoResponse>, ApiError> {
-    // ApiKey URL propagation is only permitted when it arrived through the
-    // authenticated GET-media query path, never from an arbitrary POST body.
+    // Ignore body credentials. Native decoders cannot forward the web view's
+    // cookies or headers, so returned HLS URLs use a read-only child of the
+    // authenticated session instead of exposing its general-purpose token.
     request.api_key = None;
     if let Some(item) = db::get_item(&state.db, item_id).await?
         && item.item_type == "LiveTvChannel"
     {
-        let info =
+        let mut info =
             livetv_runtime::playback_info(&state, &user, item_id, item.name, &request).await?;
+        authorize_playback_urls(&state, &user, &headers, &mut info).await?;
         return Ok(Json(info));
     }
     let media = authorized_media(&state, &user, item_id).await?;
-    let info = playback::negotiate(&state, media, request).await?;
+    let mut info = playback::negotiate(&state, media, request).await?;
+    authorize_playback_urls(&state, &user, &headers, &mut info).await?;
     Ok(Json(info))
+}
+
+async fn authorize_playback_urls(
+    state: &AppState,
+    user: &UserRecord,
+    headers: &HeaderMap,
+    info: &mut PlaybackInfoResponse,
+) -> Result<(), ApiError> {
+    if !info.has_hls_urls() {
+        return Ok(());
+    }
+    let (token, _) = crate::auth::extract_raw_token(headers)?.ok_or(ApiError::Unauthorized)?;
+    let (parent_id, parent_user) =
+        db::active_auth_identity(&state.db, &crate::auth::token_digest(&token))
+            .await?
+            .ok_or(ApiError::Unauthorized)?;
+    if parent_user.id != user.id {
+        return Err(ApiError::Unauthorized);
+    }
+    let media_token = crate::auth::issue_media_access_token(state, parent_id).await?;
+    info.authorize_hls_urls(&media_token.token);
+    Ok(())
 }
 
 async fn playback_info_get(

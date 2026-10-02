@@ -143,6 +143,29 @@ impl PlaybackInfoResponse {
             .first()
             .is_some_and(|source| source.supports_direct_play)
     }
+
+    pub(super) fn has_hls_urls(&self) -> bool {
+        self.media_sources.iter().any(|source| {
+            source.transcoding_url.is_some()
+                || source
+                    .direct_stream_url
+                    .as_deref()
+                    .is_some_and(|url| url.contains("/master.m3u8?"))
+        })
+    }
+
+    pub(super) fn authorize_hls_urls(&mut self, api_key: &str) {
+        for source in &mut self.media_sources {
+            if let Some(url) = &mut source.transcoding_url {
+                *url = hls::append_api_key(url, Some(api_key));
+            }
+            if let Some(url) = &mut source.direct_stream_url
+                && url.contains("/master.m3u8?")
+            {
+                *url = hls::append_api_key(url, Some(api_key));
+            }
+        }
+    }
 }
 
 /// Reuse the probed PlaybackInfo rules for the universal audio direct path.
@@ -430,8 +453,9 @@ pub(super) async fn negotiate(
             .is_none_or(|index| index == -1);
     let direct = request.enable_direct_play.unwrap_or(true)
         && request.device_profile.as_ref().is_some_and(|profile| {
-            no_start_offset
-                && no_track_selection
+            // Original-file streams preserve the full timeline; the client
+            // seeks to StartTimeTicks using the source's byte-range support.
+            no_track_selection
                 && max_streaming_bitrate
                     .is_none_or(|max| total_bit_rate(&metadata).is_some_and(|rate| rate <= max))
                 && direct_audio_channels_fit(profile, &metadata, request.max_audio_channels)

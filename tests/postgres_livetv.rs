@@ -468,6 +468,133 @@ async fn pinned_iptv_refresh_applies_guide_parental_policy_and_timer_filters() {
     let family_program_id =
         Uuid::parse_str(viewer_programs["Items"][0]["Id"].as_str().unwrap()).unwrap();
 
+    // A native decoder receives the negotiated URL without the web view's
+    // headers or cookie. Live negotiation needs only a configured file here;
+    // HEAD verifies authorization without starting or executing an encoder.
+    let encoder_marker = library_root.join("native-encoder-marker");
+    fs::write(&encoder_marker, b"fixture, never executed").unwrap();
+    let mut native_state = state.clone();
+    let mut native_config = (*state.config).clone();
+    native_config.ffmpeg_path = Some(encoder_marker);
+    native_state.config = Arc::new(native_config);
+    let native_router = api::router(native_state.clone());
+    let native_session = auth::issue_token(
+        &native_state,
+        &viewer,
+        "native-test",
+        "fixture",
+        "native-fixture",
+    )
+    .await
+    .unwrap();
+    let response = native_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/Items/{family_channel_id}/PlaybackInfo"))
+                .header("x-emby-token", &native_session.token)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ApiKey":"untrusted-body-credential"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let playback: Value = serde_json::from_slice(&bytes).unwrap();
+    let url = playback["MediaSources"][0]["TranscodingUrl"]
+        .as_str()
+        .unwrap();
+    let parsed = url::Url::parse(&format!("http://fixture{url}")).unwrap();
+    let child_token = parsed
+        .query_pairs()
+        .find(|(name, _)| name == "ApiKey")
+        .unwrap()
+        .1
+        .into_owned();
+    assert_ne!(child_token, native_session.token);
+    assert_ne!(child_token, "untrusted-body-credential");
+    let (parent_id, child_user) =
+        db::active_media_access_identity(&pool, &auth::token_digest(&child_token))
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(parent_id, native_session.token_id);
+    assert_eq!(child_user.id, viewer_id);
+    assert!(
+        db::active_auth_identity(&pool, &auth::token_digest(&child_token))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let head = native_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        head.status(),
+        StatusCode::OK,
+        "HEAD authenticates the native decoder without starting an HLS session"
+    );
+    let conflicting_parent = native_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(url)
+                .header("x-emby-token", &viewer_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(conflicting_parent.status(), StatusCode::UNAUTHORIZED);
+    for (method, route) in [("GET", "/Users/Me"), ("POST", "/Sessions/Playing")] {
+        let response = native_router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(format!("{route}?ApiKey={child_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    db::revoke_auth_token(
+        &pool,
+        run_id,
+        &auth::token_digest(&native_session.token),
+        viewer_id,
+    )
+    .await
+    .unwrap();
+    let revoked = native_router
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(url)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
     let (no_access_channels_status, no_access_channels) = call_json(
         &router,
         "GET",
