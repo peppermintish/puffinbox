@@ -1,4 +1,4 @@
-//! Direct audio delivery through the public universal-audio resource.
+//! Direct audio and bounded AAC HLS delivery through the universal-audio resource.
 
 use std::collections::HashSet;
 
@@ -9,9 +9,14 @@ use axum::{
 };
 use uuid::Uuid;
 
-use crate::{ApiError, auth::MediaUser, state::AppState};
+use crate::{
+    ApiError,
+    auth::{self, MediaUser},
+    db,
+    state::AppState,
+};
 
-use super::{authorized_media, is_audio_type, playback, stream_resolved};
+use super::{authorized_media, hls, is_audio_type, playback, stream_resolved};
 
 #[derive(Debug, Default)]
 struct AudioRequest {
@@ -22,6 +27,14 @@ struct AudioRequest {
     max_audio_channels: Option<u32>,
     max_audio_sample_rate: Option<u32>,
     max_audio_bit_depth: Option<u32>,
+    start_time_ticks: Option<i64>,
+    audio_codecs: Vec<String>,
+    transcoding_container: Option<String>,
+    transcoding_protocol: Option<String>,
+    transcoding_audio_channels: Option<u32>,
+    audio_bit_rate: Option<u64>,
+    play_session_id: Option<String>,
+    api_key: Option<String>,
 }
 
 pub(super) async fn stream(
@@ -47,7 +60,7 @@ pub(super) async fn stream(
         &state,
         media.clone(),
         playback::audio_direct_request(
-            request.containers,
+            request.containers.clone(),
             request.max_streaming_bitrate,
             request.max_audio_channels,
             request.max_audio_sample_rate,
@@ -55,12 +68,86 @@ pub(super) async fn stream(
         ),
     )
     .await?;
-    if !negotiation.supports_direct_play() {
-        return Err(ApiError::BadRequest(
-            "The source does not fit the requested direct audio formats and limits; universal audio transcoding is not available".to_owned(),
-        ));
+    if negotiation.supports_direct_play() && request.start_time_ticks.unwrap_or_default() == 0 {
+        return stream_resolved(media, &headers, &method, false).await;
     }
-    stream_resolved(media, &headers, &method, false).await
+    let raw_session_id = request.play_session_id.clone();
+    let query_token = request.api_key.clone();
+    let mut options = transcode_options(request)?;
+    if let Some(id) = raw_session_id.filter(|id| !id.is_empty()) {
+        options.play_session_id = if let Ok(uuid) = id.parse() {
+            Some(uuid)
+        } else {
+            let token = auth::extract_raw_token(&headers)?
+                .map(|(token, _)| token)
+                .or(query_token)
+                .ok_or(ApiError::Unauthorized)?;
+            let device_id =
+                db::media_auth_device_id(&state.db, user.id, &auth::token_digest(&token))
+                    .await?
+                    .ok_or(ApiError::Unauthorized)?;
+            crate::api::parse_play_session_id(Some(&id), state.run_id, user.id, &device_id)?
+        };
+    }
+    if method == Method::HEAD {
+        hls::head_master(state, user, item_id, options, hls::MediaKind::Audio).await
+    } else {
+        hls::start_master(state, user, item_id, options, hls::MediaKind::Audio).await
+    }
+}
+
+fn transcode_options(request: AudioRequest) -> Result<hls::HlsOptions, ApiError> {
+    if request.transcoding_protocol.as_deref() != Some("hls")
+        || !matches!(request.transcoding_container.as_deref(), Some("mp4" | "ts"))
+        || !request.audio_codecs.iter().any(|codec| codec == "aac")
+        || request.max_audio_bit_depth.is_some()
+        || request
+            .max_streaming_bitrate
+            .is_some_and(|rate| rate < 32_000)
+    {
+        return Err(ApiError::BadRequest("The source needs conversion; supported universal audio output is AAC HLS in mp4 or ts without a bit-depth constraint".to_owned()));
+    }
+    let channels = request
+        .transcoding_audio_channels
+        .unwrap_or_else(|| request.max_audio_channels.unwrap_or(2).min(2));
+    if !(1..=2).contains(&channels)
+        || request
+            .max_audio_channels
+            .is_some_and(|maximum| channels > maximum)
+        || request.audio_bit_rate.is_some_and(|rate| {
+            !(16_000..=320_000).contains(&rate)
+                || rate
+                    > request
+                        .max_streaming_bitrate
+                        .unwrap_or(2_000_000)
+                        .min(8_000_000)
+                        .saturating_mul(95)
+                        / 100
+        })
+    {
+        return Err(invalid());
+    }
+    let sample_rate = [
+        48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
+    ]
+    .into_iter()
+    .find(|rate| *rate <= request.max_audio_sample_rate.unwrap_or(48_000))
+    .ok_or_else(invalid)?;
+    Ok(hls::HlsOptions {
+        start_time_ticks: request.start_time_ticks,
+        max_streaming_bitrate: request.max_streaming_bitrate,
+        max_audio_channels: Some(channels),
+        audio_bit_rate: request.audio_bit_rate,
+        audio_sample_rate: Some(sample_rate),
+        audio_fmp4: request.transcoding_container.as_deref() == Some("mp4"),
+        api_key: request.api_key,
+        ..Default::default()
+    })
+}
+
+#[cfg(test)]
+pub(super) fn transcode_options_for_test(query: &str) -> hls::HlsOptions {
+    transcode_options(parse_request(Some(query)).unwrap()).unwrap()
 }
 
 fn invalid() -> ApiError {
@@ -141,9 +228,11 @@ fn parse_request(raw: Option<&str>) -> Result<AudioRequest, ApiError> {
                 request.max_audio_bit_depth = Some(positive(&value, i32::MAX as u64)? as u32);
             }
             "starttimeticks" => {
-                if value.parse::<i64>().map_err(|_| invalid())? != 0 {
+                let ticks = value.parse::<i64>().map_err(|_| invalid())?;
+                if ticks < 0 {
                     return Err(invalid());
                 }
+                request.start_time_ticks = Some(ticks);
             }
             "audiocodec" => {
                 if value.split(',').count() > 32 {
@@ -151,19 +240,24 @@ fn parse_request(raw: Option<&str>) -> Result<AudioRequest, ApiError> {
                 }
                 for codec in value.split(',') {
                     token(codec)?;
+                    request.audio_codecs.push(codec.to_ascii_lowercase());
                 }
             }
-            "transcodingcontainer" => token(&value)?,
+            "transcodingcontainer" => {
+                token(&value)?;
+                request.transcoding_container = Some(value.to_ascii_lowercase());
+            }
             "transcodingprotocol" => {
                 if !matches!(value.as_ref(), "http" | "hls") {
                     return Err(invalid());
                 }
+                request.transcoding_protocol = Some(value.into_owned());
             }
             "transcodingaudiochannels" => {
-                positive(&value, 32)?;
+                request.transcoding_audio_channels = Some(positive(&value, 32)? as u32);
             }
             "audiobitrate" => {
-                positive(&value, i32::MAX as u64)?;
+                request.audio_bit_rate = Some(positive(&value, i32::MAX as u64)?);
             }
             "enableremotemedia" | "enableaudiovbrencoding" | "enableredirection" => {
                 if !value.eq_ignore_ascii_case("true") && !value.eq_ignore_ascii_case("false") {
@@ -173,6 +267,11 @@ fn parse_request(raw: Option<&str>) -> Result<AudioRequest, ApiError> {
             "apikey" | "deviceid" | "playsessionid" => {
                 if value.trim().is_empty() || value.len() > 512 {
                     return Err(invalid());
+                }
+                if name.eq_ignore_ascii_case("apikey") {
+                    request.api_key = Some(value.into_owned());
+                } else if name.eq_ignore_ascii_case("playsessionid") {
+                    request.play_session_id = Some(value.into_owned());
                 }
             }
             _ => return Err(invalid()),
@@ -186,7 +285,42 @@ fn parse_request(raw: Option<&str>) -> Result<AudioRequest, ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_request;
+    use super::{parse_request, transcode_options};
+
+    #[test]
+    fn conversion_requires_an_explicit_supported_output_and_respects_limits() {
+        let query = "Container=mp3&TranscodingProtocol=hls&TranscodingContainer=mp4&AudioCodec=mp3,aac&MaxAudioChannels=1&MaxAudioSampleRate=44099&AudioBitRate=64000&MaxStreamingBitrate=96000&StartTimeTicks=12345678";
+        let options = transcode_options(parse_request(Some(query)).unwrap()).unwrap();
+        assert!(options.audio_fmp4);
+        assert_eq!(options.audio_sample_rate, Some(32_000));
+        assert_eq!(options.audio_bit_rate, Some(64_000));
+        assert_eq!(options.max_audio_channels, Some(1));
+        assert_eq!(options.start_time_ticks, Some(12_345_678));
+        for extra in [
+            "TranscodingAudioChannels=2",
+            "MaxAudioBitDepth=16",
+            "EnableRemoteMedia=invalid",
+        ] {
+            assert!(
+                parse_request(Some(&format!("{query}&{extra}")))
+                    .and_then(transcode_options)
+                    .is_err()
+            );
+        }
+        for changed in [
+            query.replace("hls", "http"),
+            query.replace("mp4", "webm"),
+            query.replace("mp3,aac", "mp3"),
+            query.replace("96000", "32000"),
+            query.replace("44099", "7999"),
+        ] {
+            assert!(
+                parse_request(Some(&changed))
+                    .and_then(transcode_options)
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn accepts_audio_sample_rate_and_bit_depth_limits() {
@@ -228,7 +362,7 @@ mod tests {
             "Container=flac%7Caac%7Copus",
             "Container=flac&MaxStreamingBitrate=0",
             "Container=flac&MaxAudioChannels=33",
-            "Container=flac&StartTimeTicks=1",
+            "Container=flac&StartTimeTicks=-1",
             "Container=flac&MaxAudioSampleRate=0",
             "Container=flac&MaxAudioSampleRate=-1",
             "Container=flac&MaxAudioSampleRate=2147483648",

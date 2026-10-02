@@ -1280,7 +1280,7 @@ async fn device_context(
     })
 }
 
-fn parse_play_session_id(
+pub(crate) fn parse_play_session_id(
     raw: Option<&str>,
     run_id: Uuid,
     user_id: Uuid,

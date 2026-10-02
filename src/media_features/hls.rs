@@ -63,21 +63,25 @@ const PROBE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct HlsOptions {
-    play_session_id: Option<Uuid>,
+    pub(super) play_session_id: Option<Uuid>,
     #[serde(default)]
-    stream_copy: bool,
+    pub(super) stream_copy: bool,
     #[serde(default)]
-    full_timeline: bool,
+    pub(super) full_timeline: bool,
     #[serde(alias = "StartTimeTicks")]
-    start_time_ticks: Option<i64>,
-    audio_stream_index: Option<i32>,
-    subtitle_stream_index: Option<i32>,
-    max_streaming_bitrate: Option<u64>,
-    max_audio_channels: Option<u32>,
+    pub(super) start_time_ticks: Option<i64>,
+    pub(super) audio_stream_index: Option<i32>,
+    pub(super) subtitle_stream_index: Option<i32>,
+    pub(super) max_streaming_bitrate: Option<u64>,
+    pub(super) max_audio_channels: Option<u32>,
+    pub(super) audio_bit_rate: Option<u64>,
+    pub(super) audio_sample_rate: Option<u32>,
+    #[serde(default)]
+    pub(super) audio_fmp4: bool,
     // This is only present when an external Jellyfin client explicitly uses
     // the current query-token media auth form. The bundled UI uses cookies.
     #[serde(rename = "ApiKey")]
-    api_key: Option<String>,
+    pub(super) api_key: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -394,7 +398,7 @@ pub(super) async fn audio_master_head(
     head_master(state, user, item_id, options, MediaKind::Audio).await
 }
 
-async fn head_master(
+pub(super) async fn head_master(
     state: AppState,
     user: crate::auth::UserRecord,
     item_id: Uuid,
@@ -438,7 +442,7 @@ async fn head_master(
     Ok(response)
 }
 
-async fn start_master(
+pub(super) async fn start_master(
     state: AppState,
     user: crate::auth::UserRecord,
     item_id: Uuid,
@@ -455,6 +459,7 @@ async fn start_master(
         }
         _ => {}
     }
+    let version = if options.audio_fmp4 { 7 } else { 3 };
     let session_id = start_hls(&state, media, options, kind, user.id).await?;
     let session_path = match kind {
         MediaKind::Video => format!("/Videos/{item_id}/hls/{session_id}"),
@@ -485,8 +490,9 @@ async fn start_master(
     if has_subtitles {
         stream_info.push_str(",SUBTITLES=\"puffin-subtitles\"");
     }
-    let playlist =
-        format!("#EXTM3U\n#EXT-X-VERSION:3\n{subtitle_media}{stream_info}\n{playlist_path}\n");
+    let playlist = format!(
+        "#EXTM3U\n#EXT-X-VERSION:{version}\n{subtitle_media}{stream_info}\n{playlist_path}\n"
+    );
     Ok(text_response(
         playlist,
         "application/vnd.apple.mpegurl",
@@ -507,6 +513,28 @@ async fn start_hls(
     let session_id = options.play_session_id.unwrap_or_else(Uuid::new_v4);
     let mut options = options;
     options.play_session_id = Some(session_id);
+    if (options.audio_fmp4
+        || options.audio_sample_rate.is_some()
+        || options.audio_bit_rate.is_some())
+        && (kind != MediaKind::Audio || options.full_timeline || options.stream_copy)
+    {
+        return Err(ApiError::BadRequest(
+            "These audio output options require an audio transcode without fullTimeline".to_owned(),
+        ));
+    }
+    if options.audio_sample_rate.is_some_and(|rate| {
+        !matches!(
+            rate,
+            8000 | 11025 | 12000 | 16000 | 22050 | 24000 | 32000 | 44100 | 48000
+        )
+    }) || options
+        .audio_bit_rate
+        .is_some_and(|rate| !(16_000..=320_000).contains(&rate))
+    {
+        return Err(ApiError::BadRequest(
+            "Unsupported AAC output rate".to_owned(),
+        ));
+    }
     {
         let mut sessions = manager().sessions.lock().await;
         if let Some(existing) = sessions.get_mut(&session_id) {
@@ -696,7 +724,12 @@ async fn start_hls(
         .max_streaming_bitrate
         .unwrap_or(2_000_000)
         .min(8_000_000);
-    if !options.stream_copy && max_bitrate < 320_000 {
+    let minimum_bitrate = if kind == MediaKind::Audio {
+        32_000
+    } else {
+        320_000
+    };
+    if !options.stream_copy && max_bitrate < minimum_bitrate {
         let _ = fs::remove_dir_all(&directory).await;
         return Err(ApiError::BadRequest(
             "The requested bitrate is too low for the supported HLS profile".to_owned(),
@@ -705,7 +738,15 @@ async fn start_hls(
     let output_channels = options.max_audio_channels.unwrap_or(2).clamp(1, 2);
     let bounded_bitrate = max_bitrate.saturating_mul(95) / 100;
     let audio_bitrate = if selected_audio.is_some() {
-        bounded_bitrate.min(128_000)
+        if options
+            .audio_bit_rate
+            .is_some_and(|rate| rate > bounded_bitrate)
+        {
+            return Err(ApiError::BadRequest(
+                "The requested audio bitrate exceeds the streaming limit".to_owned(),
+            ));
+        }
+        bounded_bitrate.min(options.audio_bit_rate.unwrap_or(128_000))
     } else {
         0
     };
@@ -846,7 +887,11 @@ async fn start_hls(
     .await?;
     let input_fd = sandbox.input_fd().to_string();
     let manifest_path = directory.join("stream.m3u8");
-    let segment_pattern = directory.join("segment%06d.ts");
+    let segment_pattern = directory.join(if options.audio_fmp4 {
+        "segment%06d.m4s"
+    } else {
+        "segment%06d.ts"
+    });
     let mut command = Command::new(sandbox.executable());
     apply_child_limits(
         &mut command,
@@ -918,11 +963,22 @@ async fn start_hls(
                 .arg(format!("{audio_bitrate}"))
                 .arg("-ac")
                 .arg(format!("{output_channels}"));
+            if let Some(rate) = options.audio_sample_rate {
+                command.arg("-ar").arg(rate.to_string());
+            }
         }
     } else {
         command.arg("-an");
     }
     command.arg("-sn").arg("-dn");
+    if options.audio_fmp4 {
+        command.args([
+            "-hls_segment_type",
+            "fmp4",
+            "-hls_fmp4_init_filename",
+            "init.mp4",
+        ]);
+    }
     if source_duration.is_some() {
         command.arg("-t").arg(duration_seconds.to_string());
     }
@@ -1715,13 +1771,37 @@ async fn serve_segment(
     kind: MediaKind,
 ) -> Result<Response, ApiError> {
     let _media = authorized_media(&state, &user, item_id).await?;
+    let fmp4 = {
+        let sessions = manager().sessions.lock().await;
+        let session = sessions
+            .get(&session_id)
+            .filter(|session| {
+                session_matches(session, user.id, item_id, kind)
+                    && session.state != SessionState::Stopping
+            })
+            .ok_or(ApiError::NotFound)?;
+        session.options.audio_fmp4
+    };
+    if segment_name == "init.mp4" && fmp4 {
+        let (directory, _, _, _) = session_directory(item_id, user.id, kind, session_id).await?;
+        return serve_generated_file(directory.join("init.mp4"), "audio/mp4", MAX_SEGMENT_BYTES)
+            .await;
+    }
     let index = parse_segment_name(&segment_name).ok_or(ApiError::NotFound)?;
+    if segment_name.ends_with(".m4s") != fmp4 {
+        return Err(ApiError::NotFound);
+    }
     if let Some(vod) = session_vod(item_id, user.id, kind, session_id).await? {
         return super::vod_hls::segment(vod, index).await;
     }
     let (directory, _, _, _) = session_directory(item_id, user.id, kind, session_id).await?;
-    let path = directory.join(format!("segment{index:06}.ts"));
-    serve_generated_file(path, "video/mp2t", MAX_SEGMENT_BYTES).await
+    let path = directory.join(segment_name);
+    serve_generated_file(
+        path,
+        if fmp4 { "audio/mp4" } else { "video/mp2t" },
+        MAX_SEGMENT_BYTES,
+    )
+    .await
 }
 
 pub(super) async fn subtitle_playlist(
@@ -2146,6 +2226,10 @@ fn rewrite_playlist_with_api_key(
     api_key: Option<&str>,
 ) -> Result<String, ApiError> {
     let source = std::str::from_utf8(bytes).map_err(|_| ApiError::Unavailable)?;
+    let fmp4 = kind == MediaKind::Audio
+        && source
+            .lines()
+            .any(|line| line.trim() == "#EXT-X-MAP:URI=\"init.mp4\"");
     let mut output = String::with_capacity(bytes.len() + 128);
     for line in source.lines() {
         let line = line.trim();
@@ -2182,14 +2266,24 @@ fn rewrite_playlist_with_api_key(
                 return Err(ApiError::Unavailable);
             }
             output.push_str(line);
+        } else if line == "#EXT-X-MAP:URI=\"init.mp4\"" && fmp4 {
+            let path = format!("/Audio/{item_id}/hls/{session_id}/init.mp4");
+            output.push_str(&format!(
+                "#EXT-X-MAP:URI=\"{}\"",
+                append_api_key(&path, api_key)
+            ));
         } else if line.starts_with('#') {
             // Do not pass through URI-bearing or unknown tags from a generated
             // playlist. They could expose a path or redirect media requests.
             return Err(ApiError::Unavailable);
         } else {
             let index = parse_segment_name(line).ok_or(ApiError::Unavailable)?;
+            if line.ends_with(".m4s") != fmp4 {
+                return Err(ApiError::Unavailable);
+            }
+            let extension = if fmp4 { "m4s" } else { "ts" };
             let path = format!(
-                "/{}/{item_id}/hls/{session_id}/segment{index:06}.ts",
+                "/{}/{item_id}/hls/{session_id}/segment{index:06}.{extension}",
                 kind.route_prefix()
             );
             output.push_str(&append_api_key(&path, api_key));
@@ -2213,8 +2307,10 @@ pub(super) fn append_api_key(path: &str, api_key: Option<&str>) -> String {
 }
 
 fn parse_segment_name(value: &str) -> Option<u32> {
-    let leaf = value.rsplit('/').next()?;
-    let digits = leaf.strip_prefix("segment")?.strip_suffix(".ts")?;
+    let numbered = value.strip_prefix("segment")?;
+    let digits = numbered
+        .strip_suffix(".ts")
+        .or_else(|| numbered.strip_suffix(".m4s"))?;
     if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -2419,13 +2515,52 @@ mod tests {
     }
 
     #[test]
+    fn fragmented_audio_rewrites_only_its_fixed_init_and_segment_names() {
+        let item = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        let manifest = b"#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1.5,\nsegment000000.m4s\n#EXT-X-ENDLIST\n";
+        let body = rewrite_playlist_with_api_key(
+            manifest,
+            item,
+            session,
+            MediaKind::Audio,
+            Some("token+/="),
+        )
+        .unwrap();
+        assert!(body.contains(&format!(
+            "#EXT-X-MAP:URI=\"/Audio/{item}/hls/{session}/init.mp4?ApiKey=token%2B%2F%3D\""
+        )));
+        assert!(body.contains(&format!(
+            "/Audio/{item}/hls/{session}/segment000000.m4s?ApiKey=token%2B%2F%3D"
+        )));
+        assert!(rewrite_playlist(manifest, item, session, MediaKind::Video).is_err());
+        for replacement in [
+            "../init.mp4",
+            "https://example.invalid/init.mp4",
+            "init.mp4\",BYTERANGE=\"1@0",
+        ] {
+            let changed = String::from_utf8(manifest.to_vec())
+                .unwrap()
+                .replace("init.mp4", replacement);
+            assert!(rewrite_playlist(changed.as_bytes(), item, session, MediaKind::Audio).is_err());
+        }
+        let mixed = String::from_utf8(manifest.to_vec())
+            .unwrap()
+            .replace("segment000000.m4s", "segment000000.ts");
+        assert!(rewrite_playlist(mixed.as_bytes(), item, session, MediaKind::Audio).is_err());
+    }
+
+    #[test]
     fn segment_names_are_fixed_length_numeric_ids() {
         assert_eq!(parse_segment_name("segment000001.ts"), Some(1));
+        assert_eq!(parse_segment_name("segment000001.m4s"), Some(1));
         for name in [
             "../../secret.ts",
             "segment1.ts",
             "segment000001.m3u8",
             "segment999999.ts",
+            "../segment000001.ts",
+            "https://example.invalid/segment000001.m4s",
         ] {
             assert_eq!(parse_segment_name(name), None);
         }
@@ -3450,7 +3585,7 @@ mod tests {
         }
         let audio_session_id = start_hls(
             &state,
-            audio_media,
+            audio_media.clone(),
             HlsOptions::default(),
             MediaKind::Audio,
             owner_id,
@@ -3462,6 +3597,61 @@ mod tests {
         assert!(audio_manifest.contains("#EXTINF:"));
         assert_segment_codecs(&ffprobe, &find_segment(&audio_directory), false, None, 2).await;
         assert!(super::stop_playback_session(owner_id, audio_id, audio_session_id).await);
+        let fmp4_options = super::super::universal_audio::transcode_options_for_test(
+            "Container=mp3&TranscodingProtocol=hls&TranscodingContainer=mp4&AudioCodec=aac&AudioBitRate=64000&MaxAudioChannels=1&MaxAudioSampleRate=22050&StartTimeTicks=5000000",
+        );
+        let fmp4_session_id = start_hls(
+            &state,
+            audio_media,
+            fmp4_options,
+            MediaKind::Audio,
+            owner_id,
+        )
+        .await
+        .unwrap();
+        let fmp4_directory = wait_for_completed_session(fmp4_session_id).await;
+        let fmp4_manifest = fs::read(fmp4_directory.join("stream.m3u8")).unwrap();
+        let rewritten =
+            rewrite_playlist(&fmp4_manifest, audio_id, fmp4_session_id, MediaKind::Audio).unwrap();
+        assert!(rewritten.contains("#EXT-X-MAP:URI="));
+        assert!(rewritten.contains("segment000000.m4s"));
+        let mut encoded = fs::read(fmp4_directory.join("init.mp4")).unwrap();
+        encoded.extend(fs::read(fmp4_directory.join("segment000000.m4s")).unwrap());
+        let combined = base.join("converted.m4a");
+        fs::write(&combined, encoded).unwrap();
+        let inspected = Command::new(&ffprobe)
+            .env_clear()
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_name,channels,sample_rate:format=duration",
+                "-of",
+                "json",
+            ])
+            .arg(&combined)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            inspected.status.success(),
+            "fragmented AAC did not decode: {}",
+            String::from_utf8_lossy(&inspected.stderr)
+        );
+        let info: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+        assert_eq!(info["streams"][0]["codec_name"], "aac");
+        assert_eq!(info["streams"][0]["sample_rate"], "22050");
+        assert_eq!(info["streams"][0]["channels"], 1);
+        let duration: f64 = info["format"]["duration"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            (1.4..1.65).contains(&duration),
+            "offset was not applied: {duration}"
+        );
+        assert!(super::stop_playback_session(owner_id, audio_id, fmp4_session_id).await);
         let _ = fs::remove_dir_all(base);
     }
 

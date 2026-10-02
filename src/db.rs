@@ -1490,6 +1490,17 @@ pub async fn list_auth_sessions(
         .collect()
 }
 
+/// Resolve the device behind a full or scoped media credential after media
+/// authentication. Revocation and expiry are checked again at this lookup.
+pub async fn media_auth_device_id(
+    pool: &PgPool,
+    user_id: Uuid,
+    token_hash: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT t.device_id FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.user_id=$1 AND t.revoked_at IS NULL AND t.expires_at>NOW() AND u.disabled=FALSE AND t.id IN (SELECT id FROM auth_tokens WHERE token_hash=$2 UNION SELECT parent_token_id FROM media_access_tokens WHERE token_hash=$2 AND expires_at>NOW())")
+        .bind(user_id).bind(token_hash).fetch_optional(pool).await
+}
+
 pub async fn auth_session_by_token(
     pool: &PgPool,
     token_hash: &str,

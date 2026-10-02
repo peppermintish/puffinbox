@@ -836,6 +836,79 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
     return library_id, item_id
 
 
+def verify_universal_audio_transcode(admin: HttpClient, library_id: str, item_id: str, fixture_root: Path, ffprobe: str) -> None:
+    username, password = "audio-conversion-" + uuid.uuid4().hex, "Synthetic-" + uuid.uuid4().hex
+    user_id = str(ensure_user(admin, username, password, library_id, playback=True)["Id"])
+    playback = HttpClient(admin.base_url)
+    login(playback, username, password)
+    scoped_token = str(playback.json("POST", "/Users/Me/MediaAccessToken", {})[2]["AccessToken"])
+    media = HttpClient(admin.base_url)
+    path = f"/Audio/{item_id}/universal"
+    for container, raw_session in [("mp4", str(uuid.uuid4())), ("ts", str(time.time_ns() // 1_000_000))]:
+        options = {
+            "Container": "mp3", "TranscodingContainer": container, "TranscodingProtocol": "hls", "AudioCodec": "aac",
+            "AudioBitRate": 64000, "MaxStreamingBitrate": 96000, "MaxAudioChannels": 1,
+            "MaxAudioSampleRate": 22050, "StartTimeTicks": 50_000_000, "PlaySessionId": raw_session,
+        }
+        uncredentialed = path + "?" + urllib.parse.urlencode(options)
+        require(HttpClient(admin.base_url).request("GET", uncredentialed)[0] == 401, "anonymous audio conversion was accepted")
+        query = uncredentialed + "&" + urllib.parse.urlencode({"ApiKey": scoped_token})
+        status, headers, body = media.request("HEAD", query)
+        require(status == 200 and not body and headers.get("Content-Type") == "application/vnd.apple.mpegurl",
+                "converted audio HEAD omitted HLS metadata or returned a body")
+        if container == "mp4":
+            require(playback.request("DELETE", f"/Audio/{item_id}/hls/{raw_session}")[0] == 404,
+                    "converted audio HEAD created an encoding session")
+        status, headers, master = media.request("GET", query)
+        require(status == 200 and headers.get("Cache-Control") == "private, no-store", "audio conversion did not return a private master playlist")
+        playlist_path = next(line for line in master.decode().splitlines() if line.startswith("/Audio/"))
+        session_id = playlist_path.split("/")[4]
+        playlist = b""
+        for _ in range(40):
+            status, _, playlist = media.request("GET", playlist_path)
+            if status == 200 and b"#EXT-X-ENDLIST" in playlist:
+                break
+            time.sleep(.25)
+        require(status == 200 and b"#EXT-X-ENDLIST" in playlist, "converted audio did not finish its bounded fixture")
+        require(b"ApiKey=" in playlist and scoped_token.encode() in playlist, "audio conversion dropped its child credential")
+        fragment_paths = [line for line in playlist.decode().splitlines() if line.startswith("/Audio/")]
+        require(bool(fragment_paths), "converted audio has no fragments")
+        encoded = bytearray()
+        if container == "mp4":
+            match = re.search(rb'#EXT-X-MAP:URI="([^"]+)"', playlist)
+            require(match is not None, "fragmented audio has no initialization resource")
+            init_path = match.group(1).decode()
+            status, headers, init = media.request("GET", init_path)
+            require(status == 200 and headers.get("Content-Type") == "audio/mp4", "audio initialization resource is missing or mislabeled")
+            encoded.extend(init)
+            require(media.request("GET", init_path.replace("init.mp4", "init-other.mp4"))[0] == 404, "unknown initialization resource was served")
+        for fragment_path in fragment_paths:
+            status, headers, fragment = media.request("GET", fragment_path)
+            require(status == 200 and headers.get("Content-Type") == ("audio/mp4" if container == "mp4" else "video/mp2t"), "converted audio fragment is missing or mislabeled")
+            encoded.extend(fragment)
+        with tempfile.TemporaryDirectory(prefix="puffinbox-audio-conversion-", dir=fixture_root) as directory:
+            converted = Path(directory) / ("converted.m4a" if container == "mp4" else "converted.ts")
+            converted.write_bytes(encoded)
+            inspected = subprocess.run([ffprobe, "-v", "error", "-show_entries", "stream=codec_name,channels,sample_rate:format=duration", "-of", "json", str(converted)], capture_output=True, text=True, check=True, timeout=20)
+            source = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "json", str(fixture_root / "Music/Puffinbox Original Acceptance Track.flac")], capture_output=True, text=True, check=True, timeout=20)
+            info = json.loads(inspected.stdout)
+            require(len(info["streams"]) == 1 and info["streams"][0]["codec_name"] == "aac"
+                    and info["streams"][0]["channels"] == 1 and info["streams"][0]["sample_rate"] == "22050", "audio conversion ignored its codec, channel, or sample-rate request")
+            expected_duration = float(json.loads(source.stdout)["format"]["duration"]) - 5
+            require(abs(float(info["format"]["duration"]) - expected_duration) < .2, "audio conversion ignored the requested starting offset")
+        playback.json("POST", "/Sessions/Playing", {"ItemId": item_id, "PlaySessionId": raw_session, "PositionTicks": 50_000_000, "PlayMethod": "Transcode"}, expected=(204,))
+        admin.json("POST", f"/Users/{user_id}/Policy", {"EnableMediaPlayback": False}, expected=(204,))
+        require(media.request("GET", fragment_paths[0])[0] == 403, "converted audio retained access after playback policy changed")
+        admin.json("POST", f"/Users/{user_id}/Policy", {"EnableMediaPlayback": True}, expected=(204,))
+        playback.json("POST", "/Sessions/Playing/Stopped", {"ItemId": item_id, "PlaySessionId": raw_session, "PositionTicks": 60_000_000}, expected=(204,))
+        require(media.request("GET", fragment_paths[0])[0] == 404, "stopped converted audio session remained accessible")
+        require(str(uuid.UUID(session_id)) == session_id, "converted audio exposed an invalid internal session id")
+    playback.json("POST", "/Sessions/Logout", expected=(204,))
+    require(media.request("GET", fragment_paths[0])[0] == 401, "converted audio retained a revoked parent credential")
+    report("Universal AAC audio conversion in fragmented MP4 and TS, starting offsets, constrained output, scoped child access, and stop", True,
+           "both outputs independently decoded; HEAD created no session; UUID and opaque playback IDs stopped their encoding sessions")
+
+
 def verify_playlist_sharing(admin: HttpClient, library_id: str, item_id: str) -> None:
     suffix = uuid.uuid4().hex
     username, password = "playlist-recipient-" + suffix, "Synthetic-" + uuid.uuid4().hex
@@ -1086,6 +1159,10 @@ def run(args: argparse.Namespace) -> int:
     audio_library_id, audio_item_id = verify_universal_audio(
         client, fixture_root, values.get("PUFFINBOX_ACCEPTANCE_MUSIC_ROOT", "/media/Music"), args.scan_timeout,
     )
+    if args.require_transcode:
+        audio_ffprobe = values.get("PUFFINBOX_ACCEPTANCE_FFPROBE_PATH") or shutil.which("ffprobe")
+        require(bool(audio_ffprobe), "ffprobe is required to inspect converted audio")
+        verify_universal_audio_transcode(client, audio_library_id, audio_item_id, fixture_root, audio_ffprobe)
     verify_playlist_sharing(client, audio_library_id, audio_item_id)
     verify_catalog_filters(client, library_id)
     verify_scanner_root_identity(

@@ -228,6 +228,21 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
     let minted_body: serde_json::Value = serde_json::from_slice(&minted_body).unwrap();
     let media_token = minted_body["AccessToken"].as_str().unwrap().to_owned();
     for credential in [&parent_session.token, &media_token] {
+        assert_eq!(
+            db::media_auth_device_id(&pool, user_id, &auth::token_digest(credential))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("browser-device")
+        );
+        assert!(
+            db::media_auth_device_id(&pool, Uuid::new_v4(), &auth::token_digest(credential))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    for credential in [&parent_session.token, &media_token] {
         for method in ["GET", "HEAD"] {
             let image = router
                 .clone()
@@ -778,6 +793,14 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
         .await
         .unwrap();
     assert_eq!(logout.status(), axum::http::StatusCode::NO_CONTENT);
+    for credential in [&parent_session.token, &media_token] {
+        assert!(
+            db::media_auth_device_id(&pool, user_id, &auth::token_digest(credential))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
     let after_logout = router
         .clone()
         .oneshot(
