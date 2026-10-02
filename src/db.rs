@@ -11,6 +11,8 @@ use uuid::Uuid;
 
 mod catalog_filters;
 pub(crate) use catalog_filters::{CatalogFacets, GenreFacet, catalog_facets};
+mod catalog_relations;
+pub(crate) use catalog_relations::similar_items;
 
 use crate::{
     auth::UserRecord,

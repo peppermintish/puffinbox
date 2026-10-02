@@ -453,6 +453,321 @@ async fn navigation_and_theme_media_keep_library_rating_and_user_boundaries() {
         inherited_song.to_string()
     );
     assert_eq!(inherited["ThemeSongsResult"]["OwnerId"], series.to_string());
+    let similar_path = format!("/Items/{movie}/Similar");
+    let collections_path = format!("/Items/{movie}/Collections");
+    for path in [&similar_path, &collections_path] {
+        assert_eq!(
+            call(&router, path, None).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(&router, path, Some(&peer_token)).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(
+                &router,
+                &format!("{path}?userId={peer}"),
+                Some(&owner_token)
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(&router, &format!("{path}?limit=-1"), Some(&owner_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(&router, &format!("{path}?limit=101"), Some(&owner_token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(
+                &router,
+                &path.replace(&movie.to_string(), &private_movie.to_string()),
+                Some(&owner_token)
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(
+                &router,
+                &path.replace(&movie.to_string(), &Uuid::new_v4().to_string()),
+                Some(&owner_token)
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    let related_a = item(
+        &pool,
+        library,
+        None,
+        "A related film",
+        "Movie",
+        "/media/related-a.mp4",
+        None,
+    )
+    .await;
+    let related_b = item(
+        &pool,
+        library,
+        None,
+        "B related film",
+        "Movie",
+        "/media/related-b.mp4",
+        None,
+    )
+    .await;
+    let restricted_related = item(
+        &pool,
+        library,
+        None,
+        "A restricted film",
+        "Movie",
+        "/media/restricted-related.mp4",
+        Some(100),
+    )
+    .await;
+    let hidden_related = item(
+        &pool,
+        library,
+        None,
+        "A hidden film",
+        "Movie",
+        "/media/.hidden/related.mp4",
+        None,
+    )
+    .await;
+    for id in [
+        movie,
+        related_a,
+        related_b,
+        restricted_related,
+        hidden_related,
+        private_movie,
+        song,
+    ] {
+        sqlx::query("INSERT INTO item_metadata(item_id,provider_key,genres) VALUES ($1,'local-nfo',$2) ON CONFLICT (item_id,provider_key) DO UPDATE SET genres=EXCLUDED.genres")
+            .bind(id).bind(json!(["Synthetic genre"])).execute(&pool).await.unwrap();
+    }
+    let related = call(
+        &router,
+        &format!("{similar_path}?limit=1&fields=Path,Genres"),
+        Some(&owner_token),
+    )
+    .await;
+    assert_eq!(related.headers()["cache-control"], "private, no-store");
+    let related = body_json(related).await;
+    assert_eq!(related["TotalRecordCount"], 2);
+    assert_eq!(related["StartIndex"], 0);
+    assert_eq!(related["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(related["Items"][0]["Id"], related_a.to_string());
+    assert_eq!(related["Items"][0]["ServerId"], server_id.to_string());
+    assert!(related["Items"][0].get("Path").is_none());
+    let no_page = body_json(
+        call(
+            &router,
+            &format!("{similar_path}?limit=0"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(no_page["TotalRecordCount"], 2);
+    assert_eq!(no_page["Items"], json!([]));
+    let admin_related = body_json(
+        call(
+            &router,
+            &format!("{similar_path}?userId={owner}"),
+            Some(&admin_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(admin_related["TotalRecordCount"], 2);
+    assert!(
+        admin_related["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item.get("Path").is_none())
+    );
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(library)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&router, &similar_path, Some(&owner_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE libraries SET enabled=TRUE WHERE id=$1")
+        .bind(library)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let artist = item(
+        &pool,
+        library,
+        None,
+        "Synthetic artist",
+        "MusicArtist",
+        "/media/artist",
+        None,
+    )
+    .await;
+    let first_album = item(
+        &pool,
+        library,
+        Some(artist),
+        "First album",
+        "MusicAlbum",
+        "/media/artist/first",
+        None,
+    )
+    .await;
+    let second_album = item(
+        &pool,
+        library,
+        Some(artist),
+        "Second album",
+        "MusicAlbum",
+        "/media/artist/second",
+        None,
+    )
+    .await;
+    let first_track = item(
+        &pool,
+        library,
+        Some(first_album),
+        "First track",
+        "Audio",
+        "/media/artist/first/track.flac",
+        None,
+    )
+    .await;
+    let second_track = item(
+        &pool,
+        library,
+        Some(second_album),
+        "Second track",
+        "Audio",
+        "/media/artist/second/track.flac",
+        None,
+    )
+    .await;
+    let artist_related = body_json(
+        call(
+            &router,
+            &format!("/Items/{first_track}/Similar"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(artist_related["TotalRecordCount"], 1);
+    assert_eq!(artist_related["Items"][0]["Id"], second_track.to_string());
+    let excluded = body_json(
+        call(
+            &router,
+            &format!("/Items/{first_track}/Similar?excludeArtistIds={artist}"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(excluded["Items"], json!([]));
+    assert_eq!(excluded["TotalRecordCount"], 0);
+    assert_eq!(
+        call(
+            &router,
+            &format!("/Items/{first_track}/Similar?excludeArtistIds=invalid"),
+            Some(&owner_token)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let outer_set = item(
+        &pool,
+        library,
+        None,
+        "A collection",
+        "BoxSet",
+        "/media/sets",
+        None,
+    )
+    .await;
+    let inner_set = item(
+        &pool,
+        library,
+        Some(outer_set),
+        "B collection",
+        "BoxSet",
+        "/media/sets/inner",
+        None,
+    )
+    .await;
+    let contained = item(
+        &pool,
+        library,
+        Some(inner_set),
+        "Contained film",
+        "Movie",
+        "/media/sets/inner/film.mp4",
+        None,
+    )
+    .await;
+    let containing_path = format!("/Items/{contained}/Collections");
+    let collections = call(
+        &router,
+        &format!("{containing_path}?startIndex=1&limit=1"),
+        Some(&owner_token),
+    )
+    .await;
+    assert_eq!(collections.headers()["cache-control"], "private, no-store");
+    let collections = body_json(collections).await;
+    assert_eq!(collections["TotalRecordCount"], 2);
+    assert_eq!(collections["StartIndex"], 1);
+    assert_eq!(collections["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(collections["Items"][0]["Id"], inner_set.to_string());
+    assert!(collections["Items"][0].get("Path").is_none());
+    let empty_collections =
+        body_json(call(&router, &collections_path, Some(&owner_token)).await).await;
+    assert_eq!(empty_collections["TotalRecordCount"], 0);
+    assert_eq!(empty_collections["Items"], json!([]));
+    assert_eq!(
+        call(
+            &router,
+            &format!("{containing_path}?startIndex=-1"),
+            Some(&owner_token)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    sqlx::query("UPDATE items SET parent_id=id WHERE id=$1")
+        .bind(outer_set)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&router, &containing_path, Some(&owner_token))
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
     for path in [&ancestors_path, &theme_path, &legacy_path] {
         assert_eq!(
             call(&router, path, None).await.status(),

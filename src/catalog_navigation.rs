@@ -21,7 +21,162 @@ pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .route("/Items/{item_id}/Ancestors", get(ancestors))
         .route("/Items/{item_id}/ThemeMedia", get(theme_media))
+        .route("/Items/{item_id}/Similar", get(similar_items))
+        .route("/Items/{item_id}/Collections", get(item_collections))
         .with_state(state)
+}
+
+#[derive(Default, Deserialize)]
+struct RelationsQuery {
+    #[serde(rename = "userId", alias = "UserId")]
+    user_id: Option<Uuid>,
+    #[serde(rename = "limit", alias = "Limit")]
+    limit: Option<i64>,
+    #[serde(rename = "startIndex", alias = "StartIndex")]
+    start_index: Option<i64>,
+    #[serde(rename = "fields", alias = "Fields")]
+    fields: Option<String>,
+    #[serde(rename = "excludeArtistIds", alias = "ExcludeArtistIds")]
+    exclude_artist_ids: Option<String>,
+}
+
+impl RelationsQuery {
+    fn page(&self, maximum: i64) -> Result<(usize, usize), ApiError> {
+        let maximum = maximum.clamp(0, 100);
+        let limit = self.limit.unwrap_or(20.min(maximum));
+        let start = self.start_index.unwrap_or_default();
+        if !(0..=maximum).contains(&limit)
+            || !(0..=i64::from(i32::MAX)).contains(&start)
+            || self
+                .fields
+                .as_ref()
+                .is_some_and(|fields| fields.len() > 4096 || fields.chars().any(char::is_control))
+        {
+            return Err(ApiError::BadRequest(
+                "Invalid item relation options".to_owned(),
+            ));
+        }
+        Ok((start as usize, limit as usize))
+    }
+
+    fn excluded_artists(&self) -> Result<Vec<Uuid>, ApiError> {
+        let Some(value) = self
+            .exclude_artist_ids
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(Vec::new());
+        };
+        if value.len() > 4096 || value.split(',').count() > 64 {
+            return Err(ApiError::BadRequest("Too many excluded artists".to_owned()));
+        }
+        value
+            .split(',')
+            .map(|id| {
+                id.trim().parse().map_err(|_| {
+                    ApiError::BadRequest("Invalid excluded artist identifier".to_owned())
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct RelationsResult {
+    items: Vec<BaseItemDto>,
+    total_record_count: i64,
+    start_index: usize,
+}
+
+async fn relation_target(
+    state: &AppState,
+    current: &UserRecord,
+    user: &UserRecord,
+    id: Uuid,
+) -> Result<Option<ItemRecord>, ApiError> {
+    if let Some(library) = db::get_library(&state.db, id).await? {
+        return if db::library_visible_to_user(&state.db, user, library.id).await? {
+            Ok(None)
+        } else {
+            Err(ApiError::NotFound)
+        };
+    }
+    match visible_item(state, user, id).await {
+        Ok(item) => Ok(Some(item)),
+        Err(ApiError::NotFound)
+            if current.id == user.id
+                && crate::playlists::can_read_playlist(state, current, id).await? =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn similar_items(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<RelationsQuery>,
+) -> Result<Json<RelationsResult>, ApiError> {
+    let user = api::selected_user(&state, &current, query.user_id).await?;
+    let (start, limit) = query.page(state.config.max_page_size)?;
+    if start != 0 {
+        return Err(ApiError::BadRequest(
+            "Similar items do not support a start index".to_owned(),
+        ));
+    }
+    let excluded_artists = query.excluded_artists()?;
+    let mut result = RelationsResult {
+        items: Vec::new(),
+        total_record_count: 0,
+        start_index: 0,
+    };
+    if let Some(item) = relation_target(&state, &current, &user, id).await? {
+        let (items, total) =
+            db::similar_items(&state.db, &user, item.id, limit, &excluded_artists).await?;
+        result.total_record_count = total;
+        for item in items {
+            result
+                .items
+                .push(api::item_dto_for_user(&state, &user, &item).await?);
+        }
+    }
+    Ok(Json(result))
+}
+
+async fn item_collections(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<RelationsQuery>,
+) -> Result<Json<RelationsResult>, ApiError> {
+    let user = api::selected_user(&state, &current, query.user_id).await?;
+    let (start, limit) = query.page(state.config.max_page_size)?;
+    let mut result = RelationsResult {
+        items: Vec::new(),
+        total_record_count: 0,
+        start_index: start,
+    };
+    if let Some(item) = relation_target(&state, &current, &user, id).await? {
+        let mut sets = Vec::new();
+        for parent in parent_chain(&state, &item).await? {
+            if parent.item_type == "BoxSet"
+                && db::item_visible_to_user(&state.db, &user, &parent).await?
+            {
+                sets.push(parent);
+            }
+        }
+        sets.sort_by(|a, b| a.sort_name.cmp(&b.sort_name).then(a.id.cmp(&b.id)));
+        result.total_record_count = sets.len() as i64;
+        for item in sets.into_iter().skip(start).take(limit) {
+            result
+                .items
+                .push(api::item_dto_for_user(&state, &user, &item).await?);
+        }
+    }
+    Ok(Json(result))
 }
 
 #[derive(Default, Deserialize)]

@@ -861,6 +861,8 @@ def verify_universal_audio_transcode(admin: HttpClient, library_id: str, item_id
                     "converted audio HEAD created an encoding session")
         status, headers, master = media.request("GET", query)
         require(status == 200 and headers.get("Cache-Control") == "private, no-store", "audio conversion did not return a private master playlist")
+        start_hint = b"#EXT-X-START:TIME-OFFSET=5.0000000,PRECISE=YES"
+        require(start_hint in master, "universal audio master omitted its original-timeline start hint")
         playlist_path = next(line for line in master.decode().splitlines() if line.startswith("/Audio/"))
         session_id = playlist_path.split("/")[4]
         playlist = b""
@@ -870,6 +872,7 @@ def verify_universal_audio_transcode(admin: HttpClient, library_id: str, item_id
                 break
             time.sleep(.25)
         require(status == 200 and b"#EXT-X-ENDLIST" in playlist, "converted audio did not finish its bounded fixture")
+        require(start_hint in playlist, "universal audio media playlist omitted its original-timeline start hint")
         require(b"ApiKey=" in playlist and scoped_token.encode() in playlist, "audio conversion dropped its child credential")
         fragment_paths = [line for line in playlist.decode().splitlines() if line.startswith("/Audio/")]
         require(bool(fragment_paths), "converted audio has no fragments")
@@ -894,8 +897,8 @@ def verify_universal_audio_transcode(admin: HttpClient, library_id: str, item_id
             info = json.loads(inspected.stdout)
             require(len(info["streams"]) == 1 and info["streams"][0]["codec_name"] == "aac"
                     and info["streams"][0]["channels"] == 1 and info["streams"][0]["sample_rate"] == "22050", "audio conversion ignored its codec, channel, or sample-rate request")
-            expected_duration = float(json.loads(source.stdout)["format"]["duration"]) - 5
-            require(abs(float(info["format"]["duration"]) - expected_duration) < .2, "audio conversion ignored the requested starting offset")
+            expected_duration = float(json.loads(source.stdout)["format"]["duration"])
+            require(abs(float(info["format"]["duration"]) - expected_duration) < .2, "universal audio clipped the source instead of preserving the client's seek timeline")
         playback.json("POST", "/Sessions/Playing", {"ItemId": item_id, "PlaySessionId": raw_session, "PositionTicks": 50_000_000, "PlayMethod": "Transcode"}, expected=(204,))
         admin.json("POST", f"/Users/{user_id}/Policy", {"EnableMediaPlayback": False}, expected=(204,))
         require(media.request("GET", fragment_paths[0])[0] == 403, "converted audio retained access after playback policy changed")
@@ -905,8 +908,47 @@ def verify_universal_audio_transcode(admin: HttpClient, library_id: str, item_id
         require(str(uuid.UUID(session_id)) == session_id, "converted audio exposed an invalid internal session id")
     playback.json("POST", "/Sessions/Logout", expected=(204,))
     require(media.request("GET", fragment_paths[0])[0] == 401, "converted audio retained a revoked parent credential")
-    report("Universal AAC audio conversion in fragmented MP4 and TS, starting offsets, constrained output, scoped child access, and stop", True,
-           "both outputs independently decoded; HEAD created no session; UUID and opaque playback IDs stopped their encoding sessions")
+    report("Universal AAC audio conversion in fragmented MP4 and TS, original timeline and start hints, constrained output, scoped child access, and stop", True,
+           "both outputs independently decoded with the full source duration; HEAD created no session; UUID and opaque playback IDs stopped their encoding sessions")
+
+
+def verify_item_relations(admin: HttpClient, library_id: str, item_id: str) -> None:
+    username, password = "relation-reader-" + uuid.uuid4().hex, "Synthetic-" + uuid.uuid4().hex
+    user_id = str(ensure_user(admin, username, password, library_id, playback=True)["Id"])
+    reader = HttpClient(admin.base_url)
+    login(reader, username, password)
+    anonymous = HttpClient(admin.base_url)
+    try:
+        item = reader.json("GET", "/Items/" + item_id)[2]
+        for field in ["ArtistItems", "Artists", "AlbumArtists", "Genres", "Tags"]:
+            require(isinstance(item.get(field), list), "unclassified audio omitted a client-facing metadata list")
+        for route in ["Similar", "Collections"]:
+            path = f"/Items/{item_id}/{route}"
+            require(anonymous.request("GET", path)[0] == 401, "item relation data was returned anonymously")
+            _, headers, result = reader.json("GET", path + "?limit=1&fields=Path,Genres")
+            require(headers.get("Cache-Control") == "private, no-store", "item relation response was not private")
+            require(isinstance(result.get("Items"), list) and isinstance(result.get("TotalRecordCount"), int)
+                    and result.get("StartIndex") == 0 and result["TotalRecordCount"] >= len(result["Items"])
+                    and len(result["Items"]) <= 1, "item relation paging differs from its public result shape")
+            require(all(entry.get("Id") != item_id and "Path" not in entry for entry in result["Items"]),
+                    "item relation response exposed a path or its source item")
+            status, headers, body = reader.request("HEAD", path)
+            require(status == 200 and not body and headers.get("Cache-Control") == "private, no-store",
+                    "item relation HEAD did not preserve private metadata without a body")
+            for query in ["limit=-1", "limit=101"]:
+                require(reader.request("GET", path + "?" + query)[0] == 400, "item relation limits were not bounded")
+            require(reader.request("GET", path + "?userId=" + str(uuid.uuid4()))[0] == 403,
+                    "item relation query could select another user")
+            require(reader.request("GET", path.replace(item_id, str(uuid.uuid4())))[0] == 404,
+                    "missing item relation query returned fabricated data")
+        admin.json("POST", f"/Users/{user_id}/Policy", {"EnableAllFolders": False, "EnabledFolders": []}, expected=(204,))
+        for route in ["Similar", "Collections"]:
+            require(reader.request("GET", f"/Items/{item_id}/{route}")[0] == 404,
+                    "item relation query retained revoked library access")
+        report("Item Similar and Collections response shapes, bounded paging, private HEAD, metadata lists, and access revocation", True,
+               "real genre/artist ranking and containing-collection fixtures have separate PostgreSQL coverage")
+    finally:
+        reader.json("POST", "/Sessions/Logout", expected=(204,))
 
 
 def verify_playlist_sharing(admin: HttpClient, library_id: str, item_id: str) -> None:
@@ -1163,6 +1205,7 @@ def run(args: argparse.Namespace) -> int:
         audio_ffprobe = values.get("PUFFINBOX_ACCEPTANCE_FFPROBE_PATH") or shutil.which("ffprobe")
         require(bool(audio_ffprobe), "ffprobe is required to inspect converted audio")
         verify_universal_audio_transcode(client, audio_library_id, audio_item_id, fixture_root, audio_ffprobe)
+    verify_item_relations(client, audio_library_id, audio_item_id)
     verify_playlist_sharing(client, audio_library_id, audio_item_id)
     verify_catalog_filters(client, library_id)
     verify_scanner_root_identity(

@@ -78,6 +78,10 @@ pub(super) struct HlsOptions {
     pub(super) audio_sample_rate: Option<u32>,
     #[serde(default)]
     pub(super) audio_fmp4: bool,
+    // Universal audio clients seek using the original item's timeline. Keep
+    // the whole source and advertise a start hint instead of clipping twice.
+    #[serde(skip)]
+    pub(super) audio_full_timeline: bool,
     // This is only present when an external Jellyfin client explicitly uses
     // the current query-token media auth form. The bundled UI uses cookies.
     #[serde(rename = "ApiKey")]
@@ -465,7 +469,7 @@ pub(super) async fn start_master(
         MediaKind::Video => format!("/Videos/{item_id}/hls/{session_id}"),
         MediaKind::Audio => format!("/Audio/{item_id}/hls/{session_id}"),
     };
-    let (has_subtitles, has_audio, bandwidth, api_key, stream_copy) =
+    let (has_subtitles, has_audio, bandwidth, api_key, stream_copy, start_ticks) =
         session_master_info(session_id, user.id, item_id, kind).await?;
     let codec_list = match (kind, has_audio) {
         (MediaKind::Video, true) => "avc1.42E01F,mp4a.40.2",
@@ -491,7 +495,8 @@ pub(super) async fn start_master(
         stream_info.push_str(",SUBTITLES=\"puffin-subtitles\"");
     }
     let playlist = format!(
-        "#EXTM3U\n#EXT-X-VERSION:{version}\n{subtitle_media}{stream_info}\n{playlist_path}\n"
+        "#EXTM3U\n#EXT-X-VERSION:{version}\n{}{subtitle_media}{stream_info}\n{playlist_path}\n",
+        playlist_start_hint(start_ticks)
     );
     Ok(text_response(
         playlist,
@@ -514,6 +519,7 @@ async fn start_hls(
     let mut options = options;
     options.play_session_id = Some(session_id);
     if (options.audio_fmp4
+        || options.audio_full_timeline
         || options.audio_sample_rate.is_some()
         || options.audio_bit_rate.is_some())
         && (kind != MediaKind::Audio || options.full_timeline || options.stream_copy)
@@ -641,7 +647,7 @@ async fn start_hls(
         .unwrap_or_default()
         .saturating_div(10_000_000)
         .clamp(0, 14_399) as u32;
-    let duration_seconds = if options.full_timeline {
+    let duration_seconds = if options.full_timeline || options.audio_full_timeline {
         full_duration_seconds
     } else {
         full_duration_seconds.saturating_sub(start_seconds).max(1)
@@ -923,7 +929,10 @@ async fn start_hls(
         .arg("8000000")
         .arg("-analyzeduration")
         .arg("8000000");
-    if let Some(ticks) = options.start_time_ticks.filter(|ticks| *ticks > 0) {
+    if let Some(ticks) = options
+        .start_time_ticks
+        .filter(|ticks| *ticks > 0 && !options.audio_full_timeline)
+    {
         let seconds = ticks as f64 / 10_000_000.0;
         command.arg("-ss").arg(format!("{seconds:.3}"));
     }
@@ -1551,7 +1560,7 @@ async fn session_master_info(
     owner_id: Uuid,
     item_id: Uuid,
     kind: MediaKind,
-) -> Result<(bool, bool, u64, Option<String>, bool), ApiError> {
+) -> Result<(bool, bool, u64, Option<String>, bool, Option<i64>), ApiError> {
     let sessions = manager().sessions.lock().await;
     let session = sessions
         .get(&session_id)
@@ -1566,6 +1575,11 @@ async fn session_master_info(
         session.bandwidth,
         session.options.api_key.clone(),
         session.options.stream_copy,
+        session
+            .options
+            .audio_full_timeline
+            .then_some(session.options.start_time_ticks)
+            .flatten(),
     ))
 }
 
@@ -1710,7 +1724,8 @@ async fn serve_playlist(
 ) -> Result<Response, ApiError> {
     let _media = authorized_media(&state, &user, item_id).await?;
     if let Some(vod) = session_vod(item_id, user.id, kind, session_id).await? {
-        let (_, _, _, api_key, _) = session_master_info(session_id, user.id, item_id, kind).await?;
+        let (_, _, _, api_key, _, _) =
+            session_master_info(session_id, user.id, item_id, kind).await?;
         return Ok(text_response(
             super::vod_hls::playlist(&vod, item_id, session_id, kind, api_key.as_deref()),
             "application/vnd.apple.mpegurl",
@@ -1720,9 +1735,16 @@ async fn serve_playlist(
     let (directory, _, _, _) = session_directory(item_id, user.id, kind, session_id).await?;
     let manifest = directory.join("stream.m3u8");
     let bytes = wait_for_file(&manifest, MAX_PLAYLIST_BYTES, Duration::from_secs(10)).await?;
-    let (_, _, _, api_key, _) = session_master_info(session_id, user.id, item_id, kind).await?;
-    let body =
-        rewrite_playlist_with_api_key(&bytes, item_id, session_id, kind, api_key.as_deref())?;
+    let (_, _, _, api_key, _, start_ticks) =
+        session_master_info(session_id, user.id, item_id, kind).await?;
+    let body = rewrite_playlist_with_api_key(
+        &bytes,
+        item_id,
+        session_id,
+        kind,
+        api_key.as_deref(),
+        start_ticks,
+    )?;
     Ok(text_response(
         body,
         "application/vnd.apple.mpegurl",
@@ -1815,7 +1837,7 @@ pub(super) async fn subtitle_playlist(
     if !has_subtitles {
         return Err(ApiError::NotFound);
     }
-    let (_, _, _, api_key, _) =
+    let (_, _, _, api_key, _, _) =
         session_master_info(session_id, user.id, item_id, MediaKind::Video).await?;
     let subtitle_path = append_api_key(
         &format!("/Videos/{item_id}/hls/{session_id}/subtitle.vtt"),
@@ -2215,7 +2237,18 @@ fn rewrite_playlist(
     session_id: Uuid,
     kind: MediaKind,
 ) -> Result<String, ApiError> {
-    rewrite_playlist_with_api_key(bytes, item_id, session_id, kind, None)
+    rewrite_playlist_with_api_key(bytes, item_id, session_id, kind, None, None)
+}
+
+fn playlist_start_hint(ticks: Option<i64>) -> String {
+    let Some(ticks) = ticks.filter(|ticks| *ticks > 0) else {
+        return String::new();
+    };
+    format!(
+        "#EXT-X-START:TIME-OFFSET={}.{:07},PRECISE=YES\n",
+        ticks / 10_000_000,
+        ticks % 10_000_000
+    )
 }
 
 fn rewrite_playlist_with_api_key(
@@ -2224,6 +2257,7 @@ fn rewrite_playlist_with_api_key(
     session_id: Uuid,
     kind: MediaKind,
     api_key: Option<&str>,
+    start_ticks: Option<i64>,
 ) -> Result<String, ApiError> {
     let source = std::str::from_utf8(bytes).map_err(|_| ApiError::Unavailable)?;
     let fmp4 = kind == MediaKind::Audio
@@ -2289,6 +2323,9 @@ fn rewrite_playlist_with_api_key(
             output.push_str(&append_api_key(&path, api_key));
         }
         output.push('\n');
+        if line == "#EXTM3U" {
+            output.push_str(&playlist_start_hint(start_ticks));
+        }
     }
     if !output.starts_with("#EXTM3U\n") {
         return Err(ApiError::Unavailable);
@@ -2501,9 +2538,15 @@ mod tests {
         let session = Uuid::new_v4();
         let manifest = b"#EXTM3U\n#EXTINF:4.0,\nsegment000001.ts\n";
         let api_key = "token+/=value";
-        let rewritten =
-            rewrite_playlist_with_api_key(manifest, item, session, MediaKind::Video, Some(api_key))
-                .unwrap();
+        let rewritten = rewrite_playlist_with_api_key(
+            manifest,
+            item,
+            session,
+            MediaKind::Video,
+            Some(api_key),
+            None,
+        )
+        .unwrap();
         assert!(rewritten.contains(&format!(
             "/Videos/{item}/hls/{session}/segment000001.ts?ApiKey=token%2B%2F%3Dvalue"
         )));
@@ -2525,8 +2568,10 @@ mod tests {
             session,
             MediaKind::Audio,
             Some("token+/="),
+            Some(12_345_678),
         )
         .unwrap();
+        assert!(body.starts_with("#EXTM3U\n#EXT-X-START:TIME-OFFSET=1.2345678,PRECISE=YES\n"));
         assert!(body.contains(&format!(
             "#EXT-X-MAP:URI=\"/Audio/{item}/hls/{session}/init.mp4?ApiKey=token%2B%2F%3D\""
         )));
@@ -3611,9 +3656,17 @@ mod tests {
         .unwrap();
         let fmp4_directory = wait_for_completed_session(fmp4_session_id).await;
         let fmp4_manifest = fs::read(fmp4_directory.join("stream.m3u8")).unwrap();
-        let rewritten =
-            rewrite_playlist(&fmp4_manifest, audio_id, fmp4_session_id, MediaKind::Audio).unwrap();
+        let rewritten = rewrite_playlist_with_api_key(
+            &fmp4_manifest,
+            audio_id,
+            fmp4_session_id,
+            MediaKind::Audio,
+            None,
+            Some(5_000_000),
+        )
+        .unwrap();
         assert!(rewritten.contains("#EXT-X-MAP:URI="));
+        assert!(rewritten.contains("#EXT-X-START:TIME-OFFSET=0.5000000,PRECISE=YES"));
         assert!(rewritten.contains("segment000000.m4s"));
         let mut encoded = fs::read(fmp4_directory.join("init.mp4")).unwrap();
         encoded.extend(fs::read(fmp4_directory.join("segment000000.m4s")).unwrap());
@@ -3625,7 +3678,7 @@ mod tests {
                 "-v",
                 "error",
                 "-show_entries",
-                "stream=codec_name,channels,sample_rate:format=duration",
+                "stream=codec_name,channels,sample_rate,start_time:format=duration",
                 "-of",
                 "json",
             ])
@@ -3642,14 +3695,23 @@ mod tests {
         assert_eq!(info["streams"][0]["codec_name"], "aac");
         assert_eq!(info["streams"][0]["sample_rate"], "22050");
         assert_eq!(info["streams"][0]["channels"], 1);
+        let start: f64 = info["streams"][0]["start_time"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            start.abs() < 0.05,
+            "universal audio lost its original timeline: {start}"
+        );
         let duration: f64 = info["format"]["duration"]
             .as_str()
             .unwrap()
             .parse()
             .unwrap();
         assert!(
-            (1.4..1.65).contains(&duration),
-            "offset was not applied: {duration}"
+            (1.95..2.15).contains(&duration),
+            "universal audio clipped the original timeline: {duration}"
         );
         assert!(super::stop_playback_session(owner_id, audio_id, fmp4_session_id).await);
         let _ = fs::remove_dir_all(base);

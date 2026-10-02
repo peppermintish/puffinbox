@@ -214,7 +214,10 @@ async fn add_response_security_headers(
             tail.parse::<Uuid>().is_ok()
                 || tail.split_once('/').is_some_and(|(id, route)| {
                     id.parse::<Uuid>().is_ok()
-                        && matches!(route, "Ancestors" | "ThemeMedia" | "PlaybackInfo")
+                        && matches!(
+                            route,
+                            "Ancestors" | "ThemeMedia" | "PlaybackInfo" | "Similar" | "Collections"
+                        )
                 })
         })
         || (path.starts_with("/Users/") && (path.contains("/Items/") || path.ends_with("/Items")));
@@ -2463,9 +2466,7 @@ pub(crate) struct BaseItemDto {
     date_created: DateTime<Utc>,
     date_modified: Option<DateTime<Utc>>,
     overview: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     genres: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     production_year: Option<i32>,
@@ -2492,6 +2493,10 @@ pub(crate) struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     artist_items: Option<Vec<BaseItemPersonDto>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    artists: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    album_artists: Option<Vec<BaseItemPersonDto>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_data: Option<UserDataDto>,
@@ -2503,7 +2508,7 @@ struct ItemImageTagsDto {
     primary: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct BaseItemPersonDto {
     name: String,
@@ -2522,6 +2527,23 @@ fn item_dto(
     metadata: Option<&crate::metadata::DisplayMetadata>,
     include_path: bool,
 ) -> BaseItemDto {
+    let is_music = matches!(item.item_type.as_str(), "Audio" | "MusicAlbum");
+    let artist_items = navigation
+        .and_then(|links| {
+            links.artist_id.map(|id| {
+                vec![BaseItemPersonDto {
+                    name: links.artist.clone().unwrap_or_default(),
+                    id,
+                    role: None,
+                    person_type: "Artist",
+                }]
+            })
+        })
+        .or_else(|| is_music.then(Vec::new));
+    let artists = artist_items
+        .as_ref()
+        .map(|items| items.iter().map(|item| item.name.clone()).collect());
+    let album_artists = is_music.then(|| artist_items.clone().unwrap_or_default());
     BaseItemDto {
         id: item.id,
         server_id,
@@ -2562,16 +2584,9 @@ fn item_dto(
         parent_index_number: navigation.and_then(|links| links.parent_index_number),
         album: navigation.and_then(|links| links.album.clone()),
         album_id: navigation.and_then(|links| links.album_id),
-        artist_items: navigation.and_then(|links| {
-            links.artist_id.map(|id| {
-                vec![BaseItemPersonDto {
-                    name: links.artist.clone().unwrap_or_default(),
-                    id,
-                    role: None,
-                    person_type: "Artist",
-                }]
-            })
-        }),
+        artist_items,
+        artists,
+        album_artists,
         path: include_path.then(|| item.path.to_string_lossy().into_owned()),
         user_data,
     }
@@ -3531,6 +3546,8 @@ fn set_music_person_kind(item: &mut BaseItemDto) {
     item.is_folder = false;
     item.media_type = None;
     item.artist_items = None;
+    item.artists = None;
+    item.album_artists = None;
 }
 
 fn empty_items_result(start_index: i64, include_total: bool) -> ItemsResultDto {
@@ -4188,6 +4205,8 @@ mod item_dto_tests {
             album: None,
             album_id: None,
             artist_items: None,
+            artists: None,
+            album_artists: None,
             path: None,
             user_data: None,
         };
@@ -4248,6 +4267,28 @@ mod item_dto_tests {
         assert_eq!(dto["ArtistItems"][0]["Id"], artist_id.to_string());
         assert_eq!(dto["ArtistItems"][0]["Type"], "Artist");
         assert!(dto.get("Path").is_none());
+        let mut audio = item.clone();
+        audio.item_type = "Audio".to_owned();
+        let flat = serde_json::to_value(item_dto(&audio, Uuid::new_v4(), None, None, None, false))
+            .unwrap();
+        for field in ["ArtistItems", "Artists", "AlbumArtists", "Genres", "Tags"] {
+            assert_eq!(
+                flat[field],
+                serde_json::json!([]),
+                "missing empty list: {field}"
+            );
+        }
+        let known = serde_json::to_value(item_dto(
+            &audio,
+            Uuid::new_v4(),
+            None,
+            Some(&navigation),
+            None,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(known["Artists"], serde_json::json!(["Example Artist"]));
+        assert_eq!(known["AlbumArtists"][0]["Id"], artist_id.to_string());
     }
 
     #[test]

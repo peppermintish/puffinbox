@@ -140,6 +140,7 @@ fn transcode_options(request: AudioRequest) -> Result<hls::HlsOptions, ApiError>
         audio_bit_rate: request.audio_bit_rate,
         audio_sample_rate: Some(sample_rate),
         audio_fmp4: request.transcoding_container.as_deref() == Some("mp4"),
+        audio_full_timeline: true,
         api_key: request.api_key,
         ..Default::default()
     })

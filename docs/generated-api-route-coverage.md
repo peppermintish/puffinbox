@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-02T13:48:53.704977+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-02T17:07:12.904660+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `183`
-- Declared pairs matching a schema method/path: `95`
+- Unique declared server method/path pairs: `185`
+- Declared pairs matching a schema method/path: `97`
 - Declared pairs outside the schema: `88`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -86,6 +86,8 @@ This is a source declaration comparison only. It does not establish that a match
 | `GET /Items/Filters2` | `src/catalog_filters.rs` | match |
 | `GET /Items/{item_id}/Ancestors` | `src/catalog_navigation.rs` | match |
 | `GET /Items/{item_id}/ThemeMedia` | `src/catalog_navigation.rs` | match |
+| `GET /Items/{item_id}/Similar` | `src/catalog_navigation.rs` | match |
+| `GET /Items/{item_id}/Collections` | `src/catalog_navigation.rs` | match |
 | `GET /System/Endpoint` | `src/client_connection.rs` | match |
 | `GET /Playback/BitrateTest` | `src/client_connection.rs` | match |
 | `GET /Books/{item_id}/Reader` | `src/media_features/books.rs` | custom / not in target schema |
