@@ -785,6 +785,22 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
     status, headers, body = client.request("GET", path + options, headers={"Range": "bytes=8-31"})
     require(status == 206 and body == source[8:32] and headers.get("Content-Range") == f"bytes 8-31/{len(source)}",
             "universal audio byte range differs from the source")
+    for start_ticks in (50_000_000, 51_234_567):
+        resumed_options = "?Container=flac&MaxAudioSampleRate=44100&MaxAudioBitDepth=16&StartTimeTicks=" + str(start_ticks)
+        status, headers, body = client.request("GET", path + resumed_options)
+        require(status == 200 and body == source and headers.get("Content-Type") == "audio/flac"
+                and headers.get("Cache-Control") == "private, no-store",
+                "a saved position changed or rejected the matching original audio timeline")
+        status, headers, body = client.request("HEAD", path + resumed_options)
+        require(status == 200 and not body and headers.get("Content-Length") == str(len(source)),
+                "resumed original audio HEAD omitted source metadata")
+        for method in ("GET", "HEAD"):
+            status, headers, body = client.request(method, path + resumed_options, headers={"Range": "bytes=8-31"})
+            require(status == 206 and headers.get("Content-Range") == f"bytes 8-31/{len(source)}"
+                    and headers.get("Content-Length") == "24" and body == (source[8:32] if method == "GET" else b""),
+                    "resumed original audio changed byte-range delivery")
+        status, _, _ = HttpClient(client.base_url).request("GET", path + resumed_options)
+        require(status == 401, "anonymous resumed original audio was accepted")
     limited = "?Container=flac&MaxAudioSampleRate=44100&MaxAudioBitDepth=16"
     status, headers, body = client.request("GET", path + limited)
     require(status == 200 and body == source and headers.get("Cache-Control") == "private, no-store",
@@ -832,7 +848,7 @@ def verify_universal_audio(client: HttpClient, fixture_root: Path, music_root: s
         require(data.get("PlaybackPositionTicks") == 50_000_000,
                 "numeric or empty audio session events did not preserve the stopped position")
     report("Universal and suffixed FLAC audio, byte ranges, format/bitrate/rate/depth limits, and numeric/empty playback events", True,
-           "original bytes and HEAD metadata matched; stopping preserved five seconds; the source was delivered directly")
+           "zero, five-second, and fractional saved positions retain original bytes, ranges, and HEAD metadata; stopping preserved five seconds")
     return library_id, item_id
 
 
@@ -844,6 +860,20 @@ def verify_universal_audio_transcode(admin: HttpClient, library_id: str, item_id
     scoped_token = str(playback.json("POST", "/Users/Me/MediaAccessToken", {})[2]["AccessToken"])
     media = HttpClient(admin.base_url)
     path = f"/Audio/{item_id}/universal"
+    direct_session = str(uuid.uuid4())
+    direct_query = path + "?" + urllib.parse.urlencode({
+        "Container": "flac", "StartTimeTicks": 51_234_567, "PlaySessionId": direct_session,
+        "MaxAudioSampleRate": 44100, "MaxAudioBitDepth": 16, "ApiKey": scoped_token,
+    })
+    source = (fixture_root / "Music" / "Puffinbox Original Acceptance Track.flac").read_bytes()
+    for method in ("GET", "HEAD"):
+        status, headers, body = media.request(method, direct_query, headers={"Range": "bytes=8-31"})
+        require(status == 206 and headers.get("Content-Type") == "audio/flac"
+                and headers.get("Content-Range") == f"bytes 8-31/{len(source)}"
+                and body == (source[8:32] if method == "GET" else b""),
+                "a scoped resumed original-audio request changed source ranges")
+    require(playback.request("DELETE", f"/Audio/{item_id}/hls/{direct_session}")[0] == 404,
+            "resuming compatible original audio created an encoding session")
     for container, raw_session in [("mp4", str(uuid.uuid4())), ("ts", str(time.time_ns() // 1_000_000))]:
         options = {
             "Container": "mp3", "TranscodingContainer": container, "TranscodingProtocol": "hls", "AudioCodec": "aac",

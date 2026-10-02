@@ -68,7 +68,9 @@ pub(super) async fn stream(
         ),
     )
     .await?;
-    if negotiation.supports_direct_play() && request.start_time_ticks.unwrap_or_default() == 0 {
+    // Original bytes preserve the item's timeline. A compatible client seeks
+    // to its saved position using byte ranges, just as it does for /stream.
+    if negotiation.supports_direct_play() {
         return stream_resolved(media, &headers, &method, false).await;
     }
     let raw_session_id = request.play_session_id.clone();
