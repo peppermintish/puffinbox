@@ -259,6 +259,9 @@ pub(crate) async fn catalog_children_result(
 ) -> Result<Response, ApiError> {
     playlist_access(state, user, playlist_id).await?;
     if query.is_folder.is_some()
+        || !query.exclude_item_ids.is_empty()
+        || !query.artist_ids.is_empty()
+        || !query.album_artist_ids.is_empty()
         || query.is_played.is_some()
         || query.is_favorite
         || query.is_resumable
@@ -349,6 +352,9 @@ pub(crate) async fn catalog_result(
     }
     if query.include_item_types.len() != 1
         || !query.item_ids.is_empty()
+        || !query.exclude_item_ids.is_empty()
+        || !query.artist_ids.is_empty()
+        || !query.album_artist_ids.is_empty()
         || query.is_folder.is_some()
         || query.is_played.is_some()
         || query.is_favorite

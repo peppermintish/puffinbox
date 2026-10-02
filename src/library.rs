@@ -56,6 +56,9 @@ pub struct ItemRecord {
 pub struct ItemQuery {
     pub parent_id: Option<Uuid>,
     pub item_ids: Vec<Uuid>,
+    pub exclude_item_ids: Vec<Uuid>,
+    pub artist_ids: Vec<Uuid>,
+    pub album_artist_ids: Vec<Uuid>,
     pub preserve_item_order: bool,
     pub search_term: Option<String>,
     pub exact_name: Option<String>,

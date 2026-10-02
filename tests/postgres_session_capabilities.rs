@@ -460,6 +460,226 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         .status(),
         StatusCode::NO_CONTENT
     );
+    // The official web client can report zero before its concurrent EOF
+    // report. Exercise that ordering deterministically, then the reverse.
+    for opaque_id in ["1790973380081", "", "completion-first"] {
+        sqlx::query("UPDATE user_item_data SET played=FALSE,playback_position_ticks=0,updated_at=clock_timestamp() WHERE user_id=$1 AND item_id=$2")
+            .bind(user_id).bind(track_id).execute(&pool).await.unwrap();
+        let before = db::item_user_data(&pool, user_id, &[track_id])
+            .await
+            .unwrap();
+        let start = json!({"ItemId":track_id,"PlaySessionId":opaque_id,"PositionTicks":0});
+        let completion =
+            json!({"ItemId":track_id,"PlaySessionId":opaque_id,"PositionTicks":980000000});
+        assert_eq!(
+            post(&router, Some(&first.token), "/Sessions/Playing", &start)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let reports = if opaque_id == "completion-first" {
+            [&completion, &start]
+        } else {
+            [&start, &completion]
+        };
+        for report in reports {
+            assert_eq!(
+                post(
+                    &router,
+                    Some(&first.token),
+                    "/Sessions/Playing/Stopped",
+                    report
+                )
+                .await
+                .status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+        let data = db::item_user_data(&pool, user_id, &[track_id])
+            .await
+            .unwrap();
+        assert!(
+            data[&track_id].played,
+            "a late EOF stop must survive the earlier zero stop for {opaque_id:?}"
+        );
+        assert_eq!(data[&track_id].playback_position_ticks, 0);
+        assert_eq!(data[&track_id].play_count, before[&track_id].play_count + 1);
+        let (repeat_one, repeat_two) = tokio::join!(
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing/Stopped",
+                &completion
+            ),
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing/Stopped",
+                &completion
+            ),
+        );
+        assert_eq!(repeat_one.status(), StatusCode::NO_CONTENT);
+        assert_eq!(repeat_two.status(), StatusCode::NO_CONTENT);
+        let retained = db::item_user_data(&pool, user_id, &[track_id])
+            .await
+            .unwrap();
+        assert_eq!(
+            retained[&track_id].play_count, data[&track_id].play_count,
+            "duplicate completion cannot increment the count twice"
+        );
+    }
+    for case in [
+        "next-item",
+        "same-item",
+        "other-device",
+        "user-edit",
+        "expired",
+        "superseded",
+    ] {
+        sqlx::query("UPDATE user_item_data SET played=FALSE,playback_position_ticks=0,updated_at=clock_timestamp() WHERE user_id=$1 AND item_id=$2")
+            .bind(user_id).bind(track_id).execute(&pool).await.unwrap();
+        let old_id = Uuid::new_v4();
+        let old_event = json!({"ItemId":track_id,"PlaySessionId":old_id,"PositionTicks":0});
+        assert_eq!(
+            post(&router, Some(&first.token), "/Sessions/Playing", &old_event)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        if case != "superseded" {
+            assert_eq!(
+                post(
+                    &router,
+                    Some(&first.token),
+                    "/Sessions/Playing/Stopped",
+                    &old_event
+                )
+                .await
+                .status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+        let newer_item = if matches!(case, "next-item" | "superseded") {
+            next_track
+        } else {
+            track_id
+        };
+        let newer_id = Uuid::new_v4();
+        let newer_event =
+            json!({"ItemId":newer_item,"PlaySessionId":newer_id,"PositionTicks":7000000});
+        let newer_token = if case == "other-device" {
+            &second.token
+        } else {
+            &first.token
+        };
+        if matches!(
+            case,
+            "next-item" | "same-item" | "other-device" | "superseded"
+        ) {
+            assert_eq!(
+                post(
+                    &router,
+                    Some(newer_token),
+                    "/Sessions/Playing",
+                    &newer_event
+                )
+                .await
+                .status(),
+                StatusCode::NO_CONTENT
+            );
+        } else if case == "user-edit" {
+            assert_eq!(
+                post(
+                    &router,
+                    Some(&first.token),
+                    &format!("/Items/{track_id}/UserData"),
+                    &json!({"Played":false,"PlaybackPositionTicks":7000000})
+                )
+                .await
+                .status(),
+                StatusCode::OK
+            );
+        } else {
+            sqlx::query("UPDATE playback_sessions SET stop_reported_at=clock_timestamp()-INTERVAL '11 seconds' WHERE id=$1")
+                .bind(old_id).execute(&pool).await.unwrap();
+        }
+        let before = db::item_user_data(&pool, user_id, &[track_id, next_track])
+            .await
+            .unwrap();
+        let completion =
+            json!({"ItemId":track_id,"PlaySessionId":old_id,"PositionTicks":980000000});
+        assert_eq!(
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing/Stopped",
+                &completion
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        let data = db::item_user_data(&pool, user_id, &[track_id, next_track])
+            .await
+            .unwrap();
+        if case == "next-item" {
+            assert!(
+                data[&track_id].played,
+                "an old track's late completion can be retained while a different queue item is active"
+            );
+            assert_eq!(data[&track_id].play_count, before[&track_id].play_count + 1);
+            assert_eq!(
+                data[&next_track].playback_position_ticks,
+                before[&next_track].playback_position_ticks
+            );
+        } else {
+            assert!(
+                !data[&track_id].played,
+                "late completion must not replace {case}"
+            );
+            assert_eq!(
+                data[&track_id].playback_position_ticks,
+                before[&track_id].playback_position_ticks
+            );
+            assert_eq!(data[&track_id].play_count, before[&track_id].play_count);
+        }
+        if matches!(
+            case,
+            "next-item" | "same-item" | "other-device" | "superseded"
+        ) {
+            let device = if case == "other-device" {
+                &second_device
+            } else {
+                &first_device
+            };
+            assert_eq!(
+                db::active_playback_session(
+                    &pool,
+                    run_id,
+                    user_id,
+                    device,
+                    Some(newer_id),
+                    Some(newer_item)
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+                newer_id
+            );
+            assert_eq!(
+                post(
+                    &router,
+                    Some(newer_token),
+                    "/Sessions/Playing/Stopped",
+                    &newer_event
+                )
+                .await
+                .status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+    }
     sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
         .bind(library_id)
         .execute(&pool)

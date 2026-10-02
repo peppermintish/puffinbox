@@ -1791,6 +1791,10 @@ pub async fn finish_playback_session(
         tx.rollback().await?;
         return Ok(None);
     }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("{user_id}:{device_id}"))
+        .execute(&mut *tx)
+        .await?;
     let selected = sqlx::query("SELECT id,item_id,position_ticks FROM playback_sessions WHERE instance_run_id=$1 AND user_id=$2 AND device_id=$3 AND ended_at IS NULL AND ($4::UUID IS NULL OR id=$4) AND ($5::UUID IS NULL OR item_id=$5) ORDER BY last_activity_at DESC LIMIT 1 FOR UPDATE")
         .bind(run_id).bind(user_id).bind(device_id).bind(id).bind(item_id).fetch_optional(&mut *tx).await?;
     let Some(selected) = selected else {
@@ -1800,8 +1804,8 @@ pub async fn finish_playback_session(
     let selected_item: Option<Uuid> = selected.try_get("item_id")?;
     let previous_position: i64 = selected.try_get("position_ticks")?;
     let final_position = position_ticks.unwrap_or(previous_position);
-    let row = sqlx::query("UPDATE playback_sessions SET ended_at=NOW(),position_ticks=$2,last_activity_at=NOW() WHERE id=$1 AND ended_at IS NULL RETURNING id,item_id,position_ticks")
-        .bind(selected_id).bind(final_position).fetch_optional(&mut *tx).await?;
+    let mut completed = false;
+    let mut saved_at = None;
     if persist_user_data && let Some(item_id) = selected_item {
         let runtime_ticks: Option<i64> =
             sqlx::query_scalar("SELECT runtime_ticks FROM items WHERE id=$1")
@@ -1809,20 +1813,21 @@ pub async fn finish_playback_session(
                 .fetch_optional(&mut *tx)
                 .await?
                 .flatten();
-        let completed = played_to_completion.unwrap_or(false)
-            || runtime_ticks.is_some_and(|duration| {
-                duration > 0 && (final_position as i128) * 100 >= (duration as i128) * 95
-            });
+        completed = playback_completed(final_position, runtime_ticks, played_to_completion);
         let resume_position = if completed { 0 } else { final_position };
-        save_playback_user_data(
-            &mut tx,
-            user_id,
-            item_id,
-            completed.then_some(true),
-            resume_position,
-        )
-        .await?;
+        saved_at = Some(
+            save_playback_user_data(
+                &mut tx,
+                user_id,
+                item_id,
+                completed.then_some(true),
+                resume_position,
+            )
+            .await?,
+        );
     }
+    let row = sqlx::query("UPDATE playback_sessions SET ended_at=NOW(),position_ticks=$2,last_activity_at=NOW(),stop_reported_at=clock_timestamp(),stop_user_data_updated_at=$3,stop_completed=$4 WHERE id=$1 AND ended_at IS NULL RETURNING id,item_id,position_ticks")
+        .bind(selected_id).bind(final_position).bind(saved_at).bind(completed).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
     row.as_ref()
         .map(|row| {
@@ -1835,16 +1840,92 @@ pub async fn finish_playback_session(
         .transpose()
 }
 
+pub async fn merge_ended_playback_stop(
+    pool: &PgPool,
+    selector: PlaybackSessionSelector,
+    position_ticks: Option<i64>,
+    played_to_completion: Option<bool>,
+) -> Result<bool, sqlx::Error> {
+    let (Some(id), Some(item_id)) = (selector.id, selector.item_id) else {
+        return Ok(false);
+    };
+    let mut tx = pool.begin().await?;
+    if !active_run_is_current(&mut tx, selector.run_id).await? {
+        return Ok(false);
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("{}:{}", selector.user_id, selector.device_id))
+        .execute(&mut *tx)
+        .await?;
+    // Only a client-reported stop can be corrected. Run recovery, device
+    // takeover and shutdown also end rows, but never set this marker.
+    let row = sqlx::query("SELECT position_ticks,stop_completed,stop_user_data_updated_at,started_at FROM playback_sessions WHERE id=$1 AND instance_run_id=$2 AND user_id=$3 AND device_id=$4 AND item_id=$5 AND ended_at IS NOT NULL AND stop_reported_at > clock_timestamp()-INTERVAL '10 seconds' FOR UPDATE")
+        .bind(id).bind(selector.run_id).bind(selector.user_id).bind(&selector.device_id).bind(item_id)
+        .fetch_optional(&mut *tx).await?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let previous: i64 = row.try_get("position_ticks")?;
+    let completed_before: bool = row.try_get("stop_completed")?;
+    let saved_at: Option<DateTime<Utc>> = row.try_get("stop_user_data_updated_at")?;
+    let started_at: DateTime<Utc> = row.try_get("started_at")?;
+    let final_position = position_ticks.unwrap_or(previous).max(previous);
+    if completed_before || (final_position == previous && played_to_completion != Some(true)) {
+        return Ok(false);
+    }
+    // Lock the saved state before checking its revision. A later progress
+    // report or explicit user-data edit owns that state and must win.
+    let current_saved_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT updated_at FROM user_item_data WHERE user_id=$1 AND item_id=$2 FOR UPDATE",
+    )
+    .bind(selector.user_id)
+    .bind(item_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if saved_at.is_none() || saved_at != current_saved_at {
+        return Ok(false);
+    }
+    let newer: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE user_id=$1 AND item_id=$2 AND id<>$3 AND started_at >= $4)")
+        .bind(selector.user_id).bind(item_id).bind(id).bind(started_at).fetch_one(&mut *tx).await?;
+    if newer {
+        return Ok(false);
+    }
+    let runtime: Option<i64> = sqlx::query_scalar("SELECT runtime_ticks FROM items WHERE id=$1")
+        .bind(item_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+    let completed = playback_completed(final_position, runtime, played_to_completion);
+    let saved_at = save_playback_user_data(
+        &mut tx,
+        selector.user_id,
+        item_id,
+        completed.then_some(true),
+        if completed { 0 } else { final_position },
+    )
+    .await?;
+    sqlx::query("UPDATE playback_sessions SET position_ticks=$2,stop_completed=$3,stop_user_data_updated_at=$4 WHERE id=$1")
+        .bind(id).bind(final_position).bind(completed).bind(saved_at).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+fn playback_completed(position: i64, runtime: Option<i64>, reported: Option<bool>) -> bool {
+    reported.unwrap_or(false)
+        || runtime.is_some_and(|duration| {
+            duration > 0 && (position as i128) * 100 >= (duration as i128) * 95
+        })
+}
+
 async fn save_playback_user_data(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     user_id: Uuid,
     item_id: Uuid,
     played: Option<bool>,
     position_ticks: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO user_item_data(user_id,item_id,played,playback_position_ticks,play_count,last_played_at) VALUES ($1,$2,COALESCE($3,FALSE),$4,CASE WHEN $3 THEN 1 ELSE 0 END,CASE WHEN $3 THEN NOW() ELSE NULL END) ON CONFLICT (user_id,item_id) DO UPDATE SET played=COALESCE($3,user_item_data.played),playback_position_ticks=$4,play_count=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN user_item_data.play_count+1 ELSE user_item_data.play_count END,last_played_at=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN NOW() ELSE user_item_data.last_played_at END,updated_at=NOW()")
-        .bind(user_id).bind(item_id).bind(played).bind(position_ticks).execute(&mut **tx).await?;
-    Ok(())
+) -> Result<DateTime<Utc>, sqlx::Error> {
+    sqlx::query_scalar("INSERT INTO user_item_data(user_id,item_id,played,playback_position_ticks,play_count,last_played_at) VALUES ($1,$2,COALESCE($3,FALSE),$4,CASE WHEN $3 THEN 1 ELSE 0 END,CASE WHEN $3 THEN NOW() ELSE NULL END) ON CONFLICT (user_id,item_id) DO UPDATE SET played=COALESCE($3,user_item_data.played),playback_position_ticks=$4,play_count=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN user_item_data.play_count+1 ELSE user_item_data.play_count END,last_played_at=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN NOW() ELSE user_item_data.last_played_at END,updated_at=NOW() RETURNING updated_at")
+        .bind(user_id).bind(item_id).bind(played).bind(position_ticks).fetch_one(&mut **tx).await
 }
 
 pub async fn end_run_playback_sessions(pool: &PgPool, run_id: Uuid) -> Result<u64, sqlx::Error> {
@@ -2147,13 +2228,32 @@ fn item_cte(parent: Option<(Uuid, Option<Uuid>)>, recursive: bool) -> bool {
 
 fn push_item_source(
     builder: &mut QueryBuilder<'_, Postgres>,
+    user: &UserRecord,
+    query: &ItemQuery,
     parent: Option<(Uuid, Option<Uuid>)>,
-    recursive: bool,
 ) {
-    if item_cte(parent, recursive) {
-        builder.push("WITH RECURSIVE tree(id, library_id, path, depth) AS (SELECT i.id, i.library_id, ARRAY[i.id], 0 FROM items i WHERE i.id = ")
+    let tree = item_cte(parent, query.recursive);
+    let catalog_nodes = !query.artist_ids.is_empty()
+        || !query.album_artist_ids.is_empty()
+        || query.sort_by.split(',').any(|field| {
+            field.trim().eq_ignore_ascii_case("ParentIndexNumber")
+                || field.trim().eq_ignore_ascii_case("Album")
+        });
+    if tree || catalog_nodes {
+        builder.push("WITH RECURSIVE ");
+    }
+    if tree {
+        builder.push("tree(id, library_id, path, depth) AS (SELECT i.id, i.library_id, ARRAY[i.id], 0 FROM items i WHERE i.id = ")
             .push_bind(parent.and_then(|p| p.1).expect("CTE parent"))
             .push(" UNION ALL SELECT child.id, child.library_id, tree.path || child.id, tree.depth + 1 FROM items child JOIN tree ON child.parent_id = tree.id WHERE child.library_id=tree.library_id AND NOT child.id = ANY(tree.path)) ");
+    }
+    if catalog_nodes {
+        if tree {
+            builder.push(", ");
+        }
+        builder.push("visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type FROM items i JOIN libraries l ON l.id=i.library_id");
+        push_item_conditions(builder, user, &ItemQuery::default(), None, true);
+        builder.push(" AND i.item_type IN ('MusicArtist','MusicAlbum','Season')) ");
     }
 }
 
@@ -2174,6 +2274,22 @@ fn push_item_conditions(
             .push(" AND i.id = ANY(")
             .push_bind(query.item_ids.clone())
             .push(") ");
+    }
+    if !query.exclude_item_ids.is_empty() {
+        builder
+            .push(" AND i.id <> ALL(")
+            .push_bind(query.exclude_item_ids.clone())
+            .push(") ");
+    }
+    for ids in [&query.artist_ids, &query.album_artist_ids] {
+        if !ids.is_empty() {
+            builder.push(" AND EXISTS (SELECT 1 FROM visible_catalog_nodes artist \
+                LEFT JOIN visible_catalog_nodes album ON album.id=i.parent_id AND album.item_type='MusicAlbum' AND album.library_id=i.library_id \
+                WHERE artist.item_type='MusicArtist' AND artist.library_id=i.library_id \
+                AND artist.id=CASE WHEN i.item_type='MusicArtist' THEN i.id WHEN i.item_type='MusicAlbum' THEN i.parent_id \
+                WHEN i.item_type='Audio' THEN album.parent_id END AND artist.id=ANY(")
+                .push_bind(ids.clone()).push(")) ");
+        }
     }
     if let Some((library_id, parent_item_id)) = parent {
         if let Some(parent_id) = parent_item_id {
@@ -2333,7 +2449,7 @@ async fn run_item_count(
     parent: Option<(Uuid, Option<Uuid>)>,
 ) -> Result<i64, sqlx::Error> {
     let mut builder = QueryBuilder::<Postgres>::new("");
-    push_item_source(&mut builder, parent, query.recursive);
+    push_item_source(&mut builder, user, query, parent);
     builder.push("SELECT COUNT(*)::BIGINT FROM items i JOIN libraries l ON l.id=i.library_id");
     push_item_conditions(&mut builder, user, query, parent, query.recursive);
     builder.build_query_scalar().fetch_one(pool).await
@@ -2346,10 +2462,13 @@ async fn run_item_page(
     parent: Option<(Uuid, Option<Uuid>)>,
 ) -> Result<Vec<ItemRecord>, sqlx::Error> {
     let mut builder = QueryBuilder::<Postgres>::new("");
-    push_item_source(&mut builder, parent, query.recursive);
+    push_item_source(&mut builder, user, query, parent);
     let rating = policy_rating_sql("i");
     builder.push(format!("SELECT i.id, i.library_id, i.parent_id, i.name, i.sort_name, i.item_type, i.path, i.container, i.size_bytes, i.runtime_ticks, i.date_added, i.date_modified, {rating} AS rating, i.overview, i.metadata_json FROM items i JOIN libraries l ON l.id=i.library_id"));
-    let sort_by_last_played = query.sort_by.trim().eq_ignore_ascii_case("LastPlayedDate");
+    let sort_by_last_played = query.sort_by.split(',').any(|field| {
+        field.trim().eq_ignore_ascii_case("LastPlayedDate")
+            || field.trim().eq_ignore_ascii_case("DatePlayed")
+    });
     if query.is_resumable {
         builder
             .push(" JOIN user_item_data resume_data ON resume_data.user_id=")
@@ -2362,35 +2481,60 @@ async fn run_item_page(
             .push(" AND sort_data.item_id=i.id ");
     }
     push_item_conditions(&mut builder, user, query, parent, query.recursive);
-    let sort_column = match query.sort_by.trim().to_ascii_lowercase().as_str() {
-        "datecreated" | "dateadded" => "i.date_added",
-        "datemodified" => "i.date_modified",
-        "lastplayeddate" if query.is_resumable => {
-            "COALESCE(resume_data.last_played_at,resume_data.updated_at)"
+    let directions = query.sort_order.split(',').collect::<Vec<_>>();
+    let direction = |index: usize| {
+        let value = directions.get(index).unwrap_or(&directions[0]).trim();
+        if value.eq_ignore_ascii_case("descending") || value.eq_ignore_ascii_case("desc") {
+            "DESC"
+        } else {
+            "ASC"
         }
-        "lastplayeddate" => "COALESCE(sort_data.last_played_at,sort_data.updated_at)",
-        "name" | "sortname" | "" => "i.sort_name",
-        _ => "i.sort_name",
-    };
-    let order = if query.sort_order.eq_ignore_ascii_case("descending")
-        || query.sort_order.eq_ignore_ascii_case("desc")
-    {
-        "DESC"
-    } else {
-        "ASC"
     };
     builder.push(" ORDER BY ");
     if query.preserve_item_order && !query.item_ids.is_empty() {
         builder
             .push("array_position(")
             .push_bind(query.item_ids.clone())
-            .push(", i.id)");
+            .push(", i.id) ")
+            .push(direction(0));
     } else {
-        builder.push(sort_column);
+        for (index, field) in query.sort_by.split(',').enumerate() {
+            if index > 0 {
+                builder.push(", ");
+            }
+            // Only internal expressions enter SQL; request text is never interpolated.
+            let column = match field.trim().to_ascii_lowercase().as_str() {
+                "datecreated" | "dateadded" => "i.date_added".to_owned(),
+                "datemodified" => "i.date_modified".to_owned(),
+                "dateplayed" if query.is_resumable => "resume_data.last_played_at".to_owned(),
+                "dateplayed" => "sort_data.last_played_at".to_owned(),
+                "lastplayeddate" if query.is_resumable => {
+                    "COALESCE(resume_data.last_played_at,resume_data.updated_at)".to_owned()
+                }
+                "lastplayeddate" => {
+                    "COALESCE(sort_data.last_played_at,sort_data.updated_at)".to_owned()
+                }
+                "premieredate" => crate::metadata::catalog_sql::premiere_date("i.id"),
+                "productionyear" => crate::metadata::catalog_sql::year("i.id"),
+                "album" => {
+                    "CASE WHEN i.item_type='MusicAlbum' THEN i.name WHEN i.item_type='Audio' THEN \
+                    (SELECT album.name FROM visible_catalog_nodes album WHERE album.id=i.parent_id \
+                    AND album.library_id=i.library_id AND album.item_type='MusicAlbum') END"
+                        .to_owned()
+                }
+                "indexnumber" => crate::metadata::catalog_sql::index_number("i", false),
+                "parentindexnumber" => crate::metadata::catalog_sql::index_number("i", true),
+                "name" => "i.name".to_owned(),
+                _ => "i.sort_name".to_owned(),
+            };
+            builder
+                .push(column)
+                .push(" ")
+                .push(direction(index))
+                .push(" NULLS LAST");
+        }
     }
     builder
-        .push(" ")
-        .push(order)
         .push(", i.id ASC LIMIT ")
         .push_bind(query.limit)
         .push(" OFFSET ")

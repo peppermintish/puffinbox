@@ -38,7 +38,7 @@ pub(crate) async fn catalog_facets(
         return Ok(CatalogFacets::default());
     }
     let mut builder = QueryBuilder::<Postgres>::new("");
-    super::push_item_source(&mut builder, parent, query.recursive);
+    super::push_item_source(&mut builder, user, query, parent);
     builder.push(if super::item_cte(parent, query.recursive) {
         ", selected AS ("
     } else {

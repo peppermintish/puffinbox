@@ -377,6 +377,17 @@ async fn facets_and_selections_share_metadata_and_current_user_boundaries() {
     assert_eq!(named["Items"][0]["Id"], second.to_string());
     assert_eq!(named["Items"][0]["ProductionYear"], 2021);
     assert_eq!(named["Items"][0]["Tags"], json!(["Weekend"]));
+    verify_album_ordering(
+        &router,
+        &pool,
+        library,
+        private,
+        disabled,
+        owner,
+        owner_token,
+    )
+    .await;
+    verify_music_artist_and_track_ordering(&router, &pool, library, owner, owner_token).await;
     let unknown = json_body(
         call(
             &router,
@@ -628,6 +639,604 @@ async fn item(pool: &PgPool, library: Uuid, parent: Option<Uuid>, kind: &str, pa
         .bind(id).bind(library).bind(parent).bind(path).bind(kind).bind(db::path_hash(path))
         .execute(pool).await.unwrap();
     id
+}
+
+async fn verify_album_ordering(
+    router: &Router,
+    pool: &PgPool,
+    library: Uuid,
+    private: Uuid,
+    disabled: Uuid,
+    owner: Uuid,
+    token: &str,
+) {
+    let mut albums = Vec::new();
+    for (index, name, sort_name, premiere, year) in [
+        (0, "Zebra", "alpha", Some("2022-04-02"), Some(1900)),
+        (1, "Alpha", "beta", Some("2022-04-02"), Some(1900)),
+        (2, "Older", "gamma", Some("2010-01-01"), Some(2040)),
+        (3, "Recent", "delta", None, Some(2021)),
+        (4, "Past", "epsilon", None, Some(1999)),
+        (5, "Unknown", "omega", None, None),
+    ] {
+        let album = item(
+            pool,
+            library,
+            None,
+            "MusicAlbum",
+            &format!("/media/order/{index}"),
+        )
+        .await;
+        item(
+            pool,
+            library,
+            Some(album),
+            "Audio",
+            &format!("/media/order/{index}/song.flac"),
+        )
+        .await;
+        sqlx::query("UPDATE items SET name=$2,sort_name=$3 WHERE id=$1")
+            .bind(album)
+            .bind(name)
+            .bind(sort_name)
+            .execute(pool)
+            .await
+            .unwrap();
+        metadata(
+            pool,
+            album,
+            "local-nfo",
+            json!([]),
+            json!({"year":year}),
+            None,
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE item_metadata SET premiere_date=$2::text::date WHERE item_id=$1 AND provider_key='local-nfo'")
+            .bind(album).bind(premiere).execute(pool).await.unwrap();
+        albums.push(album);
+    }
+    // Lower-priority and untrusted dates must not replace the displayed value.
+    for (id, provider) in [(albums[2], "tvmaze"), (albums[4], "plugin:untrusted")] {
+        metadata(pool, id, provider, json!([]), json!({}), None, None).await;
+        sqlx::query("UPDATE item_metadata SET premiere_date='2099-01-01' WHERE item_id=$1 AND provider_key=$2")
+            .bind(id).bind(provider).execute(pool).await.unwrap();
+    }
+    for (library_id, path, rating) in [
+        (private, "/media/order/private", None),
+        (disabled, "/media/order/disabled", None),
+        (library, "/media/.hidden-order", None),
+        (library, "/media/order/restricted", Some(90)),
+    ] {
+        let album = item(pool, library_id, None, "MusicAlbum", path).await;
+        item(
+            pool,
+            library_id,
+            Some(album),
+            "Audio",
+            &format!("{path}/song.flac"),
+        )
+        .await;
+        metadata(
+            pool,
+            album,
+            "local-nfo",
+            json!([]),
+            json!({"year":2099}),
+            None,
+            rating,
+        )
+        .await;
+        sqlx::query("UPDATE item_metadata SET premiere_date='2099-01-01' WHERE item_id=$1")
+            .bind(album)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    let prefix = "/Items?Recursive=true&IncludeItemTypes=MusicAlbum";
+    let ordered = json_body(call(router, &format!("{prefix}&SortBy=PremiereDate,ProductionYear,SortName&SortOrder=Descending,Descending,Ascending"), Some(token)).await).await;
+    assert_eq!(ordered["TotalRecordCount"], 6);
+    assert_eq!(item_ids(&ordered), albums);
+    assert_eq!(ordered["Items"][0]["ProductionYear"], 2022);
+    assert_eq!(ordered["Items"][2]["ProductionYear"], 2010);
+    assert_eq!(ordered["Items"][4]["ProductionYear"], 1999);
+    let descending = json_body(
+        call(
+            router,
+            &format!("{prefix}&sortBy=PremiereDate,ProductionYear,SortName&sortOrder=Descending"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&descending),
+        vec![
+            albums[1], albums[0], albums[2], albums[3], albums[4], albums[5]
+        ]
+    );
+    let mixed = json_body(call(router, &format!("{prefix}&SortBy=PremiereDate,ProductionYear,SortName&SortOrder=Descending,Ascending,Descending"), Some(token)).await).await;
+    assert_eq!(
+        item_ids(&mixed),
+        vec![
+            albums[1], albums[0], albums[2], albums[4], albums[3], albums[5]
+        ]
+    );
+    let year = json_body(
+        call(
+            router,
+            &format!("{prefix}&SortBy=ProductionYear,SortName&SortOrder=Descending,Ascending"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&year),
+        vec![
+            albums[0], albums[1], albums[3], albums[2], albums[4], albums[5]
+        ]
+    );
+    let name = json_body(call(router, &format!("{prefix}&SortBy=Name"), Some(token)).await).await;
+    assert_eq!(
+        item_ids(&name),
+        vec![
+            albums[1], albums[2], albums[4], albums[3], albums[5], albums[0]
+        ]
+    );
+    let filtered = json_body(call(router, &format!("{prefix}&SortBy=PremiereDate,ProductionYear,SortName&SortOrder=Descending,Descending,Ascending&ExcludeItemIds={},{},{}&StartIndex=1&Limit=2",albums[0],albums[2],albums[0]), Some(token)).await).await;
+    assert_eq!(filtered["TotalRecordCount"], 4);
+    assert_eq!(filtered["StartIndex"], 1);
+    assert_eq!(item_ids(&filtered), vec![albums[3], albums[4]]);
+    let legacy = json_body(
+        call(
+            router,
+            &format!(
+                "/Users/{owner}/Items?Ids={},{},{}&excludeItemIds={}",
+                albums[5], albums[0], albums[1], albums[0]
+            ),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(legacy["TotalRecordCount"], 2);
+    assert_eq!(item_ids(&legacy), vec![albums[5], albums[1]]);
+    let unknown = json_body(
+        call(
+            router,
+            &format!("{prefix}&excludeItemIds={}", Uuid::new_v4()),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(unknown["TotalRecordCount"], 6);
+    for (id, date, ticks) in [(albums[0], "2020-01-01", 10), (albums[1], "2021-01-01", 20)] {
+        sqlx::query("INSERT INTO user_item_data(user_id,item_id,playback_position_ticks,last_played_at) VALUES ($1,$2,$3,$4::text::timestamptz)")
+            .bind(owner).bind(id).bind(ticks as i64).bind(date).execute(pool).await.unwrap();
+    }
+    let played = json_body(call(router, &format!("{prefix}&SortBy=ProductionYear,LastPlayedDate,SortName&SortOrder=Descending,Descending,Ascending"), Some(token)).await).await;
+    assert_eq!(
+        item_ids(&played),
+        vec![
+            albums[1], albums[0], albums[3], albums[2], albums[4], albums[5]
+        ]
+    );
+    let resume = json_body(call(router, &format!("{prefix}&Filters=IsResumable&SortBy=ProductionYear,LastPlayedDate&SortOrder=Descending"), Some(token)).await).await;
+    assert_eq!(resume["TotalRecordCount"], 2);
+    assert_eq!(item_ids(&resume), vec![albums[1], albums[0]]);
+    sqlx::query("INSERT INTO user_item_data(user_id,item_id,is_favorite) VALUES ($1,$2,TRUE)")
+        .bind(owner)
+        .bind(albums[5])
+        .execute(pool)
+        .await
+        .unwrap();
+    let date_played = json_body(
+        call(
+            router,
+            &format!(
+                "{prefix}&Ids={},{},{}&SortBy=DatePlayed&SortOrder=Descending",
+                albums[5], albums[0], albums[1]
+            ),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&date_played),
+        vec![albums[1], albums[0], albums[5]]
+    );
+    let fewer_orders = json_body(call(router, &format!("{prefix}&SortBy=PremiereDate,ProductionYear,SortName&SortOrder=Descending,Ascending"), Some(token)).await).await;
+    assert_eq!(item_ids(&fewer_orders), item_ids(&mixed));
+    let too_many_ids = std::iter::repeat_n(albums[0].to_string(), 1001)
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        call(
+            router,
+            &format!("{prefix}&ExcludeItemIds={too_many_ids}"),
+            Some(token)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    for suffix in [
+        "SortBy=SortName,Unsupported",
+        "SortBy=PremiereDate,SortName&SortOrder=Ascending,Invalid",
+        "SortBy=SortName&SortOrder=Ascending,Descending",
+        "SortBy=SortName,,Name",
+        "SortBy=SortName,SortName,SortName,SortName,SortName,SortName,SortName,SortName,SortName",
+        "ExcludeItemIds=not-an-id",
+    ] {
+        assert_eq!(
+            call(router, &format!("{prefix}&{suffix}"), Some(token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{suffix}"
+        );
+    }
+    // Keep the existing facet fixture's expected menus unchanged.
+    sqlx::query(
+        "DELETE FROM items WHERE path LIKE '/media/order/%' OR path LIKE '/media/.hidden-order%'",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+fn item_ids(result: &Value) -> Vec<Uuid> {
+    result["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| Uuid::parse_str(item["Id"].as_str().unwrap()).unwrap())
+        .collect()
+}
+
+async fn verify_music_artist_and_track_ordering(
+    router: &Router,
+    pool: &PgPool,
+    library: Uuid,
+    owner: Uuid,
+    token: &str,
+) {
+    let artist = item(
+        pool,
+        library,
+        None,
+        "MusicArtist",
+        "/media/ordering-music/artist-a",
+    )
+    .await;
+    let other = item(
+        pool,
+        library,
+        None,
+        "MusicArtist",
+        "/media/ordering-music/artist-b",
+    )
+    .await;
+    let album = item(
+        pool,
+        library,
+        Some(artist),
+        "MusicAlbum",
+        "/media/ordering-music/artist-a/album",
+    )
+    .await;
+    let unrelated = item(
+        pool,
+        library,
+        Some(other),
+        "MusicAlbum",
+        "/media/ordering-music/artist-b/album",
+    )
+    .await;
+    let unrelated_track = item(
+        pool,
+        library,
+        Some(unrelated),
+        "Audio",
+        "/media/ordering-music/artist-b/album/1.flac",
+    )
+    .await;
+    let mut tracks = Vec::new();
+    // Filenames deliberately disagree with the local NFO disc/track order.
+    for (name, disc, track) in [
+        ("Zebra.flac", Some(1), Some(1)),
+        ("Alpha.flac", Some(1), Some(2)),
+        ("Beta.flac", Some(2), Some(1)),
+        ("Unknown.flac", None, None),
+    ] {
+        let id = item(
+            pool,
+            library,
+            Some(album),
+            "Audio",
+            &format!("/media/ordering-music/artist-a/album/{name}"),
+        )
+        .await;
+        metadata(
+            pool,
+            id,
+            "local-nfo",
+            json!([]),
+            json!({"discNumber":disc,"trackNumber":track}),
+            None,
+            None,
+        )
+        .await;
+        tracks.push(id);
+    }
+    metadata(
+        pool,
+        tracks[0],
+        "plugin:untrusted",
+        json!([]),
+        json!({"discNumber":99,"trackNumber":99}),
+        None,
+        None,
+    )
+    .await;
+    let ordered = json_body(call(router, &format!("/Users/{owner}/Items?ParentId={album}&SortBy=ParentIndexNumber,IndexNumber,SortName"), Some(token)).await).await;
+    assert_eq!(ordered["TotalRecordCount"], 4);
+    assert_eq!(item_ids(&ordered), tracks);
+    let album_queue = json_body(call(router, &format!("/Users/{owner}/Items?ParentId={album}&Filters=IsNotFolder&Recursive=true&SortBy=Album,ParentIndexNumber,IndexNumber,SortName&MediaTypes=Audio,Video&Limit=300&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false&CollapseBoxSetItems=false"), Some(token)).await).await;
+    assert_eq!(item_ids(&album_queue), tracks);
+    assert!(album_queue.get("TotalRecordCount").is_none());
+    for (id, name) in [(album, "Zebra album"), (unrelated, "Alpha album")] {
+        sqlx::query("UPDATE items SET name=$2 WHERE id=$1")
+            .bind(id)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    let explicit_ids = std::iter::once(unrelated_track)
+        .chain(tracks.iter().copied())
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let grouped = json_body(
+        call(
+            router,
+            &format!(
+                "/Items?Ids={explicit_ids}&sortBy=Album,ParentIndexNumber,IndexNumber,SortName"
+            ),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    let expected = std::iter::once(unrelated_track)
+        .chain(tracks.iter().copied())
+        .collect::<Vec<_>>();
+    assert_eq!(item_ids(&grouped), expected);
+    assert_eq!(grouped["Items"][0]["Album"], "Alpha album");
+    assert_eq!(grouped["Items"][1]["Album"], "Zebra album");
+    let grouped_descending = json_body(call(router, &format!("/Items?Ids={explicit_ids}&SortBy=Album,ParentIndexNumber,IndexNumber,SortName&SortOrder=Descending,Ascending,Ascending,Ascending"), Some(token)).await).await;
+    let expected = tracks
+        .iter()
+        .copied()
+        .chain(std::iter::once(unrelated_track))
+        .collect::<Vec<_>>();
+    assert_eq!(item_ids(&grouped_descending), expected);
+    for (row, disc, track) in [(0, 1, 1), (1, 1, 2), (2, 2, 1)] {
+        assert_eq!(ordered["Items"][row]["ParentIndexNumber"], disc);
+        assert_eq!(ordered["Items"][row]["IndexNumber"], track);
+    }
+    let descending = json_body(call(router, &format!("/Items?ParentId={album}&sortBy=ParentIndexNumber,IndexNumber,SortName&sortOrder=Descending,Ascending"), Some(token)).await).await;
+    assert_eq!(
+        item_ids(&descending),
+        vec![tracks[2], tracks[0], tracks[1], tracks[3]]
+    );
+    for key in ["ArtistIds", "AlbumArtistIds", "artistIds", "albumArtistIds"] {
+        let selected = json_body(
+            call(
+                router,
+                &format!("/Items?Recursive=true&IncludeItemTypes=MusicAlbum&{key}={artist}"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(selected["TotalRecordCount"], 1);
+        assert_eq!(item_ids(&selected), vec![album]);
+    }
+    let selected = json_body(call(router, &format!("/Items?ParentId={artist}&Recursive=true&IncludeItemTypes=Audio&AlbumArtistIds={artist}&SortBy=ParentIndexNumber,IndexNumber,SortName&Limit=2&StartIndex=1"), Some(token)).await).await;
+    assert_eq!(selected["TotalRecordCount"], 4);
+    assert_eq!(item_ids(&selected), vec![tracks[1], tracks[2]]);
+    let disjoint = json_body(call(router, &format!("/Items?Recursive=true&IncludeItemTypes=MusicAlbum&ArtistIds={artist}&AlbumArtistIds={other}"), Some(token)).await).await;
+    assert_eq!(disjoint["TotalRecordCount"], 0);
+    let excluded = json_body(call(router, &format!("/Items?Recursive=true&IncludeItemTypes=MusicAlbum&AlbumArtistIds={artist}&ExcludeItemIds={album}"), Some(token)).await).await;
+    assert_eq!(excluded["TotalRecordCount"], 0);
+    let hidden_artist = item(
+        pool,
+        library,
+        None,
+        "MusicArtist",
+        "/media/.hidden-ordering-artist",
+    )
+    .await;
+    let hidden_album = item(
+        pool,
+        library,
+        Some(hidden_artist),
+        "MusicAlbum",
+        "/media/ordering-music/visible-child",
+    )
+    .await;
+    item(
+        pool,
+        library,
+        Some(hidden_album),
+        "Audio",
+        "/media/ordering-music/visible-child/song.flac",
+    )
+    .await;
+    let hidden_parent = json_body(
+        call(
+            router,
+            &format!(
+                "/Items?Recursive=true&IncludeItemTypes=MusicAlbum&AlbumArtistIds={hidden_artist}"
+            ),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(hidden_parent["TotalRecordCount"], 0);
+    let private_album = item(
+        pool,
+        library,
+        Some(artist),
+        "MusicAlbum",
+        "/media/.hidden-ordering-album",
+    )
+    .await;
+    let child = item(
+        pool,
+        library,
+        Some(private_album),
+        "Audio",
+        "/media/ordering-music/visible-track.flac",
+    )
+    .await;
+    let hidden_album_match = json_body(
+        call(
+            router,
+            &format!("/Items?Ids={child}&AlbumArtistIds={artist}"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(hidden_album_match["TotalRecordCount"], 0);
+    let private_album_sort = json_body(
+        call(
+            router,
+            &format!(
+                "/Items?Ids={},{}&SortBy=Album&SortOrder=Descending",
+                child, tracks[0]
+            ),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(item_ids(&private_album_sort), vec![tracks[0], child]);
+    assert!(private_album_sort["Items"][1].get("Album").is_none());
+    metadata(
+        pool,
+        artist,
+        "local-nfo",
+        json!([]),
+        json!({}),
+        None,
+        Some(90),
+    )
+    .await;
+    let restricted_artist = json_body(
+        call(
+            router,
+            &format!("/Items?Recursive=true&IncludeItemTypes=Audio&ArtistIds={artist}"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(restricted_artist["TotalRecordCount"], 0);
+    sqlx::query("UPDATE item_metadata SET policy_rating_scale=NULL,policy_rating_value=NULL WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(artist).execute(pool).await.unwrap();
+    for invalid in [
+        json!(-1),
+        json!(2147483648_i64),
+        json!("NaN"),
+        json!([1]),
+        json!("999999999999999999999999999999"),
+    ] {
+        sqlx::query("UPDATE item_metadata SET metadata_json=$2 WHERE item_id=$1 AND provider_key='local-nfo'")
+            .bind(tracks[3]).bind(Json(json!({"discNumber":invalid,"trackNumber":invalid}))).execute(pool).await.unwrap();
+        let result = json_body(
+            call(
+                router,
+                &format!("/Items?ParentId={album}&SortBy=ParentIndexNumber,IndexNumber,SortName"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(item_ids(&result), tracks);
+        assert!(result["Items"][3].get("IndexNumber").is_none());
+        assert!(result["Items"][3].get("ParentIndexNumber").is_none());
+    }
+    let unnumbered = json_body(
+        call(
+            router,
+            &format!("/Items?Ids={}&SortBy=IndexNumber", tracks[3]),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(unnumbered["TotalRecordCount"], 1);
+    let series = item(
+        pool,
+        library,
+        None,
+        "Series",
+        "/media/ordering-music/series",
+    )
+    .await;
+    let mut episodes = Vec::new();
+    for (season_index, episode_index) in [(2, 1), (1, 2), (1, 1)] {
+        let season = item(
+            pool,
+            library,
+            Some(series),
+            "Season",
+            &format!("/media/ordering-music/season-{season_index}-{episode_index}/{season_index}"),
+        )
+        .await;
+        let episode = item(pool, library, Some(season), "Episode", &format!("/media/ordering-music/season-{season_index}-{episode_index}/S{season_index:02}E{episode_index:02}.mkv")).await;
+        episodes.push(episode);
+    }
+    let hidden_season = item(
+        pool,
+        library,
+        Some(series),
+        "Season",
+        "/media/.hidden-ordering-season0",
+    )
+    .await;
+    let visible_episode = item(
+        pool,
+        library,
+        Some(hidden_season),
+        "Episode",
+        "/media/ordering-music/visible-S00E01.mkv",
+    )
+    .await;
+    let episode_page = json_body(call(router, &format!("/Items?ParentId={series}&Recursive=true&IncludeItemTypes=Episode&SortBy=ParentIndexNumber,IndexNumber,SortName"), Some(token)).await).await;
+    assert_eq!(
+        item_ids(&episode_page),
+        vec![episodes[2], episodes[1], episodes[0], visible_episode]
+    );
+    assert_eq!(episode_page["Items"][0]["ParentIndexNumber"], 1);
+    assert_eq!(episode_page["Items"][0]["IndexNumber"], 1);
+    assert!(episode_page["Items"][3].get("ParentIndexNumber").is_none());
+    assert_eq!(
+        call(router, "/Items?ArtistIds=invalid", Some(token))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    sqlx::query("DELETE FROM items WHERE path LIKE '/media/ordering-music/%' OR path IN ('/media/.hidden-ordering-artist','/media/.hidden-ordering-album','/media/.hidden-ordering-season0')")
+        .execute(pool).await.unwrap();
 }
 
 async fn metadata(

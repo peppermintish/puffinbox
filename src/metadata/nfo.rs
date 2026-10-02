@@ -21,6 +21,8 @@ pub(super) struct LocalNfo {
     pub overview: Option<String>,
     pub premiere_date: Option<NaiveDate>,
     pub year: Option<i32>,
+    pub track_number: Option<i32>,
+    pub disc_number: Option<i32>,
     pub genres: Vec<String>,
     pub tags: Vec<String>,
     pub content_rating: Option<String>,
@@ -231,6 +233,10 @@ fn is_supported_field(name: &str) -> bool {
             | "premiered"
             | "releasedate"
             | "year"
+            | "track"
+            | "tracknumber"
+            | "disc"
+            | "discnumber"
             | "mpaa"
             | "genre"
             | "tag"
@@ -263,6 +269,12 @@ fn apply_field(fields: &mut LocalNfo, name: &str, raw: &str) -> Result<(), &'sta
                 .parse::<i32>()
                 .ok()
                 .filter(|year| (1800..=2300).contains(year))
+        }
+        "track" | "tracknumber" => {
+            fields.track_number = value.parse::<i32>().ok().filter(|number| *number > 0);
+        }
+        "disc" | "discnumber" => {
+            fields.disc_number = value.parse::<i32>().ok().filter(|number| *number > 0);
         }
         "mpaa" => {
             fields.content_rating = Some(bound(value, 64)?);
@@ -334,6 +346,31 @@ pub(super) fn parse_us_mpaa_v1(raw: &str) -> Option<i16> {
 #[cfg(test)]
 mod tests {
     use super::{LocalNfo, parse, parse_us_mpaa_v1};
+
+    #[test]
+    fn reads_positive_music_track_and_disc_numbers() {
+        let fields =
+            parse(br#"<audio><tracknumber>12</tracknumber><discnumber>2</discnumber></audio>"#)
+                .unwrap();
+        assert_eq!(
+            (fields.track_number, fields.disc_number),
+            (Some(12), Some(2))
+        );
+        let aliases = parse(br#"<audio><track>3</track><disc>1</disc></audio>"#).unwrap();
+        assert_eq!(
+            (aliases.track_number, aliases.disc_number),
+            (Some(3), Some(1))
+        );
+    }
+
+    #[test]
+    fn invalid_music_numbers_do_not_discard_other_metadata() {
+        for value in ["0", "-1", "2.5", "2147483648", "not-a-number"] {
+            let fields = parse(format!("<audio><title>Retained title</title><track>{value}</track><disc>{value}</disc></audio>").as_bytes()).unwrap();
+            assert_eq!(fields.title.as_deref(), Some("Retained title"));
+            assert_eq!((fields.track_number, fields.disc_number), (None, None));
+        }
+    }
 
     #[test]
     fn parses_whitelisted_nfo_fields_and_keeps_unknown_rating_unrated() {

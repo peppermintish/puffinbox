@@ -1471,8 +1471,7 @@ async fn stop_playback(
     )
     .await?;
     let Some(active) = active else {
-        return acknowledge_ended_playback(&state, &user, &device.id, session_id, body.item_id)
-            .await;
+        return acknowledge_ended_playback(&state, &user, &device.id, session_id, &body).await;
     };
     let item_id = active.item_id.ok_or(ApiError::NotFound)?;
     let item = visible_playback_item(&state, &user, item_id).await?;
@@ -1491,14 +1490,7 @@ async fn stop_playback(
     )
     .await?;
     let Some(_session) = session else {
-        return acknowledge_ended_playback(
-            &state,
-            &user,
-            &device.id,
-            Some(active.id),
-            Some(item_id),
-        )
-        .await;
+        return acknowledge_ended_playback(&state, &user, &device.id, Some(active.id), &body).await;
     };
     crate::media_features::cancel_playback_session(user.id, item_id, active.id).await;
     if !user.allow_media_playback {
@@ -1514,7 +1506,7 @@ async fn acknowledge_ended_playback(
     user: &UserRecord,
     device_id: &str,
     session_id: Option<Uuid>,
-    item_id: Option<Uuid>,
+    body: &PlaybackEventRequest,
 ) -> Result<StatusCode, ApiError> {
     if !user.allow_media_playback {
         return Err(ApiError::Forbidden);
@@ -1525,7 +1517,7 @@ async fn acknowledge_ended_playback(
         user.id,
         device_id,
         session_id,
-        item_id,
+        body.item_id,
     )
     .await?
     .ok_or(ApiError::NotFound)?;
@@ -1533,8 +1525,24 @@ async fn acknowledge_ended_playback(
     visible_playback_item(state, user, item_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    // Duplicate native stop events must not reset completion or the saved
-    // position, publish a second update, or cancel a newer playback session.
+    if db::merge_ended_playback_stop(
+        &state.db,
+        db::PlaybackSessionSelector {
+            run_id: state.run_id,
+            user_id: user.id,
+            device_id: device_id.to_owned(),
+            id: Some(ended.id),
+            item_id: Some(item_id),
+        },
+        body.position_ticks,
+        body.played_to_completion,
+    )
+    .await?
+    {
+        state.user_events.publish(user.id, item_id);
+    }
+    // A duplicate zero stop cannot erase completion or cancel the next item.
+    // A higher report can correct the same recent stop once, without revival.
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2379,6 +2387,12 @@ pub(crate) struct ItemsQueryParams {
     parent_id: Option<Uuid>,
     #[serde(default, rename = "Ids", alias = "ids")]
     ids: Option<String>,
+    #[serde(default, rename = "ExcludeItemIds", alias = "excludeItemIds")]
+    exclude_item_ids: Option<String>,
+    #[serde(default, rename = "ArtistIds", alias = "artistIds")]
+    artist_ids: Option<String>,
+    #[serde(default, rename = "AlbumArtistIds", alias = "albumArtistIds")]
+    album_artist_ids: Option<String>,
     #[serde(default, rename = "SearchTerm", alias = "searchTerm")]
     search_term: Option<String>,
     #[serde(default, rename = "IncludeItemTypes", alias = "includeItemTypes")]
@@ -2601,8 +2615,14 @@ fn item_dto(
             .map(|primary| ItemImageTagsDto { primary }),
         series_id: navigation.and_then(|links| links.series_id),
         season_id: navigation.and_then(|links| links.season_id),
-        index_number: navigation.and_then(|links| links.index_number),
-        parent_index_number: navigation.and_then(|links| links.parent_index_number),
+        index_number: (item.item_type == "Audio")
+            .then(|| metadata.and_then(|metadata| metadata.track_number))
+            .flatten()
+            .or_else(|| navigation.and_then(|links| links.index_number)),
+        parent_index_number: (item.item_type == "Audio")
+            .then(|| metadata.and_then(|metadata| metadata.disc_number))
+            .flatten()
+            .or_else(|| navigation.and_then(|links| links.parent_index_number)),
         album: navigation.and_then(|links| links.album.clone()),
         album_id: navigation.and_then(|links| links.album_id),
         artist_items,
@@ -2626,7 +2646,12 @@ pub(crate) fn item_query(
     params: ItemsQueryParams,
     state: &AppState,
 ) -> Result<ItemQuery, ApiError> {
-    let item_ids = parse_catalog_item_ids(params.ids.as_deref())?;
+    let item_ids = parse_catalog_item_ids(params.ids.as_deref(), "Ids")?;
+    let exclude_item_ids =
+        parse_catalog_item_ids(params.exclude_item_ids.as_deref(), "ExcludeItemIds")?;
+    let artist_ids = parse_catalog_item_ids(params.artist_ids.as_deref(), "ArtistIds")?;
+    let album_artist_ids =
+        parse_catalog_item_ids(params.album_artist_ids.as_deref(), "AlbumArtistIds")?;
     let preserve_item_order = !item_ids.is_empty() && params.sort_by.is_none();
     if [
         params.audio_languages.as_deref(),
@@ -2679,38 +2704,8 @@ pub(crate) fn item_query(
             ));
         }
     }
-    let sort_by = params
-        .sort_by
-        .as_deref()
-        .unwrap_or("SortName")
-        .split(',')
-        .next()
-        .unwrap_or("SortName")
-        .trim()
-        .to_owned();
-    if ![
-        "SortName",
-        "Name",
-        "DateCreated",
-        "DateAdded",
-        "DateModified",
-        "LastPlayedDate",
-    ]
-    .iter()
-    .any(|allowed| sort_by.eq_ignore_ascii_case(allowed))
-    {
-        return Err(ApiError::BadRequest("Unsupported SortBy field".to_owned()));
-    }
-    let sort_order = params.sort_order.unwrap_or_else(|| "Ascending".to_owned());
-    if !sort_order.eq_ignore_ascii_case("Ascending")
-        && !sort_order.eq_ignore_ascii_case("Descending")
-        && !sort_order.eq_ignore_ascii_case("Asc")
-        && !sort_order.eq_ignore_ascii_case("Desc")
-    {
-        return Err(ApiError::BadRequest(
-            "SortOrder must be Ascending or Descending".to_owned(),
-        ));
-    }
+    let (sort_by, sort_order) =
+        catalog_sort(params.sort_by.as_deref(), params.sort_order.as_deref())?;
     let mut is_played = params.is_played;
     let mut is_folder = params.is_folder;
     let mut is_favorite = false;
@@ -2760,6 +2755,9 @@ pub(crate) fn item_query(
     Ok(ItemQuery {
         parent_id: params.parent_id,
         item_ids,
+        exclude_item_ids,
+        artist_ids,
+        album_artist_ids,
         preserve_item_order,
         search_term,
         exact_name: None,
@@ -2785,7 +2783,63 @@ pub(crate) fn item_query(
     })
 }
 
-fn parse_catalog_item_ids(raw: Option<&str>) -> Result<Vec<Uuid>, ApiError> {
+fn catalog_sort(fields: Option<&str>, orders: Option<&str>) -> Result<(String, String), ApiError> {
+    let fields = fields.unwrap_or("SortName");
+    let orders = orders.unwrap_or("Ascending");
+    if fields.len() > 512 || orders.len() > 128 {
+        return Err(ApiError::BadRequest(
+            "Catalog sort options are too long".to_owned(),
+        ));
+    }
+    let mut selected = Vec::new();
+    for field in fields.split(',') {
+        if selected.len() == 8 {
+            return Err(ApiError::BadRequest(
+                "SortBy contains more than eight fields".to_owned(),
+            ));
+        }
+        let field = [
+            "Default",
+            "SortName",
+            "Name",
+            "DateCreated",
+            "DateAdded",
+            "DateModified",
+            "LastPlayedDate",
+            "DatePlayed",
+            "PremiereDate",
+            "ProductionYear",
+            "Album",
+            "ParentIndexNumber",
+            "IndexNumber",
+        ]
+        .into_iter()
+        .find(|allowed| field.trim().eq_ignore_ascii_case(allowed))
+        .ok_or_else(|| ApiError::BadRequest("Unsupported SortBy field".to_owned()))?;
+        selected.push(field);
+    }
+    let mut directions = Vec::new();
+    for order in orders.split(',') {
+        let order = match order.trim().to_ascii_lowercase().as_str() {
+            "ascending" | "asc" => "Ascending",
+            "descending" | "desc" => "Descending",
+            _ => {
+                return Err(ApiError::BadRequest(
+                    "SortOrder must be Ascending or Descending".to_owned(),
+                ));
+            }
+        };
+        directions.push(order);
+        if directions.len() > selected.len() {
+            return Err(ApiError::BadRequest(
+                "SortOrder contains more values than SortBy".to_owned(),
+            ));
+        }
+    }
+    Ok((selected.join(","), directions.join(",")))
+}
+
+fn parse_catalog_item_ids(raw: Option<&str>, field: &str) -> Result<Vec<Uuid>, ApiError> {
     let Some(raw) = raw else {
         return Ok(Vec::new());
     };
@@ -2793,12 +2847,12 @@ fn parse_catalog_item_ids(raw: Option<&str>) -> Result<Vec<Uuid>, ApiError> {
     let mut seen = HashSet::new();
     for (index, value) in raw.split(',').enumerate() {
         if index >= 1_000 {
-            return Err(ApiError::BadRequest(
-                "Ids contains more than 1,000 values".to_owned(),
-            ));
+            return Err(ApiError::BadRequest(format!(
+                "{field} contains more than 1,000 values"
+            )));
         }
         let id = value.trim().parse::<Uuid>().map_err(|_| {
-            ApiError::BadRequest("Ids contains an invalid item identifier".to_owned())
+            ApiError::BadRequest(format!("{field} contains an invalid item identifier"))
         })?;
         if seen.insert(id) {
             ids.push(id);
@@ -3087,6 +3141,9 @@ async fn latest_items(
         sort_by: "DateCreated".to_owned(),
         sort_order: "Descending".to_owned(),
         item_ids: Vec::new(),
+        exclude_item_ids: Vec::new(),
+        artist_ids: Vec::new(),
+        album_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: params.is_played,
@@ -3138,6 +3195,9 @@ async fn resume_items(
         sort_by: "LastPlayedDate".to_owned(),
         sort_order: "Descending".to_owned(),
         item_ids: Vec::new(),
+        exclude_item_ids: Vec::new(),
+        artist_ids: Vec::new(),
+        album_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3188,6 +3248,9 @@ async fn show_seasons(
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
         item_ids: Vec::new(),
+        exclude_item_ids: Vec::new(),
+        artist_ids: Vec::new(),
+        album_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3229,6 +3292,9 @@ async fn show_episodes(
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
         item_ids: Vec::new(),
+        exclude_item_ids: Vec::new(),
+        artist_ids: Vec::new(),
+        album_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3394,6 +3460,9 @@ async fn list_music_persons(
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
         item_ids: Vec::new(),
+        exclude_item_ids: Vec::new(),
+        artist_ids: Vec::new(),
+        album_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3612,6 +3681,9 @@ async fn list_music_artists(
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
         item_ids: Vec::new(),
+        exclude_item_ids: Vec::new(),
+        artist_ids: Vec::new(),
+        album_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3854,6 +3926,9 @@ async fn search_hints(
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
         item_ids: Vec::new(),
+        exclude_item_ids: Vec::new(),
+        artist_ids: Vec::new(),
+        album_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -4338,6 +4413,8 @@ mod item_dto_tests {
             genres: vec!["Drama".to_owned()],
             tags: vec!["Family night".to_owned()],
             production_year: Some(2022),
+            track_number: None,
+            disc_number: None,
             official_rating: Some("PG-13".to_owned()),
             community_score: Some(8.2),
             artwork_url: Some(format!("/Items/{}/Images/Primary", item.id)),

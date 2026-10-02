@@ -22,6 +22,8 @@ pub struct DisplayMetadata {
     pub genres: Vec<String>,
     pub tags: Vec<String>,
     pub production_year: Option<i32>,
+    pub track_number: Option<i32>,
+    pub disc_number: Option<i32>,
     /// The original provider label. This is not a numeric policy threshold.
     pub official_rating: Option<String>,
     /// TVMaze's community score, kept separate from official/classification labels.
@@ -66,6 +68,7 @@ pub async fn load_display_metadata(
         let projection = format!(
             "SELECT requested.item_id, {} AS title, {} AS overview, {} AS premiere_date, \
              {} AS genres, {} AS official_rating, {} AS tags, {} AS production_year, \
+             {} AS track_number, {} AS disc_number, \
              (SELECT m.metadata_json->>'communityScore' FROM item_metadata m \
               WHERE m.item_id=requested.item_id AND m.provider_key='tvmaze') AS community_score, \
              {} AS primary_image_tag FROM unnest($1::uuid[]) AS requested(item_id)",
@@ -80,6 +83,8 @@ pub async fn load_display_metadata(
             catalog_sql::rating("requested.item_id"),
             catalog_sql::tags("requested.item_id"),
             catalog_sql::year("requested.item_id"),
+            catalog_sql::music_number("requested.item_id", false),
+            catalog_sql::music_number("requested.item_id", true),
             catalog_sql::preferred(
                 "requested.item_id",
                 "m.artwork_sha256",
@@ -95,6 +100,8 @@ pub async fn load_display_metadata(
                 premiere_date: row.try_get("premiere_date")?,
                 official_rating: row.try_get("official_rating")?,
                 production_year: row.try_get("production_year")?,
+                track_number: row.try_get("track_number")?,
+                disc_number: row.try_get("disc_number")?,
                 ..DisplayMetadata::default()
             };
             let genres: Option<Value> = row.try_get("genres")?;

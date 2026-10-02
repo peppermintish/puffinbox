@@ -981,6 +981,42 @@ def verify_item_relations(admin: HttpClient, library_id: str, item_id: str) -> N
         reader.json("POST", "/Sessions/Logout", expected=(204,))
 
 
+def verify_catalog_ordering(admin: HttpClient, library_id: str, item_id: str) -> None:
+    username, password = "ordering-reader-" + uuid.uuid4().hex, "Synthetic-" + uuid.uuid4().hex
+    user_id = str(ensure_user(admin, username, password, library_id, playback=True)["Id"])
+    reader = HttpClient(admin.base_url)
+    login(reader, username, password)
+    try:
+        query = (f"?Ids={item_id}&SortBy=PremiereDate,ProductionYear,SortName"
+                 "&SortOrder=Descending,Descending,Ascending")
+        _, headers, result = reader.json("GET", "/Items" + query)
+        require(headers.get("Cache-Control") == "private, no-store"
+                and result["TotalRecordCount"] == 1 and result["Items"][0]["Id"] == item_id,
+                "multi-field catalogue sorting omitted a visible requested track")
+        for prefix, exclusion in [("/Items", "ExcludeItemIds"), (f"/Users/{user_id}/Items", "excludeItemIds")]:
+            excluded = reader.json("GET", prefix + query + f"&{exclusion}={item_id},{item_id}")[2]
+            require(excluded["Items"] == [] and excluded["TotalRecordCount"] == 0,
+                    "item exclusion was not applied before catalogue counts and paging")
+        for suffix in ["SortBy=SortName,Unsupported", "SortOrder=Ascending,Invalid", "ExcludeItemIds=invalid"]:
+            require(reader.request("GET", "/Items?Ids=" + item_id + "&" + suffix)[0] == 400,
+                    "malformed catalogue sorting or exclusion was silently accepted")
+        for name in ["ArtistIds", "AlbumArtistIds"]:
+            missing_artist = reader.json("GET", "/Items" + query + "&" + name + "=" + str(uuid.uuid4()))[2]
+            require(missing_artist["Items"] == [] and missing_artist["TotalRecordCount"] == 0,
+                    "catalogue ignored an artist identifier with no visible match")
+        _, _, numbered = reader.json("GET", "/Items?Ids=" + item_id + "&SortBy=Album,ParentIndexNumber,IndexNumber,SortName")
+        require(numbered["TotalRecordCount"] == 1 and numbered["Items"][0]["Id"] == item_id,
+                "disc/track sorting omitted an unnumbered visible fixture")
+        admin.json("POST", f"/Users/{user_id}/Policy", {"EnableAllFolders": False, "EnabledFolders": []}, expected=(204,))
+        revoked = reader.json("GET", "/Items" + query)[2]
+        require(revoked["Items"] == [] and revoked["TotalRecordCount"] == 0,
+                "multi-field ordering retained a revoked library grant")
+        report("Catalogue date/year and disc/track sorting, artist filters, item exclusions, counts, legacy query, and access revocation", True,
+               "real album/track order and metadata precedence have separate PostgreSQL coverage")
+    finally:
+        reader.json("POST", "/Sessions/Logout", expected=(204,))
+
+
 def verify_instant_mix(admin: HttpClient, library_id: str, item_id: str) -> None:
     suffix = uuid.uuid4().hex
     username, password = "mix-reader-" + suffix, "Synthetic-" + uuid.uuid4().hex
@@ -1290,6 +1326,7 @@ def run(args: argparse.Namespace) -> int:
         verify_universal_audio_transcode(client, audio_library_id, audio_item_id, fixture_root, audio_ffprobe)
     verify_item_relations(client, audio_library_id, audio_item_id)
     verify_instant_mix(client, audio_library_id, audio_item_id)
+    verify_catalog_ordering(client, audio_library_id, audio_item_id)
     verify_playlist_sharing(client, audio_library_id, audio_item_id)
     verify_catalog_filters(client, library_id)
     verify_scanner_root_identity(

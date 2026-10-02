@@ -399,6 +399,12 @@ fn local_nfo_outcome(
     }
     if let Some(parsed) = parsed.as_ref() {
         metadata.insert("tags".to_owned(), json!(parsed.tags));
+        if let Some(number) = parsed.track_number {
+            metadata.insert("trackNumber".to_owned(), json!(number));
+        }
+        if let Some(number) = parsed.disc_number {
+            metadata.insert("discNumber".to_owned(), json!(number));
+        }
     }
     if let Some(id) = parsed.as_ref().and_then(|parsed| parsed.tvmaze_id) {
         metadata.insert("tvmazeId".to_owned(), json!(id));
