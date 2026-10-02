@@ -1644,8 +1644,11 @@ async fn update_user_policy(
     State(state): State<AppState>,
     _admin: AdminUser,
     Path(user_id): Path<Uuid>,
-    Json(body): Json<UserWriteRequest>,
-) -> Result<Json<UserPolicyDto>, ApiError> {
+    body: Result<Json<UserWriteRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Json(body) = body.map_err(|_| {
+        ApiError::BadRequest("A valid user policy JSON object is required".to_owned())
+    })?;
     if body.name.is_some() || body.password.is_some() || body.is_administrator.is_some() {
         return Err(ApiError::BadRequest(
             "The policy endpoint only accepts policy fields".to_owned(),
@@ -1669,11 +1672,11 @@ async fn update_user_policy(
         allowed_library_ids,
         enable_all_folders,
     };
-    let user = db::update_user(&state.db, state.run_id, user_id, &patch)
+    db::update_user(&state.db, state.run_id, user_id, &patch)
         .await
         .map_err(map_user_write_error)?
         .ok_or(ApiError::NotFound)?;
-    Ok(Json(user_dto(&user, state.server_id).policy))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn map_user_write_error(error: sqlx::Error) -> ApiError {

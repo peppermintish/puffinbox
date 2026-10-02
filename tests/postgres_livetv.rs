@@ -178,9 +178,12 @@ async fn pinned_iptv_refresh_applies_guide_parental_policy_and_timer_filters() {
         })),
     )
     .await;
-    assert_eq!(viewer_policy_status, StatusCode::OK, "{viewer_policy}");
-    assert_eq!(viewer_policy["EnableLiveTvAccess"], true);
-    assert_eq!(viewer_policy["EnableLiveTvManagement"], true);
+    assert_eq!(
+        viewer_policy_status,
+        StatusCode::NO_CONTENT,
+        "{viewer_policy}"
+    );
+    assert!(viewer_policy.is_null());
     let (viewer_policy_get_status, viewer_policy_get) = call_json(
         &router,
         "GET",
@@ -196,6 +199,41 @@ async fn pinned_iptv_refresh_applies_guide_parental_policy_and_timer_filters() {
     );
     assert_eq!(viewer_policy_get["EnableLiveTvAccess"], true);
     assert_eq!(viewer_policy_get["EnableLiveTvManagement"], true);
+    let (forbidden_status, _) = call_json(
+        &router,
+        "POST",
+        &format!("/Users/{viewer_id}/Policy"),
+        &viewer_token,
+        Some(json!({"EnableLiveTvAccess": false})),
+    )
+    .await;
+    assert_eq!(forbidden_status, StatusCode::FORBIDDEN);
+    for body in [
+        None,
+        Some(Value::Null),
+        Some(json!({"EnableRemoteAccess": "invalid"})),
+        Some(json!({"Name": "policy-endpoint-cannot-rename"})),
+    ] {
+        let (status, _) = call_json(
+            &router,
+            "POST",
+            &format!("/Users/{viewer_id}/Policy"),
+            &admin_token,
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (_, retained_policy) = call_json(
+        &router,
+        "GET",
+        &format!("/Users/{viewer_id}/Policy"),
+        &viewer_token,
+        None,
+    )
+    .await;
+    assert_eq!(retained_policy["EnableLiveTvAccess"], true);
+    assert_eq!(retained_policy["EnableLiveTvManagement"], true);
 
     let no_tv_access_id = insert_user(&pool, "livetv-no-access", false, false, None, &[]).await;
     let no_tv_access = db::get_user(&pool, no_tv_access_id).await.unwrap().unwrap();
@@ -226,11 +264,21 @@ async fn pinned_iptv_refresh_applies_guide_parental_policy_and_timer_filters() {
     .await;
     assert_eq!(
         view_only_policy_status,
-        StatusCode::OK,
+        StatusCode::NO_CONTENT,
         "{view_only_policy}"
     );
-    assert_eq!(view_only_policy["EnableLiveTvAccess"], true);
-    assert_eq!(view_only_policy["EnableLiveTvManagement"], false);
+    assert!(view_only_policy.is_null());
+    let (status, policy) = call_json(
+        &router,
+        "GET",
+        &format!("/Users/{view_only_id}/Policy"),
+        &admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(policy["EnableLiveTvAccess"], true);
+    assert_eq!(policy["EnableLiveTvManagement"], false);
     let view_only = db::get_user(&pool, view_only_id).await.unwrap().unwrap();
     let view_only_token = auth::issue_token(
         &state,
@@ -2544,6 +2592,12 @@ async fn call_json(
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
         .await
         .unwrap();
+    if status == StatusCode::NO_CONTENT {
+        assert!(
+            bytes.is_empty(),
+            "204 response unexpectedly contained a body"
+        );
+    }
     let value = if bytes.is_empty() {
         Value::Null
     } else {
