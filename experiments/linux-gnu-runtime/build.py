@@ -38,6 +38,20 @@ def inspect(binary: Path, label: str, output: Path, environment: dict[str, str])
         run([utility, *options, str(binary)], cwd=output, env=environment, log=output / f"{label}-{suffix}.txt")
 
 
+def startup_check(output: Path, environment: dict[str, str]) -> dict[str, object]:
+    fixture_environment = {name: value for name, value in environment.items()
+                           if name not in {"DATABASE_URL", "PUFFINBOX_DATABASE_URL"}}
+    fixture_environment["LD_LIBRARY_PATH"] = str(output / "external-runtime")
+    result = subprocess.run([str(output / "server")], cwd=output, env=fixture_environment,
+                            capture_output=True, text=True, timeout=30)
+    with (output / "startup-check.log").open("x") as log:
+        log.write(result.stdout + result.stderr)
+    if result.returncode != 1 or "DATABASE_URL is required" not in result.stdout + result.stderr:
+        raise RuntimeError("The executable did not reach and reject the missing-database configuration.")
+    return {"executableMode": oct((output / "server").stat().st_mode & 0o777),
+            "missingDatabaseExitCode": result.returncode, "configurationErrorReached": True}
+
+
 def numeric_check(output: Path, root: Path, environment: dict[str, str]) -> dict[str, object]:
     captured = json.loads((output / "puffinbox_server-rustc-argv.json").read_text())
     # Use the same explicitly rebuilt std dependency and GNU target. The
@@ -138,6 +152,7 @@ def main() -> int:
         if digest(root / "Cargo.lock") != record["cargoLockSha256"]:
             raise RuntimeError("The project lockfile changed during the experiment.")
         shutil.copyfile(output / "target/x86_64-unknown-linux-gnu/release/puffinbox-server", output / "server")
+        (output / "server").chmod(0o555)
         runtime = output / "external-runtime"
         runtime.mkdir()
         libraries = list((output / "target/x86_64-unknown-linux-gnu/release/deps").glob("libstd-*.so"))
@@ -146,6 +161,7 @@ def main() -> int:
         shutil.copyfile(libraries[0], runtime / libraries[0].name)
         record["binarySha256"] = digest(output / "server")
         record["externalStdlibSha256"] = digest(runtime / libraries[0].name)
+        record["startupCheck"] = startup_check(output, environment)
         shutil.copyfile(sysroot / "lib/rustlib/src/rust/library/Cargo.lock", output / "standard-library-Cargo.lock")
         inspect(output / "server", "server", output, environment)
         run([sys.executable, str(root / "scripts/check_gnu_link_map.py"), "--map", str(output / "server-link.map"),
