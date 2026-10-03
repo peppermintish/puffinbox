@@ -1687,7 +1687,7 @@ pub async fn active_playback_session(
         tx.rollback().await?;
         return Ok(None);
     }
-    // A native client can report progress while its start is committing.
+    // A client can report progress while its start is committing.
     // Share the start's device lock so this lookup sees the committed row.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
         .bind(format!("{user_id}:{device_id}"))
@@ -1720,10 +1720,12 @@ pub async fn wait_for_playback_start(
         selector.item_id,
     )
     .await?;
-    // Desktop direct playback sends an empty ID and can report progress
-    // before its concurrent start takes the transaction lock. Give that
-    // start five short chances to commit; never create or revive a row here.
-    if active.is_none() && selector.id.is_none() && selector.item_id.is_some() {
+    // Desktop and web can report progress before a concurrent start takes
+    // the transaction lock, with either an empty or explicit session ID.
+    // Give an identified start five short chances to commit. Every lookup
+    // keeps the same run, user, device, session and item constraints; never
+    // create or revive a row here.
+    if active.is_none() && (selector.id.is_some() || selector.item_id.is_some()) {
         for _ in 0..5 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             active = active_playback_session(

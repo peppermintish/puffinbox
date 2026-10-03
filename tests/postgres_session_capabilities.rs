@@ -186,6 +186,62 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         .status(),
         StatusCode::NO_CONTENT
     );
+    for (client_id, include_item) in [
+        ("1791063229366".to_owned(), true),
+        (Uuid::new_v4().to_string(), false),
+    ] {
+        let mut progress = json!({"PlaySessionId":client_id,"PositionTicks":120000000});
+        if include_item {
+            progress["ItemId"] = json!(track_id);
+        }
+        let progress_router = router.clone();
+        let progress_token = first.token.clone();
+        let mut pending = tokio::spawn(async move {
+            post(
+                &progress_router,
+                Some(&progress_token),
+                "/Sessions/Playing/Progress",
+                &progress,
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut pending)
+                .await
+                .is_err(),
+            "explicit-ID progress must allow its concurrent start to commit"
+        );
+        let start = json!({"ItemId":track_id,"PlaySessionId":client_id,"PositionTicks":0});
+        assert_eq!(
+            post(&router, Some(&first.token), "/Sessions/Playing", &start)
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), pending)
+                .await
+                .expect("progress must finish after explicit-ID start")
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let data = db::item_user_data(&pool, user_id, &[track_id])
+            .await
+            .unwrap();
+        assert_eq!(data[&track_id].playback_position_ticks, 120000000);
+        assert_eq!(
+            post(
+                &router,
+                Some(&first.token),
+                "/Sessions/Playing/Stopped",
+                &start,
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
     for invalid in [" ".to_owned(), "x\ny".to_owned(), "x".repeat(257)] {
         let body = json!({"ItemId":track_id,"PlaySessionId":invalid,"PositionTicks":0});
         assert_eq!(
