@@ -351,3 +351,42 @@ It contains non-allowlisted components and must not be bundled. Production
 packaging and the package allowlist are unchanged. Header contributions,
 constants, inlined and unmapped content, runtime distribution and production
 adoption remain uncleared; all five release gates remain false.
+
+## Preprocessing-only inputs
+
+The native compiler wrapper now captures included inputs for successful
+preprocessing commands with one named C, C++ or preprocessed-assembly source.
+It preserves stdout byte for byte and rejects multiple named sources before
+writing a partial trace. All 56 GNU regressions and all 103 Python tests pass.
+Both original OpenSSL configuration probes replayed with identical 44,344-byte
+outputs and 71 verified input paths each. Earlier missing-header captures and
+test-helper failures remain separately preserved.
+
+The full rebuild from the dirty `da3ced7` tree produced the same external-TLS
+server `5f87269737d6aa0a92419aa97675f8ae48c5ab0d7a9f22a6ad95d7557fd6d64d`.
+Its 323 tracked fingerprints stayed unchanged through the joined checks.
+All eight compiler traces now retain 73 verified byte copies for 75 paths,
+totalling 248,743 bytes. The compile-only index covers 67 copies; it excludes
+the additional preprocessing inputs. All 436 named nonempty link inputs have
+owners: 418 package members, 16 server objects and two original entry objects.
+The source inventory maps 246 standard-library and 1,207 package paths, with
+zero known non-allowlisted mapped paths, system-header paths or native bodies.
+This does not establish individual-file licenses, inlined origins, unmapped
+content or linker-generated material.
+
+The candidate passed 35 isolated container checks, 29 local HTTPS checks,
+nine album projections and the four-track Desktop queue. Official web
+playback exposed a progress/start race on repetition: fourteen reports
+returned 204 and the initial progress returned 404 before start completed.
+Advancing audio was observed. The earlier web attempt missed its active DOM
+capture; both attempts remain recorded. Neither is claimed as accepted web
+evidence. All 50 saved rows match the observed plays through activation and
+restoration of the static backend, with original grants, identity and mounts.
+Desktop closed with unchanged settings and Remember Me off.
+
+Evidence is under `.local/external-runtime-preprocess-20261004` and its
+container, HTTPS, client, native and web directories. The external standard
+library remains `5a3f35a0e2e734369effc845ebad8b182912c600ad2114ce400ee3d2502b1ea0`;
+it contains non-allowlisted components and must not be bundled. External
+OpenSSL and system libraries are separate operator infrastructure. Production
+packaging is unchanged, and all five release gates remain false.

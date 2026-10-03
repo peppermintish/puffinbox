@@ -110,9 +110,10 @@ def main() -> int:
     sources = [Path(os.path.abspath(directory / argument)) for argument in arguments
                if not argument.startswith("-") and Path(argument).suffix in {".c", ".cc", ".cpp", ".S", ".s"}
                and (directory / argument).is_file()]
-    compile_source = "-c" in arguments and bool(sources)
-    if compile_source and len(sources) != 1:
-        raise ValueError("Native compiler tracing supports one compile source per invocation.")
+    preprocess_source = "-E" in arguments and bool(sources)
+    compile_source = "-c" in arguments and not preprocess_source and bool(sources)
+    if (compile_source or preprocess_source) and len(sources) != 1:
+        raise ValueError("Native compiler tracing supports one source per invocation.")
     traces = output / "native-compiler-traces"
     traces.mkdir(exist_ok=True)
     store = output / "native-source-bytes"
@@ -123,7 +124,7 @@ def main() -> int:
     dependencies = traces / (identifier + ".d")
     assembler_dependencies = traces / (identifier + ".assembler.d")
     compiler = Path("/usr/bin/cc")
-    preprocessed = compile_source and sources[0].suffix != ".s"
+    preprocessed = (compile_source or preprocess_source) and sources[0].suffix != ".s"
     compiler_arguments = []
     for argument in arguments:
         # GCC retains the user-only dependency mode when both -MMD and -MD
@@ -168,7 +169,7 @@ def main() -> int:
     record = {"schemaVersion": 2, "sourceByteDirectory": store.name,
               "compiler": str(compiler), "compilerSha256": digest(compiler), "directory": str(directory),
               "arguments": arguments, "command": command, "exitCode": result.returncode, "compileSource": compile_source,
-              "dependencyRuleCaptured": result.returncode == 0 and compile_source,
+              "dependencyRuleCaptured": result.returncode == 0 and (compile_source or preprocessed),
               "preprocessorDependencyRuleCaptured": result.returncode == 0 and preprocessed,
               "assemblerDependencyRuleCaptured": result.returncode == 0 and compile_source,
               "assemblerPathAliases": aliases, "sourceFiles": hashes,

@@ -461,6 +461,66 @@ class NativeCompilerTraceTests(unittest.TestCase):
                 self.assertEqual(verify_native_source_bytes(snapshot, output / "native-source-bytes")["verifiedFiles"],
                                  len(set(snapshot["nativeSourceFiles"].values())))
 
+    @unittest.skipUnless(sys.platform == "linux" and shutil.which("cc"), "Requires the disposable Linux C compiler")
+    def test_preprocessing_preserves_includes_without_changing_output(self):
+        for dependency_option, compile_flag in ((None, False), ("-MMD", False), ("preprocessor", False), (None, True)):
+            with self.subTest(option=dependency_option, compile_flag=compile_flag), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                system = root / "system"
+                system.mkdir()
+                header = system / "version.h"
+                header.write_bytes(b"#define SYNTHETIC_VERSION 23\n")
+                forced = root / "forced.h"
+                forced.write_bytes(b"#define SYNTHETIC_FORCED 11\n")
+                source = root / "config.c"
+                source.write_text('#include <version.h>\nSYNTHETIC_VERSION SYNTHETIC_FORCED\n')
+                arguments = ["-E", "-isystem", str(system), "-include", str(forced), str(source)]
+                if compile_flag:
+                    arguments.append("-c")
+                if dependency_option:
+                    option = "-Wp,-MMD," + str(root / "original.d") if dependency_option == "preprocessor" else dependency_option
+                    arguments += [option, "-MF", str(root / "original.d")]
+                baseline = subprocess.run(["cc", *arguments], cwd=root, capture_output=True, timeout=30)
+                self.assertEqual(baseline.returncode, 0, baseline.stderr)
+                tokens = b" ".join(line for line in baseline.stdout.splitlines() if not line.startswith(b"#")).split()
+                self.assertEqual(tokens, [b"23", b"11"])
+                output = root / "output"
+                output.mkdir()
+                result = subprocess.run([sys.executable, str(WRAPPER_PATH), *arguments], cwd=root,
+                                        env={**os.environ, "PUFFINBOX_RUNTIME_PROBE_OUTPUT": str(output)},
+                                        capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, baseline.stdout)
+                records = list((output / "native-compiler-traces").glob("*.json"))
+                self.assertEqual(len(records), 1)
+                record = json.loads(records[0].read_text())
+                self.assertFalse(record["compileSource"])
+                self.assertTrue(record["dependencyRuleCaptured"])
+                self.assertTrue(record["preprocessorDependencyRuleCaptured"])
+                self.assertFalse(record["assemblerDependencyRuleCaptured"])
+                for path in (source, header, forced):
+                    content = path.read_bytes()
+                    value = hashlib.sha256(content).hexdigest()
+                    self.assertEqual(record["sourceFiles"][str(path)], value)
+                    path.unlink()
+                    self.assertEqual((output / "native-source-bytes" / value).read_bytes(), content)
+
+    @unittest.skipUnless(sys.platform == "linux" and shutil.which("cc"), "Requires the disposable Linux C compiler")
+    def test_multiple_preprocessing_sources_fail_before_recording_partial_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            sources = [root / "first.c", root / "second.c"]
+            for source in sources:
+                source.write_text("Synthetic configuration probe\n")
+            output = root / "output"
+            output.mkdir()
+            result = subprocess.run([sys.executable, str(WRAPPER_PATH), "-E", *map(str, sources)], cwd=root,
+                                    env={**os.environ, "PUFFINBOX_RUNTIME_PROBE_OUTPUT": str(output)},
+                                    capture_output=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"one source per invocation", result.stderr)
+            self.assertEqual(list(output.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

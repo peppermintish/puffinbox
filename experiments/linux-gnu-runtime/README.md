@@ -40,6 +40,13 @@ The [C fixture](c-headers.c) compares 4,096 deterministic endian inputs with bot
 
 The link-map checker reports known retained runtime sections and generated Unicode definitions. It rejects an empty or unsupported map instead of inferring absence from it. A clean inventory is evidence for this particular executable, not complete license clearance: inlined source provenance, all bundled inputs, exact external-runtime requirements, packaging, and broader behavior remain separate release checks. See [the runtime audit](../../docs/runtime-link-audit.md).
 
+The native input capture also records included headers for preprocessing-only
+configuration probes. It preserves their output and distinguishes those probes
+from compiled objects. Both phases require one named source per invocation;
+multiple-source probes are rejected before an incomplete record can be written.
+Inherited user-only dependency options do not exclude system headers from the
+capture. Probe inputs are build evidence, not proof of retained executable code.
+
 ## Source-location inventory
 
 Pass `--source-map` to retain release debug data, record standard-library and dependency source hashes, and capture the same compiler's `COPYRIGHT-library.html` notice. The hash record binds that notice to this build. This produces a larger test executable and does not change production packaging:
