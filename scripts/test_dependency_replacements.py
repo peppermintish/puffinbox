@@ -74,5 +74,86 @@ class DependencyReplacementTests(unittest.TestCase):
                 validate(self.root, self.metadata, review)
 
 
+class DependencyFeatureTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        directory = self.root / "registry/regex-syntax"
+        directory.mkdir(parents=True)
+        source = b'// Table module fixture, gated by the unicode-case feature\n'
+        (directory / "tables.rs").write_bytes(source)
+        (directory / "Cargo.toml").write_bytes(b"// Registry package fixture\n")
+        replacement = self.root / "vendor/channel"
+        replacement.mkdir(parents=True)
+        (replacement / "Cargo.toml").write_bytes(b"// Original package fixture\n")
+        self.identifier = "registry+crates.io#regex-syntax@0.8.11"
+        self.metadata = {"packages": [
+            {"name":"channel", "version":"1.0.0", "source":None,
+             "manifest_path":str(replacement / "Cargo.toml")},
+            {"name":"regex-syntax", "version":"0.8.11", "source":"registry+crates.io",
+             "id":self.identifier, "manifest_path":str(directory / "Cargo.toml")},
+        ], "resolve":{"nodes":[{"id":self.identifier, "features":["std"]}]}}
+        self.review = {"replacements":[{
+            "name":"channel", "version":"1.0.0", "path":"vendor/channel",
+            "reviewedFiles":{"Cargo.toml":hashlib.sha256((replacement / "Cargo.toml").read_bytes()).hexdigest()},
+        }], "featureConstraints":[{
+            "name":"regex-syntax", "version":"0.8.11", "source":"registry+crates.io",
+            "optional":True, "allowedFeatures":["std"],
+            "reviewedConfigFiles":{"tables.rs":hashlib.sha256(source).hexdigest()},
+        }]}
+        self.directory = directory
+
+    def test_resolved_exclusion_passes_and_removed_dependency_is_safe(self):
+        result = validate(self.root, self.metadata, self.review)
+        self.assertEqual(result["verifiedFeatureConstraints"], 1)
+        self.assertFalse(result["licenseClearance"])
+        self.metadata["packages"].pop()
+        self.metadata["resolve"]["nodes"].clear()
+        self.assertEqual(validate(self.root, self.metadata, self.review)["verifiedFeatureConstraints"], 0)
+
+    def test_each_unicode_feature_and_unknown_future_feature_is_rejected(self):
+        for feature in ["default", "unicode", "unicode-age", "unicode-bool", "unicode-case",
+                        "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment",
+                        "future-table-feature"]:
+            with self.subTest(feature=feature):
+                self.metadata["resolve"]["nodes"][0]["features"] = ["std", feature]
+                with self.assertRaisesRegex(ValueError, "Unreviewed dependency features"):
+                    validate(self.root, self.metadata, self.review)
+
+    def test_absent_duplicate_or_invalid_feature_selection_is_rejected(self):
+        for nodes in [[], [self.metadata["resolve"]["nodes"][0]] * 2,
+                      [{"id":self.identifier}], [{"id":self.identifier,"features":"std"}],
+                      [{"id":self.identifier,"features":[1]}]]:
+            with self.subTest(nodes=nodes):
+                metadata = copy.deepcopy(self.metadata)
+                metadata["resolve"]["nodes"] = nodes
+                with self.assertRaisesRegex(ValueError, "feature selection"):
+                    validate(self.root, metadata, self.review)
+
+    def test_version_source_and_gate_changes_require_review(self):
+        for key, value in [("version", "0.8.12"), ("source", None)]:
+            metadata = copy.deepcopy(self.metadata)
+            metadata["packages"][1][key] = value
+            with self.assertRaisesRegex(ValueError, "new source review"):
+                validate(self.root, metadata, self.review)
+        (self.directory / "tables.rs").write_bytes(b"// Table module no longer gated\n")
+        with self.assertRaisesRegex(ValueError, "Unreviewed feature exclusion source"):
+            validate(self.root, self.metadata, self.review)
+
+    def test_feature_source_paths_cannot_escape_the_selected_package(self):
+        for path in ["../tables.rs", str(self.directory / "tables.rs")]:
+            review = copy.deepcopy(self.review)
+            digest = review["featureConstraints"][0]["reviewedConfigFiles"].pop("tables.rs")
+            review["featureConstraints"][0]["reviewedConfigFiles"][path] = digest
+            with self.assertRaisesRegex(ValueError, "Unreviewed feature exclusion source"):
+                validate(self.root, self.metadata, review)
+
+    def test_missing_selected_manifest_is_rejected(self):
+        (self.directory / "Cargo.toml").unlink()
+        with self.assertRaisesRegex(ValueError, "Invalid feature-constrained dependency path"):
+            validate(self.root, self.metadata, self.review)
+
+
 if __name__ == "__main__":
     unittest.main()

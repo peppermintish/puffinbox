@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify selected, reviewed replacements for known dependency file exceptions."""
+"""Verify replacements and feature exclusions for known dependency file exceptions."""
 
 from __future__ import annotations
 
@@ -8,6 +8,43 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+
+
+def validate_feature_constraint(metadata: dict, constraint: dict) -> bool:
+    name = constraint["name"]
+    selected = [package for package in metadata["packages"] if package["name"] == name]
+    if not selected and constraint.get("optional") is True:
+        return False
+    if len(selected) != 1:
+        raise ValueError(f"Expected exactly one feature-constrained {name} package.")
+    package = selected[0]
+    if package["version"] != constraint["version"] or package.get("source") != constraint["source"]:
+        raise ValueError(f"The feature exclusion requires a new source review for {name}.")
+    nodes = [node for node in metadata["resolve"]["nodes"] if node["id"] == package["id"]]
+    if len(nodes) != 1:
+        raise ValueError(f"Missing resolved feature selection for {name}.")
+    features = nodes[0].get("features")
+    if not isinstance(features, list) or any(not isinstance(feature, str) for feature in features):
+        raise ValueError(f"Invalid resolved feature selection for {name}.")
+    unexpected = set(features) - set(constraint["allowedFeatures"])
+    if unexpected:
+        raise ValueError(f"Unreviewed dependency features for {name}: {', '.join(sorted(unexpected))}.")
+    manifest = Path(package["manifest_path"])
+    directory = manifest.parent
+    if not manifest.is_file() or manifest.is_symlink() or directory.is_symlink():
+        raise ValueError(f"Invalid feature-constrained dependency path for {name}.")
+    directory = directory.resolve()
+    reviewed = constraint["reviewedConfigFiles"]
+    if not reviewed:
+        raise ValueError(f"No feature exclusion source hashes for {name}.")
+    for name_in_package, expected in reviewed.items():
+        relative = Path(name_in_package)
+        source = directory / relative
+        if (relative.is_absolute() or ".." in relative.parts or source.is_symlink()
+                or not source.resolve().is_relative_to(directory)
+                or hashlib.sha256(source.read_bytes()).hexdigest() != expected):
+            raise ValueError(f"Unreviewed feature exclusion source: {name}/{name_in_package}.")
+    return True
 
 
 def validate(root: Path, metadata: dict, review: dict) -> dict:
@@ -42,7 +79,13 @@ def validate(root: Path, metadata: dict, review: dict) -> dict:
             if (source.is_symlink() or not source.resolve().is_relative_to(directory)
                     or hashlib.sha256(source.read_bytes()).hexdigest() != expected):
                 raise ValueError(f"Unreviewed dependency source: {name}/{path}.")
-    return {"verifiedReplacements": len(replacements), "licenseClearance": False}
+    result = {"verifiedReplacements": len(replacements), "licenseClearance": False}
+    constraints = review.get("featureConstraints", [])
+    if constraints:
+        result["verifiedFeatureConstraints"] = sum(
+            validate_feature_constraint(metadata, constraint) for constraint in constraints
+        )
+    return result
 
 
 def main() -> int:

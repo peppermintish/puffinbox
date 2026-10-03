@@ -24,8 +24,16 @@ upgrading SQLx; do not edit the Cargo registry cache.
 `dependency-replacements.json` records the reviewed channel file hashes.
 `scripts/check_dependency_replacements.py` verifies Cargo selects this local
 package and rejects changed, missing or added files. The license bundle and GNU
-experiment run it before building their audited outputs. This guard covers the
-known queue exception; it is not a complete file-level dependency license audit.
+experiment run it before building their audited outputs.
+
+The same record constrains registry `regex-syntax 0.8.11` to its currently
+selected `std` feature. Its Unicode table modules have separate Unicode terms
+and are disabled in both Linux target graphs. The guard checks resolved Cargo
+features and hashes the reviewed manifest, module gates and license record. A
+new version, changed gates or added features require review. Removing the
+dependency entirely is allowed. No registry files were modified or copied into
+the repository. This covers known exceptions, not complete dependency or linked
+runtime license clearance.
 
 The crates in `../crates` are original compatibility adapters. The route matcher
 implements the Axum interface with a segment tree; it is not copied from matchit.
