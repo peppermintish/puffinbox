@@ -106,12 +106,14 @@ fn parse_number(value: &str) -> Option<i32> {
     let mut parts = value.split('/');
     let parse = |part: &str| {
         (!part.is_empty() && part.len() <= 10 && part.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| part.parse::<i32>().ok().filter(|number| *number > 0))
+            .then(|| part.parse::<i32>().ok())
             .flatten()
     };
     let number = parse(parts.next()?)?;
-    if let Some(total) = parts.next() {
-        parse(total)?;
+    if let Some(total) = parts.next()
+        && parse(total)? == 0
+    {
+        return None;
     }
     parts.next().is_none().then_some(number)
 }
@@ -181,7 +183,9 @@ mod tests {
 
     #[test]
     fn invalid_dates_and_numbers_do_not_become_catalog_fields() {
-        for value in ["0", "-1", "2147483648", "3/no", "3/0", "3/12/2", " 3", ""] {
+        assert_eq!(parse_number("0"), Some(0));
+        assert_eq!(parse_number("0/12"), Some(0));
+        for value in ["-1", "2147483648", "3/no", "3/0", "3/12/2", " 3", ""] {
             assert_eq!(parse_number(value), None, "{value}");
         }
         for value in [

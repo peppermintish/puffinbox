@@ -13,6 +13,16 @@ const MAX_DISPLAY_ITEMS: usize = 10_000;
 const DISPLAY_CHUNK: usize = 500;
 const MAX_DETAIL_PROVIDERS: usize = 64;
 
+pub(crate) fn music_sort_name(name: &str, disc: Option<i32>, track: Option<i32>) -> String {
+    let mut value = String::new();
+    for number in [disc, track].into_iter().flatten() {
+        use std::fmt::Write;
+        write!(value, "{number:04} - ").expect("writing to a String cannot fail");
+    }
+    value.push_str(name);
+    value
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct DisplayMetadata {

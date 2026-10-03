@@ -2494,6 +2494,8 @@ pub(crate) struct BaseItemDto {
     id: Uuid,
     server_id: Uuid,
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sort_name: Option<String>,
     #[serde(rename = "Type")]
     item_type: String,
     is_folder: bool,
@@ -2622,6 +2624,15 @@ fn item_dto(
         name: metadata
             .and_then(|metadata| metadata.name.clone())
             .unwrap_or_else(|| item.name.clone()),
+        sort_name: (item.item_type == "Audio").then(|| {
+            crate::metadata::music_sort_name(
+                metadata
+                    .and_then(|metadata| metadata.name.as_deref())
+                    .unwrap_or(&item.name),
+                metadata.and_then(|metadata| metadata.disc_number),
+                metadata.and_then(|metadata| metadata.track_number),
+            )
+        }),
         item_type: item.item_type.clone(),
         is_folder: db::is_folder_item_type(&item.item_type),
         media_type: crate::library::MediaType::for_item_type(&item.item_type)
@@ -4376,6 +4387,7 @@ mod item_dto_tests {
             id: Uuid::new_v4(),
             server_id: Uuid::new_v4(),
             name: "Example Artist".to_owned(),
+            sort_name: None,
             item_type: "Person".to_owned(),
             is_folder: false,
             media_type: None,

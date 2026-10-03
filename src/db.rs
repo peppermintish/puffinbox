@@ -2626,15 +2626,16 @@ async fn run_item_page(
                 }
                 "indexnumber" => crate::metadata::catalog_sql::index_number("i", false),
                 "parentindexnumber" => crate::metadata::catalog_sql::index_number("i", true),
-                "name" | "sortname" => {
+                "name" => {
                     let title = crate::metadata::catalog_sql::title("i.id");
-                    let fallback = if field.trim().eq_ignore_ascii_case("Name") {
-                        "i.name"
-                    } else {
-                        "i.sort_name"
-                    };
                     format!(
-                        "CASE WHEN i.item_type='Audio' THEN COALESCE(lower({title}),{fallback}) ELSE {fallback} END"
+                        "CASE WHEN i.item_type='Audio' THEN COALESCE(lower({title}),i.name) ELSE i.name END"
+                    )
+                }
+                "sortname" => {
+                    let music = crate::metadata::catalog_sql::music_sort_name("i");
+                    format!(
+                        "CASE WHEN i.item_type='Audio' THEN lower({music}) ELSE i.sort_name END"
                     )
                 }
                 _ => "i.sort_name".to_owned(),

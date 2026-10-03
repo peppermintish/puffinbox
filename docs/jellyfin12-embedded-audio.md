@@ -42,3 +42,50 @@ the same library. Automatic creation of tag-named artist and album entries,
 embedded cover art, wider format coverage and general reference equivalence
 remain incomplete. Folder-derived relationships and the existing filename
 track-index fallback remain qualified differences.
+
+## Audio SortName
+
+Public reads of the original four tracks returned SortName prefixes made from
+the tagged disc and track numbers. For example, Embedded Beta Title returned
+`0001 - 0004 - Embedded Beta Title`. Sorting by SortName put Beta before Alpha,
+while sorting by Name used their display titles. The untagged file returned
+`04 Plain Track`, with no inferred numeric prefix.
+
+A separate reference library contains nine original one-second FLAC files.
+Its observations establish these additional cases:
+
+| Disc | Track | Title | SortName |
+| --- | --- | --- | --- |
+| Missing | Missing | Sort Plain | `Sort Plain` |
+| Missing | 2 | Sort Track Only | `0002 - Sort Track Only` |
+| 2 | Missing | Sort Disc Only | `0002 - Sort Disc Only` |
+| 1 | 2 | Sort Both | `0001 - 0002 - Sort Both` |
+| 10001 | 10002 | Sort Large | `10001 - 10002 - Sort Large` |
+| 0 | 0 | Sort Zero | `0000 - 0000 - Sort Zero` |
+| 0 | 2 | Sort Zero Disc | `0000 - 0002 - Sort Zero Disc` |
+| 1 | 1 | The Zebra | `0001 - 0001 - The Zebra` |
+| 1 | 3 | A, Small: Test! | `0001 - 0003 - A, Small: Test!` |
+
+The fixture records ascending and descending SortName, Name, IndexNumber and
+combined disc/track ordering. Original reference files and item responses
+stayed unchanged; no playback or user-data edits occurred. The added library
+is retained for replay. Exact files, tags, hashes and public responses are
+under `.local/audio-sort-contract-20261003`. No implementation source was read.
+
+Puffinbox's audio SortName uses the same valid provider fields as display
+metadata, preserving each present number with at least four digits. Missing
+numbers add no prefix; filename-derived track indexes do not add a prefix.
+Embedded zero indexes are retained. Name ordering continues to use display
+titles. Invalid or stale provider values do not participate. Local NFO parsing
+still accepts positive indexes only. Forced sort titles, broader collation,
+negative indexes and complete reference ordering remain unvalidated or
+qualified; numeric sorts retain Puffinbox's null-last policy.
+
+On core `6a8a4e3b`, nine byte-identical reference files were copied into the
+retained client's existing music grant and imported automatically after one
+scan. All nine SortName, title and disc/track fields matched fresh reads.
+Ascending and descending SortName and Name orders matched, as did the
+SortName page derived from the full reference order. IndexNumber and combined
+disc/track sorts retain qualified null and tie differences. Existing file
+hashes, grants and saved user data stayed unchanged. Exact mappings, queries
+and responses are under `.local/audio-sort-client-20261003`.

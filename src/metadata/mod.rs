@@ -28,6 +28,7 @@ use crate::{
     state::AppState,
 };
 
+pub(crate) use display::music_sort_name;
 pub use display::{DisplayMetadata, NamedItem, load_display_metadata};
 pub(crate) mod catalog_sql;
 use display::{ProviderMetadata, load_provider_details};

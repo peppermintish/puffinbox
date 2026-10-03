@@ -536,6 +536,7 @@ async fn facets_and_selections_share_metadata_and_current_user_boundaries() {
     .await;
     assert_eq!(old_id["TotalRecordCount"], 0);
     verify_embedded_audio_metadata(&router, &pool, library, private, owner, owner_token).await;
+    verify_audio_sort_names(&router, &pool, library, owner, owner_token).await;
     sqlx::query("UPDATE users SET block_unrated_items=ARRAY['Music'] WHERE id=$1")
         .bind(owner)
         .execute(&pool)
@@ -1252,6 +1253,149 @@ async fn metadata(
     sqlx::query("INSERT INTO item_metadata(item_id,provider_key,genres,metadata_json,content_rating,policy_rating_scale,policy_rating_value) VALUES ($1,$2,$3,$4,$5,CASE WHEN $6::smallint IS NOT NULL THEN 'US-MPAA-v1' END,$6)")
         .bind(id).bind(provider).bind(Json(genres)).bind(Json(metadata)).bind(label).bind(policy)
         .execute(pool).await.unwrap();
+}
+
+async fn verify_audio_sort_names(
+    router: &Router,
+    pool: &PgPool,
+    library: Uuid,
+    owner: Uuid,
+    token: &str,
+) {
+    // Public Jellyfin 12 FLAC observations: no prefix for a missing number,
+    // zero is meaningful, and values wider than four digits are not truncated.
+    let cases = [
+        ("Sort Plain", None, None, "Sort Plain"),
+        ("Sort Track Only", None, Some(2), "0002 - Sort Track Only"),
+        ("Sort Disc Only", Some(2), None, "0002 - Sort Disc Only"),
+        ("Sort Both", Some(1), Some(2), "0001 - 0002 - Sort Both"),
+        (
+            "Sort Large",
+            Some(10001),
+            Some(10002),
+            "10001 - 10002 - Sort Large",
+        ),
+        ("Sort Zero", Some(0), Some(0), "0000 - 0000 - Sort Zero"),
+        (
+            "Sort Zero Disc",
+            Some(0),
+            Some(2),
+            "0000 - 0002 - Sort Zero Disc",
+        ),
+        ("The Zebra", Some(1), Some(1), "0001 - 0001 - The Zebra"),
+        (
+            "A, Small: Test!",
+            Some(1),
+            Some(3),
+            "0001 - 0003 - A, Small: Test!",
+        ),
+    ];
+    let album = item(pool, library, None, "MusicAlbum", "/media/sort-contract").await;
+    let mut tracks = Vec::new();
+    for (index, (title, disc, track, _)) in cases.iter().enumerate() {
+        let id = item(
+            pool,
+            library,
+            Some(album),
+            "Audio",
+            &format!("/media/sort-contract/case-{index:02}.flac"),
+        )
+        .await;
+        sqlx::query("UPDATE items SET name=$2,sort_name=lower($2),size_bytes=100,date_modified='2026-10-03T00:00:00Z' WHERE id=$1")
+            .bind(id).bind(format!("case-{index:02}")).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO item_metadata(item_id,provider_key,title,metadata_json,source_library_id,source_path_hash,source_size_bytes,source_date_modified) SELECT id,'embedded-audio',$2,$3,library_id,path_hash,size_bytes,date_modified FROM items WHERE id=$1")
+            .bind(id).bind(title).bind(Json(json!({"discNumber":disc,"trackNumber":track}))).execute(pool).await.unwrap();
+        tracks.push(id);
+    }
+    let prefix =
+        format!("/Users/{owner}/Items?ParentId={album}&IncludeItemTypes=Audio&Fields=SortName");
+    let ascending_indices = [5, 6, 7, 3, 8, 2, 1, 4, 0];
+    let ascending_ids: Vec<_> = ascending_indices
+        .iter()
+        .map(|index| tracks[*index])
+        .collect();
+    let ascending =
+        json_body(call(router, &format!("{prefix}&SortBy=SortName"), Some(token)).await).await;
+    assert_eq!(ascending["TotalRecordCount"], 9);
+    assert_eq!(item_ids(&ascending), ascending_ids);
+    for (row, index) in ascending["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(ascending_indices)
+    {
+        assert_eq!(row["Name"], cases[index].0);
+        assert_eq!(row["SortName"], cases[index].3);
+        assert_eq!(row["ParentIndexNumber"], json!(cases[index].1));
+        assert_eq!(row["IndexNumber"], json!(cases[index].2));
+    }
+    let descending = json_body(
+        call(
+            router,
+            &format!("{prefix}&sortBy=SortName&sortOrder=Descending"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        item_ids(&descending),
+        ascending_ids.iter().rev().copied().collect::<Vec<_>>()
+    );
+    let names = json_body(call(router, &format!("{prefix}&SortBy=Name"), Some(token)).await).await;
+    assert_eq!(
+        item_ids(&names),
+        [8, 3, 2, 4, 0, 1, 5, 6, 7].map(|index| tracks[index])
+    );
+    let page = json_body(
+        call(
+            router,
+            &format!("{prefix}&SortBy=SortName&StartIndex=3&Limit=2"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(page["TotalRecordCount"], 9);
+    assert_eq!(item_ids(&page), [tracks[3], tracks[8]]);
+
+    // Filtering must precede the same ordering and paging expressions.
+    for id in &tracks[..4] {
+        sqlx::query("INSERT INTO user_item_data(user_id,item_id,rating) VALUES ($1,$2,10)")
+            .bind(owner)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    let likes = json_body(
+        call(
+            router,
+            &format!("{prefix}&Filters=Likes&SortBy=SortName&StartIndex=1&Limit=2"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(likes["TotalRecordCount"], 4);
+    assert_eq!(item_ids(&likes), [tracks[2], tracks[1]]);
+
+    // A changed file identity invalidates both the returned prefix and SQL
+    // order. The stale metadata row stays available for diagnosis.
+    sqlx::query("UPDATE items SET size_bytes=101 WHERE id=$1")
+        .bind(tracks[5])
+        .execute(pool)
+        .await
+        .unwrap();
+    let stale = json_body(call(router, &format!("/Items/{}", tracks[5]), Some(token)).await).await;
+    assert_eq!(stale["Name"], "case-05");
+    assert_eq!(stale["SortName"], "case-05");
+    let changed =
+        json_body(call(router, &format!("{prefix}&SortBy=SortName"), Some(token)).await).await;
+    assert_eq!(
+        item_ids(&changed),
+        [6, 7, 3, 8, 2, 1, 4, 5, 0].map(|index| tracks[index])
+    );
 }
 
 async fn verify_embedded_audio_metadata(

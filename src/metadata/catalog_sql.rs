@@ -103,8 +103,22 @@ fn checked_index(value: &str, positive: bool) -> String {
 pub(crate) fn music_number(item: &str, disc: bool) -> String {
     let key = if disc { "discNumber" } else { "trackNumber" };
     let field = format!("m.metadata_json->>'{key}'");
-    let checked = checked_index(&field, true);
+    let checked = checked_index(&field, false);
     preferred(item, &checked, &format!("{checked} IS NOT NULL"))
+}
+
+pub(crate) fn music_sort_name(alias: &str) -> String {
+    let item = format!("{alias}.id");
+    let title = title(&item);
+    let disc = music_number(&item, true);
+    let track = music_number(&item, false);
+    // Missing numbers contribute no prefix. GREATEST preserves all digits
+    // when a number is wider than the reference's four-character padding.
+    format!(
+        "(SELECT COALESCE(lpad(disc::text,GREATEST(4,length(disc::text)),'0') || ' - ','') || \
+         COALESCE(lpad(track::text,GREATEST(4,length(track::text)),'0') || ' - ','') || \
+         COALESCE({title},{alias}.name) FROM (SELECT {disc} AS disc,{track} AS track) music_numbers)"
+    )
 }
 
 pub(crate) fn album(item: &str) -> String {

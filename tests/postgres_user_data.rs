@@ -505,7 +505,7 @@ async fn personal_catalog_filters(
     for (name, title) in [
         ("a", "Filter Alpha"),
         ("b", "Filter Beta"),
-        ("c", "Filter Gamma"),
+        ("c", "Filter Charlie"),
         ("d", "Filter Delta"),
         ("e", "Filter Empty"),
     ] {
