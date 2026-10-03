@@ -1716,6 +1716,77 @@ async fn verify_embedded_audio_metadata(
         .await
         .unwrap();
 
+    // The untagged public-reference track has no credits even inside an
+    // artist/album folder. Empty current embedded roles must suppress the
+    // physical fallback, while an explicit local NFO credit still wins.
+    let second_metadata: Value = sqlx::query_scalar(
+        "SELECT metadata_json FROM item_metadata WHERE item_id=$1 AND provider_key='embedded-audio'",
+    )
+    .bind(second)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE item_metadata SET metadata_json=metadata_json || '{\"artists\":[],\"albumArtists\":[]}'::jsonb WHERE item_id=$1 AND provider_key='embedded-audio'")
+        .bind(second).execute(pool).await.unwrap();
+    let empty = json_body(call(router, &format!("/Items/{second}"), Some(token)).await).await;
+    assert_eq!(empty["Artists"], json!([]));
+    assert_eq!(empty["ArtistItems"], json!([]));
+    assert_eq!(empty["AlbumArtists"], json!([]));
+    for selector in ["ArtistIds", "AlbumArtistIds"] {
+        let selected = json_body(
+            call(
+                router,
+                &format!("{prefix}&{selector}={artist}"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(item_ids(&selected), [first]);
+    }
+    for endpoint in ["/Artists", "/Artists/AlbumArtists"] {
+        let selected =
+            json_body(call(router, &format!("{endpoint}?ParentId={album}"), Some(token)).await)
+                .await;
+        assert_eq!(selected["TotalRecordCount"], 1);
+        assert_eq!(selected["Items"][0]["Id"], artist.to_string());
+        assert_eq!(selected["Items"][0]["SongCount"], 1);
+        assert_eq!(selected["Items"][0]["AlbumCount"], 0);
+    }
+    metadata(
+        pool,
+        second,
+        "local-nfo",
+        json!([]),
+        json!({"artists":["Embedded Lead"],"albumArtists":["Embedded Lead"]}),
+        None,
+        None,
+    )
+    .await;
+    let local = json_body(call(router, &format!("/Items/{second}"), Some(token)).await).await;
+    assert_eq!(local["ArtistItems"][0]["Id"], artist.to_string());
+    assert_eq!(local["AlbumArtists"][0]["Id"], artist.to_string());
+    sqlx::query("DELETE FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(second)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE items SET size_bytes=101 WHERE id=$1")
+        .bind(second)
+        .execute(pool)
+        .await
+        .unwrap();
+    let stale = json_body(call(router, &format!("/Items/{second}"), Some(token)).await).await;
+    assert_eq!(stale["ArtistItems"][0]["Id"], artist.to_string());
+    assert_eq!(stale["AlbumArtists"][0]["Id"], artist.to_string());
+    sqlx::query("UPDATE items SET size_bytes=100 WHERE id=$1")
+        .bind(second)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE item_metadata SET metadata_json=$2 WHERE item_id=$1 AND provider_key='embedded-audio'")
+        .bind(second).bind(Json(second_metadata)).execute(pool).await.unwrap();
+
     // The old embedded row remains for diagnosis, but none of its fields may
     // survive a changed catalog snapshot in display, sorting or credits.
     sqlx::query("UPDATE items SET size_bytes=101 WHERE id=$1")

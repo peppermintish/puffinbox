@@ -14,11 +14,12 @@ use super::ItemNavigationLinks;
 
 // Explicit, bounded local-NFO and current embedded audio names supply credits. Resolve them to
 // visible artists in the same library. Folder relationships remain the
-// fallback when no names were supplied; hidden explicit names never fall
-// back to another artist. No synthetic artist or album is invented here.
+// fallback when no role was supplied. A current embedded empty role stays
+// empty; hidden explicit names never fall back to another artist.
+// No synthetic artist or album is invented here.
 pub(super) const CREDIT_CTES: &str = r#",
-music_names AS (
-    SELECT i.id AS item_id, role.key AS role, btrim(n.value #>> '{}') AS name
+music_roles AS (
+    SELECT i.id AS item_id,role.key AS role,m.metadata_json
     FROM visible_catalog_nodes i
     CROSS JOIN (VALUES ('artists'),('albumArtists')) role(key)
     JOIN LATERAL (
@@ -27,13 +28,18 @@ music_names AS (
             i.item_type='Audio' AND i.library_id=m.source_library_id AND
             i.size_bytes=m.source_size_bytes AND i.date_modified=m.source_date_modified AND
             i.path_hash=m.source_path_hash))
-        AND jsonb_array_length(CASE WHEN jsonb_typeof(m.metadata_json->role.key)='array'
-            THEN m.metadata_json->role.key ELSE '[]'::jsonb END)>0
+        AND jsonb_typeof(m.metadata_json->role.key)='array'
+        AND (m.provider_key='embedded-audio' OR jsonb_array_length(CASE
+            WHEN jsonb_typeof(m.metadata_json->role.key)='array' THEN m.metadata_json->role.key
+            ELSE '[]'::jsonb END)>0)
         ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 ELSE 1 END LIMIT 1
     ) m ON TRUE
-    CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(m.metadata_json->role.key)='array'
-        THEN m.metadata_json->role.key ELSE '[]'::jsonb END) WITH ORDINALITY n(value, ordinal)
-    WHERE i.item_type IN ('Audio','MusicAlbum') AND n.ordinal<=32 AND jsonb_typeof(n.value)='string'
+    WHERE i.item_type IN ('Audio','MusicAlbum')
+), music_names AS (
+    SELECT selected.item_id,selected.role,btrim(n.value #>> '{}') AS name FROM music_roles selected
+    CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(selected.metadata_json->selected.role)='array'
+        THEN selected.metadata_json->selected.role ELSE '[]'::jsonb END) WITH ORDINALITY n(value,ordinal)
+    WHERE n.ordinal<=32 AND jsonb_typeof(n.value)='string'
         AND octet_length(btrim(n.value #>> '{}')) BETWEEN 1 AND 512
 ), music_named_artists AS (
     SELECT DISTINCT n.item_id,n.role,artist.id AS artist_id
@@ -48,7 +54,7 @@ music_names AS (
     JOIN visible_catalog_nodes artist ON artist.id=album.parent_id AND artist.item_type='MusicArtist'
         AND artist.library_id=album.library_id
     WHERE album.item_type='MusicAlbum' AND NOT EXISTS (
-        SELECT 1 FROM music_names n WHERE n.item_id=album.id AND n.role='albumArtists')
+        SELECT 1 FROM music_roles n WHERE n.item_id=album.id AND n.role='albumArtists')
 ), music_track_album_artists AS (
     SELECT track.id AS item_id,n.artist_id FROM visible_catalog_nodes track
     JOIN music_named_artists n ON n.item_id=track.id AND n.role='albumArtists'
@@ -57,17 +63,17 @@ music_names AS (
     JOIN visible_catalog_nodes album ON album.id=track.parent_id AND album.item_type='MusicAlbum'
         AND album.library_id=track.library_id JOIN music_album_artists credit ON credit.item_id=album.id
     WHERE track.item_type='Audio' AND NOT EXISTS (
-        SELECT 1 FROM music_names n WHERE n.item_id=track.id AND n.role='albumArtists')
+        SELECT 1 FROM music_roles n WHERE n.item_id=track.id AND n.role='albumArtists')
     UNION SELECT track.id,artist.id FROM visible_catalog_nodes track
     JOIN visible_catalog_nodes artist ON artist.id=track.parent_id AND artist.item_type='MusicArtist'
         AND artist.library_id=track.library_id
     WHERE track.item_type='Audio' AND NOT EXISTS (
-        SELECT 1 FROM music_names n WHERE n.item_id=track.id AND n.role='albumArtists')
+        SELECT 1 FROM music_roles n WHERE n.item_id=track.id AND n.role='albumArtists')
 ), music_track_artists AS (
     SELECT track.id AS item_id,n.artist_id FROM visible_catalog_nodes track
     JOIN music_named_artists n ON n.item_id=track.id AND n.role='artists' WHERE track.item_type='Audio'
     UNION SELECT credit.item_id,credit.artist_id FROM music_track_album_artists credit WHERE NOT EXISTS (
-        SELECT 1 FROM music_names n WHERE n.item_id=credit.item_id AND n.role='artists')
+        SELECT 1 FROM music_roles n WHERE n.item_id=credit.item_id AND n.role='artists')
 ), music_track_credits AS (
     SELECT item_id,artist_id,FALSE AS contributing FROM music_track_album_artists
     UNION ALL SELECT credit.item_id,credit.artist_id,NOT EXISTS (
