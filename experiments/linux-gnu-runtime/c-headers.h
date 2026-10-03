@@ -7,6 +7,11 @@
 #include <arpa/inet.h>
 #include <endian.h>
 #include <byteswap.h>
+#include <ctype.h>
+
+/* Preserve the public declarations and call the external C functions. */
+#undef tolower
+#undef toupper
 
 #if !defined(__GNUC__) || !defined(__BYTE_ORDER__)
 #error "This experiment requires GNU-compatible byte-swap builtins"

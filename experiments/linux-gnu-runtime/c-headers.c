@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 #include <arpa/inet.h>
 #include <byteswap.h>
+#include <ctype.h>
 #include <endian.h>
+#include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +15,13 @@ static uint64_t reverse_bytes(uint64_t value, unsigned width) {
         value >>= 8;
     }
     return result;
+}
+
+static unsigned character_calls;
+
+static int next_character(int value) {
+    ++character_calls;
+    return value;
 }
 
 int main(int argc, char **argv) {
@@ -53,5 +62,17 @@ int main(int argc, char **argv) {
         printf("%016llx %016llx %08x %04x\n", (unsigned long long)big,
                (unsigned long long)small, (unsigned)big32, (unsigned)big16);
     }
+    if (setlocale(LC_ALL, "C") == NULL) return 5;
+    for (int value = 0; value <= 255; ++value) {
+        int lower = value >= 'A' && value <= 'Z' ? value + ('a' - 'A') : value;
+        int upper = value >= 'a' && value <= 'z' ? value - ('a' - 'A') : value;
+        if (tolower(value) != lower || toupper(value) != upper) return 6;
+        printf("ctype %d %d %d\n", value, tolower(value), toupper(value));
+    }
+    if (tolower(EOF) != EOF || toupper(EOF) != EOF) return 7;
+    printf("ctype %d %d %d\n", EOF, tolower(EOF), toupper(EOF));
+    if (tolower(next_character('A')) != 'a' || character_calls != 1 ||
+        toupper(next_character('z')) != 'Z' || character_calls != 2) return 8;
+    printf("ctype-calls %u\n", character_calls);
     return 0;
 }

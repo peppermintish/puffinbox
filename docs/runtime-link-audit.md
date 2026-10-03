@@ -298,3 +298,56 @@ also passed before the complete replay. No server, dependency, build flag,
 package allowlist or production image changed. Header contributions,
 constants, inlined and unmapped content, external-runtime distribution and
 whole-binary licensing remain uncleared.
+
+## External C character conversion
+
+The experimental adapter now includes the public character declarations and
+removes the `tolower` and `toupper` macros. It retains the existing endian
+adapter and build flags. The original C fixture checks every byte value and
+EOF in the C locale, and arguments with side effects. Baseline and adapter
+outputs match across 4,096 endian rows and 258 character rows; an independent
+ASCII oracle and both external function imports also pass. Other locales
+remain untested.
+
+A full build from the dirty `29e7444` tree produced server SHA-256
+`94f7a1e4c014908dd51bf587cc5ab2c58e7a911df02791abe9570d18e22ff167`.
+Its 322 tracked fingerprints stayed unchanged through the joined checks.
+Startup, numerical, TLS, OpenSSL exclusion, source inventory and compiler
+notice checks passed, as did all 54 GNU audit regressions. The server imports
+`tolower`. All 927 mapped native source hashes match the preceding candidate;
+1,872 preserved files remain available. The mapped inventory has 246
+standard-library and 1,206 package paths.
+
+The fresh preprocessor replay passed all 1,034 selected commands. Independent
+verification checked 3,102 compressed artifacts and 1,676,663,803 decompressed
+text bytes. It joined 295,333 system macro use-or-test observations across
+945 names and 128 headers, retaining 34,987 ambiguous origins without an
+unmatched definition join. `__tobody` is absent from this set.
+`__SOCKADDR_ALLTYPES` remains the larger candidate in 1,032 commands. These
+observations do not determine retained header code or applicable licenses.
+
+This candidate passed 35 isolated container checks, the playlist supplement,
+and 29 local HTTPS checks. Official Qt 6 Desktop and web each completed the
+original four-track FLAC album with automatic advancement, fifteen successful
+playback responses and exactly one added play per track. Desktop recorded
+four audio EOF events; web advanced unpaused on a five-second timeline without
+a media error. Native positive stops were 4.738, 4.738, 4.698 and 4.698 seconds;
+web stops were five seconds. Audible quality and native final-position
+reliability remain open.
+
+Client testing used explicit executable and external-standard-library mounts
+on the retained synthetic loopback backend. Fifty saved rows, grants, identity,
+playlists, studio favorites and original mounts matched the observed plays
+without a reset. A second recreation restored the static image, removed both
+runtime mounts and retained that state. Its server bytes match the preceding
+static hash. Desktop closed with unchanged settings and Remember Me off.
+Evidence is under `.local/native-ctype-adoption-20261004` and its separate
+macro, container, HTTPS, client, native and web directories. Earlier private
+fixture and restoration-helper failures remain separately recorded.
+
+The external standard-library hash is still
+`5a3f35a0e2e734369effc845ebad8b182912c600ad2114ce400ee3d2502b1ea0`.
+It contains non-allowlisted components and must not be bundled. Production
+packaging and the package allowlist are unchanged. Header contributions,
+constants, inlined and unmapped content, runtime distribution and production
+adoption remain uncleared; all five release gates remain false.

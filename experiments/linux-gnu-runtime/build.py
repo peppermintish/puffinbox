@@ -111,17 +111,29 @@ def c_header_check(output: Path, root: Path, environment: dict[str, str]) -> dic
             log=output / f"c-headers-{label}-output.txt")
     before = (output / "c-headers-baseline-output.txt").read_bytes()
     after = (output / "c-headers-adapter-output.txt").read_bytes()
-    if before != after or len(after.splitlines()) != 4096:
-        raise RuntimeError("The endian adapter differed from the C baseline or independent byte oracle.")
+    lines = after.decode().splitlines()
+    characters = [f"ctype {value} {value + 32 if 65 <= value <= 90 else value} "
+                  f"{value - 32 if 97 <= value <= 122 else value}" for value in range(256)]
+    characters += ["ctype -1 -1 -1", "ctype-calls 2"]
+    if before != after or len(lines) != 4354 or lines[4096:] != characters:
+        raise RuntimeError("The C adapter differed from its baseline or independent byte/character oracle.")
+    run(["nm", "-u", str(output / "c-headers-adapter")], cwd=output, env=environment,
+        log=output / "c-headers-adapter-imports.txt")
+    imports = (output / "c-headers-adapter-imports.txt").read_text()
+    if not all(re.search(r"\bU " + name + r"(?:@|$)", imports, re.MULTILINE)
+               for name in ["tolower", "toupper"]):
+        raise RuntimeError("The character adapter did not import both external C functions.")
     assembly = output / "c-headers-assembly.S"
     assembly.write_text(".text\n.p2align 4\n.globl puffinbox_c_header_assembly_probe\npuffinbox_c_header_assembly_probe:\n    ret\n.section .note.GNU-stack,\"\",@progbits\n")
     run(["cc", "-D_GNU_SOURCE", "-D__NO_INLINE__", "-include", str(header), "-c", str(assembly),
          "-o", str(output / "c-headers-assembly.o")], cwd=output, env=environment,
         log=output / "c-headers-assembly-build.log")
     return {"identicalOutputs": True, "inputRows": 4096,
+            "characterRows": 258, "characterOraclePassed": True,
+            "externalCharacterFunctionsVerified": True,
             "assemblyPreprocessingPassed": True,
             "outputSha256": hashlib.sha256(after).hexdigest(),
-            "scope": "Native x86-64 endian conversions, single evaluation, and an external atoi call."}
+            "scope": "Native x86-64 endian conversions, C-locale byte/EOF case conversions, single evaluation, and external atoi/tolower/toupper calls."}
 
 
 def numeric_check(output: Path, root: Path, environment: dict[str, str]) -> dict[str, object]:
