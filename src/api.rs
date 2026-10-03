@@ -2761,9 +2761,14 @@ fn item_dto(
         album_artists,
         song_count: music.and_then(|music| music.song_count),
         album_count: music.and_then(|music| music.album_count),
-        child_count: music
-            .and_then(|music| music.song_count.zip(music.album_count))
-            .map(|(songs, albums)| songs.saturating_add(albums)),
+        child_count: music.and_then(|music| {
+            music.child_count.or_else(|| {
+                music
+                    .song_count
+                    .zip(music.album_count)
+                    .map(|(songs, albums)| songs.saturating_add(albums))
+            })
+        }),
         path: include_path.then(|| item.path.to_string_lossy().into_owned()),
         user_data,
     }

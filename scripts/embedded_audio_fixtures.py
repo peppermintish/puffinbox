@@ -97,6 +97,14 @@ def observe(client, fixture_root: Path, library_id: str, timeout: int = 120) -> 
             assert item.get("IndexNumber") is None, "A current untagged track inferred a filename index."
         fields = ["Id", "Name", "Album", "IndexNumber", "ParentIndexNumber", "ProductionYear", "PremiereDate", "Genres", "Artists", "ArtistItems", "AlbumArtists"]
         snapshot[name] = {field: item.get(field) for field in fields}
+    album_ids = {item["ParentId"] for item in tracks.values()}
+    assert len(album_ids) == 1, "The four original tracks lost their shared physical album."
+    album_id = next(iter(album_ids))
+    album = client.json("GET", "/Items/" + album_id + "?Fields=ItemCounts")[2]
+    assert album["Type"] == "MusicAlbum" and album["ChildCount"] == 4 and album["RunTimeTicks"] == 200_000_000
+    assert "SongCount" not in album and "AlbumCount" not in album, "An album exposed artist-only counters."
+    album_counts = {key: album[key] for key in ["Id", "ChildCount", "RunTimeTicks"]}
     assert hashes == {name: hashlib.sha256((folder / name).read_bytes()).hexdigest() for name in TAGS}
     return {"items": snapshot, "fixtureFiles": hashes,
-            "scope": "Embedded display fields, persistent tag-named artist identities and exact performer/album-artist roles; artist identities and credits retained after restart. Album naming and creation remain incomplete."}
+            "albumCounts": album_counts,
+            "scope": "Embedded display fields, physical album track count/duration, persistent tag-named artist identities and exact performer/album-artist roles; metadata and counts retained after restart. Album naming and creation remain incomplete."}

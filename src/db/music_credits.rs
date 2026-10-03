@@ -123,6 +123,7 @@ pub struct MusicNavigation {
     pub album_artists: Vec<MusicArtistCredit>,
     pub song_count: Option<i64>,
     pub album_count: Option<i64>,
+    pub child_count: Option<i64>,
     pub runtime_ticks: Option<i64>,
 }
 
@@ -211,7 +212,15 @@ pub(super) async fn enrich_navigation(
     builder
         .push(" AND i.item_type IN ('Audio','MusicAlbum','MusicArtist')) ")
         .push(CREDIT_CTES)
-        .push(" SELECT target.id,target.item_type,role.kind,artist.id AS artist_id,artist.name,counts.song_count,counts.album_count,counts.runtime_ticks FROM visible_catalog_nodes target LEFT JOIN LATERAL (
+        .push(", music_album_counts AS (
+            SELECT album.id,COUNT(*)::BIGINT AS child_count,
+                LEAST(COALESCE(SUM(GREATEST(child.runtime_ticks,0)),0),9223372036854775807)::BIGINT AS runtime_ticks
+            FROM visible_catalog_nodes album JOIN visible_catalog_nodes child ON child.parent_id=album.id
+                AND child.library_id=album.library_id AND child.item_type='Audio'
+            WHERE album.item_type='MusicAlbum' AND album.id=ANY(")
+        .push_bind(music_ids.clone())
+        .push("::uuid[]) GROUP BY album.id)")
+        .push(" SELECT target.id,target.item_type,role.kind,artist.id AS artist_id,artist.name,counts.song_count,counts.album_count,COALESCE(album_counts.child_count,0) AS child_count,COALESCE(counts.runtime_ticks,CASE WHEN target.item_type='MusicAlbum' THEN COALESCE(album_counts.runtime_ticks,0) END) AS runtime_ticks FROM visible_catalog_nodes target LEFT JOIN LATERAL (
             SELECT 'artist' AS kind,artist_id FROM music_performers WHERE item_id=target.id
             UNION ALL SELECT 'album',artist_id FROM music_album_roles WHERE item_id=target.id
         ) role ON TRUE LEFT JOIN visible_catalog_nodes artist ON artist.id=role.artist_id
@@ -221,7 +230,8 @@ pub(super) async fn enrich_navigation(
                 COALESCE(SUM(GREATEST(item.runtime_ticks,0)) FILTER (WHERE item.item_type='Audio'),0)::BIGINT AS runtime_ticks
             FROM music_credits credit JOIN visible_catalog_nodes item ON item.id=credit.item_id
             WHERE credit.artist_id=target.id AND target.item_type='MusicArtist'
-        ) counts ON target.item_type='MusicArtist' WHERE target.id=ANY(")
+        ) counts ON target.item_type='MusicArtist'
+        LEFT JOIN music_album_counts album_counts ON album_counts.id=target.id WHERE target.id=ANY(")
         .push_bind(music_ids)
         .push("::uuid[]) ORDER BY target.id,artist.name,artist.id");
     for row in builder.build().fetch_all(pool).await? {
@@ -233,6 +243,9 @@ pub(super) async fn enrich_navigation(
         if row.try_get::<&str, _>("item_type")? == "MusicArtist" {
             music.song_count = row.try_get("song_count")?;
             music.album_count = row.try_get("album_count")?;
+            music.runtime_ticks = row.try_get("runtime_ticks")?;
+        } else if row.try_get::<&str, _>("item_type")? == "MusicAlbum" {
+            music.child_count = row.try_get("child_count")?;
             music.runtime_ticks = row.try_get("runtime_ticks")?;
         }
         if let Some(id) = row.try_get("artist_id")? {

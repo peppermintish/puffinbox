@@ -1250,7 +1250,15 @@ async fn navigation_and_theme_media_keep_library_rating_and_user_boundaries() {
         StatusCode::CONFLICT
     );
 
-    verify_music_credit_queries(&router, &pool, owner, &owner_token, &peer_token).await;
+    verify_music_credit_queries(
+        &router,
+        &pool,
+        owner,
+        &owner_token,
+        &peer_token,
+        (administrator, &admin_token),
+    )
+    .await;
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
         .execute(&admin_pool)
@@ -1265,6 +1273,7 @@ async fn verify_music_credit_queries(
     user_id: Uuid,
     token: &str,
     denied_token: &str,
+    administrator: (Uuid, &str),
 ) {
     let library = Uuid::new_v4();
     sqlx::query("INSERT INTO libraries(id,name,collection_type,locations) VALUES ($1,'Credit fixture','music','[\"/credits\"]')").bind(library).execute(pool).await.unwrap();
@@ -1491,6 +1500,9 @@ async fn verify_music_credit_queries(
             );
         }
     }
+    for (album, count, runtime) in [(shared, 2, 100000000), (solo, 1, 50000000)] {
+        verify_music_album_counts(router, user_id, token, album, count, runtime).await;
+    }
     for (artist, songs, albums) in [(lead, 2, 1), (guest, 2, 2)] {
         let details = body_json(
             call(
@@ -1636,6 +1648,7 @@ async fn verify_music_credit_queries(
         .execute(pool)
         .await
         .unwrap();
+    verify_music_album_counts(router, user_id, token, shared, 1, 50000000).await;
     let details = body_json(call(router, &format!("/Items/{guest}"), Some(token)).await).await;
     assert_eq!(details["SongCount"], 1);
     assert_eq!(details["AlbumCount"], 1);
@@ -1675,6 +1688,83 @@ async fn verify_music_credit_queries(
         .execute(pool)
         .await
         .unwrap();
+    verify_music_album_counts(router, user_id, token, shared, 2, 100000000).await;
+    sqlx::query("UPDATE item_metadata SET policy_rating_scale='US-MPAA-v1',policy_rating_value=100 WHERE item_id=$1")
+        .bind(guest_track).execute(pool).await.unwrap();
+    verify_music_album_counts(router, user_id, token, shared, 1, 50000000).await;
+    sqlx::query("UPDATE item_metadata SET policy_rating_scale=NULL,policy_rating_value=NULL WHERE item_id=$1")
+        .bind(guest_track).execute(pool).await.unwrap();
+    verify_music_album_counts(router, user_id, token, shared, 2, 100000000).await;
+    for duration in [None, Some(0_i64)] {
+        sqlx::query("UPDATE items SET runtime_ticks=$2 WHERE id=$1")
+            .bind(solo_track)
+            .bind(duration)
+            .execute(pool)
+            .await
+            .unwrap();
+        verify_music_album_counts(router, user_id, token, solo, 1, 0).await;
+    }
+    sqlx::query("UPDATE items SET runtime_ticks=50000000 WHERE id=$1")
+        .bind(solo_track)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE items SET runtime_ticks=$2 WHERE id=ANY($1)")
+        .bind(&[lead_track, guest_track][..])
+        .bind(i64::MAX)
+        .execute(pool)
+        .await
+        .unwrap();
+    verify_music_album_counts(router, user_id, token, shared, 2, i64::MAX).await;
+    sqlx::query("UPDATE items SET runtime_ticks=50000000 WHERE id=ANY($1)")
+        .bind(&[lead_track, guest_track][..])
+        .execute(pool)
+        .await
+        .unwrap();
+    let empty = item(
+        pool,
+        library,
+        Some(folder),
+        "Empty album",
+        "MusicAlbum",
+        "/credits/empty",
+        None,
+    )
+    .await;
+    assert_eq!(
+        call(router, &format!("/Items/{empty}"), Some(token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    verify_music_album_counts(router, administrator.0, administrator.1, empty, 0, 0).await;
+    sqlx::query("DELETE FROM user_library_access WHERE user_id=$1 AND library_id=$2")
+        .bind(user_id)
+        .bind(library)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(router, &format!("/Items/{shared}"), Some(token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    for endpoint in ["/Items".to_owned(), format!("/Users/{user_id}/Items")] {
+        let path = format!("{endpoint}?ParentId={shared}&Recursive=true&IncludeItemTypes=Audio");
+        assert_eq!(
+            call(router, &path, Some(token)).await.status(),
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+    sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES($1,$2)")
+        .bind(user_id)
+        .bind(library)
+        .execute(pool)
+        .await
+        .unwrap();
+    verify_music_album_counts(router, user_id, token, shared, 2, 100000000).await;
     sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
         .bind(library)
         .execute(pool)
@@ -1690,6 +1780,12 @@ async fn verify_music_credit_queries(
     )
     .await;
     assert_eq!(disabled["TotalRecordCount"], 0);
+    assert_eq!(
+        call(router, &format!("/Items/{shared}"), Some(token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
     for endpoint in ["/Artists", "/Artists/AlbumArtists"] {
         let list = body_json(
             call(
@@ -1702,6 +1798,39 @@ async fn verify_music_credit_queries(
         .await;
         assert_eq!(list["TotalRecordCount"], 0);
         assert_eq!(list["Items"], json!([]));
+    }
+}
+
+async fn verify_music_album_counts(
+    router: &Router,
+    user_id: Uuid,
+    token: &str,
+    album: Uuid,
+    children: i64,
+    runtime: i64,
+) {
+    // The public reference exposes ChildCount and RunTimeTicks on albums,
+    // while SongCount and AlbumCount are artist fields.
+    for (path, list) in [
+        (format!("/Items/{album}?Fields=ItemCounts"), false),
+        (format!("/Users/{user_id}/Items/{album}"), false),
+        (format!("/Items?Ids={album}&Fields=ItemCounts"), true),
+        (format!("/Users/{user_id}/Items?Ids={album}"), true),
+    ] {
+        let response = call(router, &path, Some(token)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let response = body_json(response).await;
+        let item = if list {
+            assert_eq!(response["TotalRecordCount"], 1, "{path}: {response}");
+            &response["Items"][0]
+        } else {
+            &response
+        };
+        assert_eq!(item["Id"], album.to_string(), "{path}: {item}");
+        assert_eq!(item["ChildCount"], children, "{path}: {item}");
+        assert_eq!(item["RunTimeTicks"], runtime, "{path}: {item}");
+        assert!(item.get("SongCount").is_none(), "{path}: {item}");
+        assert!(item.get("AlbumCount").is_none(), "{path}: {item}");
     }
 }
 
