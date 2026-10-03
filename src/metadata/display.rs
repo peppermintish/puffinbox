@@ -26,6 +26,8 @@ pub(crate) fn music_sort_name(name: &str, disc: Option<i32>, track: Option<i32>)
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct DisplayMetadata {
+    #[serde(skip_serializing)]
+    pub(crate) has_current_audio_source: bool,
     pub name: Option<String>,
     pub overview: Option<String>,
     pub premiere_date: Option<NaiveDate>,
@@ -95,7 +97,7 @@ pub async fn load_display_metadata(
              {} AS track_number, {} AS disc_number, {} AS album, {studios} AS studios, \
              (SELECT m.metadata_json->>'communityScore' FROM item_metadata m \
               WHERE m.item_id=requested.item_id AND m.provider_key='tvmaze') AS community_score, \
-             {} AS primary_image_tag FROM unnest($1::uuid[]) AS requested(item_id)",
+             {} AS primary_image_tag, {} AS has_current_audio_source FROM unnest($1::uuid[]) AS requested(item_id)",
             catalog_sql::title("requested.item_id"),
             catalog_sql::preferred("requested.item_id", "m.overview", "m.overview IS NOT NULL"),
             catalog_sql::preferred(
@@ -115,11 +117,13 @@ pub async fn load_display_metadata(
                 "m.artwork_sha256",
                 "m.artwork_size IS NOT NULL"
             ),
+            catalog_sql::current_audio_source("requested.item_id"),
         );
         let rows = sqlx::query(&projection).bind(chunk).fetch_all(pool).await?;
         for row in rows {
             let item_id: Uuid = row.try_get("item_id")?;
             let mut display = DisplayMetadata {
+                has_current_audio_source: row.try_get("has_current_audio_source")?,
                 name: row.try_get("title")?,
                 overview: row.try_get("overview")?,
                 premiere_date: row.try_get("premiere_date")?,

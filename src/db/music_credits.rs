@@ -16,7 +16,8 @@ use super::ItemNavigationLinks;
 // visible artists in the same library. Folder relationships remain the
 // fallback when no role was supplied. A current embedded empty role stays
 // empty; hidden explicit names never fall back to another artist.
-// No synthetic artist or album is invented here.
+// Tag artist identities are registered by the metadata worker; these queries
+// resolve only names with a visible current source in the same library.
 pub(super) const CREDIT_CTES: &str = r#",
 music_roles AS (
     SELECT i.id AS item_id,role.key AS role,m.metadata_json
@@ -50,11 +51,20 @@ music_roles AS (
     SELECT album.id AS item_id,n.artist_id FROM visible_catalog_nodes album
     JOIN music_named_artists n ON n.item_id=album.id AND n.role='albumArtists'
     WHERE album.item_type='MusicAlbum'
+    UNION SELECT album.id,n.artist_id FROM visible_catalog_nodes album
+    JOIN visible_catalog_nodes track ON track.parent_id=album.id AND track.item_type='Audio'
+        AND track.library_id=album.library_id
+    JOIN music_named_artists n ON n.item_id=track.id AND n.role='albumArtists'
+    WHERE album.item_type='MusicAlbum' AND NOT EXISTS (
+        SELECT 1 FROM music_roles role WHERE role.item_id=album.id AND role.role='albumArtists')
     UNION SELECT album.id,artist.id FROM visible_catalog_nodes album
     JOIN visible_catalog_nodes artist ON artist.id=album.parent_id AND artist.item_type='MusicArtist'
         AND artist.library_id=album.library_id
     WHERE album.item_type='MusicAlbum' AND NOT EXISTS (
         SELECT 1 FROM music_roles n WHERE n.item_id=album.id AND n.role='albumArtists')
+        AND NOT EXISTS (SELECT 1 FROM visible_catalog_nodes track JOIN music_roles role ON role.item_id=track.id
+            AND role.role='albumArtists' WHERE track.parent_id=album.id AND track.library_id=album.library_id
+            AND track.item_type='Audio')
 ), music_track_album_artists AS (
     SELECT track.id AS item_id,n.artist_id FROM visible_catalog_nodes track
     JOIN music_named_artists n ON n.item_id=track.id AND n.role='albumArtists'
@@ -80,7 +90,7 @@ music_roles AS (
         SELECT 1 FROM music_track_album_artists album WHERE album.item_id=credit.item_id AND album.artist_id=credit.artist_id)
     FROM music_track_artists credit
 ), music_credits AS (
-    SELECT item_id,artist_id,bool_or(contributing) AS contributing FROM (
+    SELECT item_id,artist_id,bool_and(contributing) AS contributing FROM (
         SELECT * FROM music_track_credits
         UNION ALL SELECT item_id,artist_id,FALSE FROM music_album_artists
         UNION ALL SELECT album.id,credit.artist_id,credit.contributing FROM music_track_credits credit

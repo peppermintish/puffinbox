@@ -4,6 +4,12 @@ pub(crate) const PROVIDER_ORDER: &str = "CASE m.provider_key WHEN 'local-nfo' TH
 
 pub(crate) const EMBEDDED_SOURCE_CURRENT: &str = "m.provider_key='embedded-audio' AND EXISTS (SELECT 1 FROM items source WHERE source.id=m.item_id AND source.item_type='Audio' AND source.library_id=m.source_library_id AND source.path_hash=m.source_path_hash AND source.size_bytes=m.source_size_bytes AND source.date_modified=m.source_date_modified)";
 
+pub(crate) fn current_audio_source(item: &str) -> String {
+    format!(
+        "EXISTS(SELECT 1 FROM item_metadata m WHERE m.item_id={item} AND {EMBEDDED_SOURCE_CURRENT})"
+    )
+}
+
 pub(crate) fn valid_provider() -> String {
     format!(
         "(m.provider_key IN ('local-nfo','tvmaze') OR ({EMBEDDED_SOURCE_CURRENT}) OR \
@@ -152,9 +158,10 @@ pub(crate) fn index_number(alias: &str, parent: bool) -> String {
         false,
     );
     format!(
-        "CASE WHEN {alias}.item_type='Audio' THEN COALESCE({}, {leading}) \
+        "CASE WHEN {alias}.item_type='Audio' THEN COALESCE({}, CASE WHEN NOT {} THEN {leading} END) \
              WHEN {alias}.item_type='Episode' THEN {episode} \
              WHEN {alias}.item_type IN ('Season','MusicAlbum') THEN {trailing} END",
-        music_number(&format!("{alias}.id"), false)
+        music_number(&format!("{alias}.id"), false),
+        current_audio_source(&format!("{alias}.id")),
     )
 }

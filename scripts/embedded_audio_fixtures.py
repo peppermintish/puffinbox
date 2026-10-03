@@ -52,13 +52,21 @@ def observe(client, fixture_root: Path, library_id: str, timeout: int = 120) -> 
                   if RELATIVE_ROOT.as_posix() + "/" in item.get("Path", "")}
         if all(name in tracks and tracks[name]["Name"] == tags.get("title", Path(name).stem)
                for name, tags in TAGS.items()):
-            break
+            providers = {name: client.json("GET", "/Puffinbox/Metadata/Items/" + tracks[name]["Id"])[2]
+                         for name in TAGS}
+            if all(any(row["ProviderKey"] == "embedded-audio" for row in details["Providers"])
+                   for details in providers.values()):
+                # The last import may have committed after the catalog read.
+                items = client.json("GET", "/Items?" + query)[2]["Items"]
+                tracks = {Path(item.get("Path", "")).name: item for item in items
+                          if RELATIVE_ROOT.as_posix() + "/" in item.get("Path", "")}
+                break
         assert time.monotonic() < deadline, "Automatic embedded audio refresh did not finish."
         time.sleep(.5)
     snapshot = {}
     for name, tags in TAGS.items():
         item = tracks[name]
-        details = client.json("GET", "/Puffinbox/Metadata/Items/" + item["Id"])[2]
+        details = providers[name]
         rows = [row for row in details["Providers"] if row["ProviderKey"] == "embedded-audio"]
         assert len(rows) == 1, "Expected one current embedded audio provider row."
         row = rows[0]
@@ -75,12 +83,20 @@ def observe(client, fixture_root: Path, library_id: str, timeout: int = 120) -> 
             assert item["ProductionYear"] == int(date[:4]) and item["PremiereDate"].startswith(date + "T00:00:00")
             assert item["Album"] == tags["album"]
         assert item["Genres"] == ([tags["genre"]] if "genre" in tags else [])
-        # These tag names have no matching folder artists in this fixture.
-        # They must not be linked to the unrelated folder-derived artist.
-        if tags:
-            assert item["Artists"] == [] and item["AlbumArtists"] == []
-        fields = ["Id", "Name", "Album", "IndexNumber", "ParentIndexNumber", "ProductionYear", "PremiereDate", "Genres"]
+        expected_artists = [tags["artist"]] if "artist" in tags else []
+        expected_album_artists = [tags.get("album_artist", tags.get("artist"))] if "artist" in tags else []
+        assert item["Artists"] == expected_artists, "Tagged performer names did not resolve."
+        for field, expected in [("ArtistItems", expected_artists), ("AlbumArtists", expected_album_artists)]:
+            credits = item[field]
+            assert [credit["Name"] for credit in credits] == expected, "Tagged artist roles did not resolve."
+            for credit in credits:
+                artist = client.json("GET", "/Items/" + credit["Id"])[2]
+                assert artist["Name"] == credit["Name"] and artist["Type"] == "MusicArtist"
+                assert artist["ParentId"] is None, "Tagged credits resolved to an unrelated physical folder."
+        if not tags:
+            assert item.get("IndexNumber") is None, "A current untagged track inferred a filename index."
+        fields = ["Id", "Name", "Album", "IndexNumber", "ParentIndexNumber", "ProductionYear", "PremiereDate", "Genres", "Artists", "ArtistItems", "AlbumArtists"]
         snapshot[name] = {field: item.get(field) for field in fields}
     assert hashes == {name: hashlib.sha256((folder / name).read_bytes()).hexdigest() for name in TAGS}
     return {"items": snapshot, "fixtureFiles": hashes,
-            "scope": "Embedded display fields and stored credits; automatic named-artist/album creation remains incomplete."}
+            "scope": "Embedded display fields, persistent tag-named artist identities and exact performer/album-artist roles; artist identities and credits retained after restart. Album naming and creation remain incomplete."}

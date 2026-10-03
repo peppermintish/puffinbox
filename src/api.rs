@@ -2624,15 +2624,20 @@ fn item_dto(
         name: metadata
             .and_then(|metadata| metadata.name.clone())
             .unwrap_or_else(|| item.name.clone()),
-        sort_name: (item.item_type == "Audio").then(|| {
-            crate::metadata::music_sort_name(
-                metadata
-                    .and_then(|metadata| metadata.name.as_deref())
-                    .unwrap_or(&item.name),
-                metadata.and_then(|metadata| metadata.disc_number),
-                metadata.and_then(|metadata| metadata.track_number),
-            )
-        }),
+        sort_name: (item.item_type == "Audio")
+            .then(|| {
+                crate::metadata::music_sort_name(
+                    metadata
+                        .and_then(|metadata| metadata.name.as_deref())
+                        .unwrap_or(&item.name),
+                    metadata.and_then(|metadata| metadata.disc_number),
+                    metadata.and_then(|metadata| metadata.track_number),
+                )
+            })
+            .or_else(|| {
+                matches!(item.item_type.as_str(), "MusicArtist" | "MusicAlbum")
+                    .then(|| item.sort_name.clone())
+            }),
         item_type: item.item_type.clone(),
         is_folder: db::is_folder_item_type(&item.item_type),
         media_type: crate::library::MediaType::for_item_type(&item.item_type)
@@ -2671,7 +2676,15 @@ fn item_dto(
         index_number: (item.item_type == "Audio")
             .then(|| metadata.and_then(|metadata| metadata.track_number))
             .flatten()
-            .or_else(|| navigation.and_then(|links| links.index_number)),
+            .or_else(|| {
+                if item.item_type == "Audio"
+                    && metadata.is_some_and(|metadata| metadata.has_current_audio_source)
+                {
+                    None
+                } else {
+                    navigation.and_then(|links| links.index_number)
+                }
+            }),
         parent_index_number: (item.item_type == "Audio")
             .then(|| metadata.and_then(|metadata| metadata.disc_number))
             .flatten()
@@ -4548,6 +4561,7 @@ mod item_dto_tests {
             metadata_json: serde_json::Value::Null,
         };
         let metadata = crate::metadata::DisplayMetadata {
+            has_current_audio_source: false,
             name: Some("Provider title".to_owned()),
             overview: Some("Provider description".to_owned()),
             premiere_date: Some(chrono::NaiveDate::from_ymd_opt(2022, 3, 4).unwrap()),

@@ -731,7 +731,7 @@ impl ScanContext {
                 }
                 let mut tx = self.pool.begin().await?;
                 self.lock_current_generation(&mut tx).await?;
-                let deleted = sqlx::query("WITH stale_leaf AS (SELECT i.id FROM items i WHERE i.library_id=$1 AND i.item_type <> 'LiveTvChannel' AND i.last_seen_scan IS DISTINCT FROM $2 AND NOT EXISTS (SELECT 1 FROM items child WHERE child.library_id=i.library_id AND child.parent_id=i.id) ORDER BY i.id LIMIT 1000) DELETE FROM items i USING stale_leaf s WHERE i.id=s.id AND i.library_id=$1 AND i.item_type <> 'LiveTvChannel'")
+                let deleted = sqlx::query("WITH stale_leaf AS (SELECT i.id FROM items i WHERE i.library_id=$1 AND i.item_type <> 'LiveTvChannel' AND NOT EXISTS(SELECT 1 FROM music_tag_artists tag WHERE tag.artist_id=i.id) AND i.last_seen_scan IS DISTINCT FROM $2 AND NOT EXISTS (SELECT 1 FROM items child WHERE child.library_id=i.library_id AND child.parent_id=i.id) ORDER BY i.id LIMIT 1000) DELETE FROM items i USING stale_leaf s WHERE i.id=s.id AND i.library_id=$1 AND i.item_type <> 'LiveTvChannel' AND NOT EXISTS(SELECT 1 FROM music_tag_artists tag WHERE tag.artist_id=i.id)")
                     .bind(self.library_id).bind(self.scan_id).execute(&mut *tx).await?.rows_affected();
                 tx.commit().await?;
                 if deleted == 0 {

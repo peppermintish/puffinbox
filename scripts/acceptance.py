@@ -1359,7 +1359,7 @@ def run(args: argparse.Namespace) -> int:
         client, fixture_root, values.get("PUFFINBOX_ACCEPTANCE_MUSIC_ROOT", "/media/Music"), args.scan_timeout,
     )
     embedded_audio_snapshot = embedded_audio_fixtures.observe(client, fixture_root, audio_library_id, args.scan_timeout)
-    report("Automatic embedded audio metadata, bounded fields and unmatched credit isolation", True, embedded_audio_snapshot["scope"])
+    report("Automatic embedded audio metadata, bounded fields and tag-named artist roles", True, embedded_audio_snapshot["scope"])
     if args.require_transcode:
         audio_ffprobe = values.get("PUFFINBOX_ACCEPTANCE_FFPROBE_PATH") or shutil.which("ffprobe")
         require(bool(audio_ffprobe), "ffprobe is required to inspect converted audio")

@@ -15,9 +15,11 @@ mod catalog_relations;
 pub(crate) use catalog_relations::similar_items;
 mod music_credits;
 mod music_mix;
+mod music_tag_artists;
 mod studios;
 pub(crate) use music_credits::{MusicArtistCredit, MusicArtistRole, music_artist_page};
 pub(crate) use music_mix::{MusicMixSeed, instant_mix, visible_music_genre};
+pub(crate) use music_tag_artists::register_metadata_artists;
 pub(crate) use studios::{StudioRecord, StudioSelection, set_studio_favorite, studio_page};
 
 use crate::{
@@ -1277,8 +1279,24 @@ pub async fn item_visible_to_user(
     if !user_policy_allows_item(user, item) {
         return Ok(false);
     }
+    let tagged: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM music_tag_artists WHERE artist_id=$1)")
+            .bind(item.id)
+            .fetch_one(pool)
+            .await?;
+    if tagged {
+        let mut builder =
+            QueryBuilder::<Postgres>::new("SELECT EXISTS(SELECT 1 FROM items i WHERE i.id=");
+        builder.push_bind(item.id);
+        music_tag_artists::push_visibility(&mut builder, user);
+        builder.push(")");
+        if !builder.build_query_scalar::<bool>().fetch_one(pool).await? {
+            return Ok(false);
+        }
+    }
     if !user.is_admin
         && is_folder_item_type(&item.item_type)
+        && !tagged
         && !folder_has_visible_descendant(pool, user, item).await?
     {
         return Ok(false);
@@ -2492,6 +2510,7 @@ pub(crate) fn push_user_visibility_filters(
     builder: &mut QueryBuilder<'_, Postgres>,
     user: &UserRecord,
 ) {
+    music_tag_artists::push_visibility(builder, user);
     if user.is_admin {
         return;
     }
@@ -2508,7 +2527,7 @@ pub(crate) fn push_user_visibility_filters(
     builder
         .push(" AND (i.item_type NOT IN ")
         .push(FOLDER_ITEM_TYPES_SQL)
-        .push(" OR EXISTS (WITH RECURSIVE descendants(id,item_type,metadata_json,ancestors,item_path,depth) AS (SELECT child.id,child.item_type,child.metadata_json,ARRAY[child.id],child.path,1 FROM items child WHERE child.library_id=i.library_id AND child.parent_id=i.id UNION ALL SELECT child.id,child.item_type,child.metadata_json,descendants.ancestors || child.id,child.path,descendants.depth + 1 FROM items child JOIN descendants ON child.parent_id=descendants.id WHERE child.library_id=i.library_id AND descendants.depth < 256 AND NOT child.id = ANY(descendants.ancestors)) SELECT 1 FROM descendants d WHERE d.item_type NOT IN ")
+        .push(" OR EXISTS(SELECT 1 FROM music_tag_artists tag WHERE tag.artist_id=i.id) OR EXISTS (WITH RECURSIVE descendants(id,item_type,metadata_json,ancestors,item_path,depth) AS (SELECT child.id,child.item_type,child.metadata_json,ARRAY[child.id],child.path,1 FROM items child WHERE child.library_id=i.library_id AND child.parent_id=i.id UNION ALL SELECT child.id,child.item_type,child.metadata_json,descendants.ancestors || child.id,child.path,descendants.depth + 1 FROM items child JOIN descendants ON child.parent_id=descendants.id WHERE child.library_id=i.library_id AND descendants.depth < 256 AND NOT child.id = ANY(descendants.ancestors)) SELECT 1 FROM descendants d WHERE d.item_type NOT IN ")
         .push(FOLDER_ITEM_TYPES_SQL)
         .push(" AND d.item_type <> 'File' AND d.item_path !~ '(^|/)[.]' AND (d.item_type <> 'LiveTvChannel' OR EXISTS (SELECT 1 FROM live_tv_channels tv JOIN live_tv_sources src ON src.id=tv.source_id AND src.library_id=tv.library_id WHERE tv.item_id=d.id AND tv.enabled=TRUE AND src.enabled=TRUE))");
     if !user.enable_live_tv_access {
@@ -2630,13 +2649,13 @@ async fn run_item_page(
                 "name" => {
                     let title = crate::metadata::catalog_sql::title("i.id");
                     format!(
-                        "CASE WHEN i.item_type='Audio' THEN COALESCE(lower({title}),i.name) ELSE i.name END"
+                        "CASE WHEN i.item_type='Audio' THEN lower(COALESCE({title},i.name)) WHEN i.item_type='MusicAlbum' THEN lower(i.name) ELSE i.name END"
                     )
                 }
                 "sortname" => {
                     let music = crate::metadata::catalog_sql::music_sort_name("i");
                     format!(
-                        "CASE WHEN i.item_type='Audio' THEN lower({music}) ELSE i.sort_name END"
+                        "(CASE WHEN i.item_type='Audio' THEN {music} ELSE i.sort_name END) COLLATE \"C\""
                     )
                 }
                 _ => "i.sort_name".to_owned(),

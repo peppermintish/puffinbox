@@ -1459,7 +1459,9 @@ async fn verify_audio_sort_names(
         json_body(call(router, &format!("{prefix}&SortBy=SortName"), Some(token)).await).await;
     assert_eq!(
         item_ids(&changed),
-        [6, 7, 3, 8, 2, 1, 4, 5, 0].map(|index| tracks[index])
+        // Explicit SortName keeps its case: the current "Sort Plain"
+        // precedes the stale row's lowercase filename fallback.
+        [6, 7, 3, 8, 2, 1, 4, 0, 5].map(|index| tracks[index])
     );
     let changed_numeric =
         json_body(call(router, &format!("{prefix}&SortBy=IndexNumber"), Some(token)).await).await;

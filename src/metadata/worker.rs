@@ -995,6 +995,7 @@ async fn persist_item_outcome(
         PreparedOutcome::ClearLocalMetadata => {
             sqlx::query("UPDATE item_metadata SET external_id=NULL,title=NULL,overview=NULL,premiere_date=NULL,genres='[]'::JSONB,metadata_json='{}'::JSONB,content_rating=NULL,policy_rating_scale=NULL,policy_rating_value=NULL,updated_at=NOW() WHERE item_id=$1 AND provider_key='local-nfo'")
                 .bind(item.id).execute(&mut *tx).await?;
+            db::register_metadata_artists(&mut tx, item.id, "local-nfo").await?;
         }
         PreparedOutcome::Failure { .. } | PreparedOutcome::NoChange => {}
     }
@@ -1027,6 +1028,7 @@ async fn write_metadata(
     item_id: Uuid,
     write: MetadataWrite,
 ) -> Result<(), sqlx::Error> {
+    let provider_key = write.provider_key.clone();
     let (art_mime, art_size, art_hash, art_bytes, art_action) = match write.artwork {
         ArtworkMutation::Keep => (None, None, None, None, 0_i16),
         ArtworkMutation::Clear => (None, None, None, None, 1_i16),
@@ -1067,6 +1069,7 @@ async fn write_metadata(
         .bind(write.source.as_ref().map(|source| source.date_modified))
         .execute(&mut **tx)
         .await?;
+    db::register_metadata_artists(tx, item_id, &provider_key).await?;
     Ok(())
 }
 
@@ -1369,7 +1372,7 @@ mod tests {
                 overview: None,
                 premiere_date: None,
                 genres: vec![],
-                metadata_json: serde_json::json!({}),
+                metadata_json: serde_json::json!({"artists":["Snapshot Artist"],"albumArtists":[]}),
                 content_rating: None,
                 policy_rating_value: None,
                 artwork: ArtworkMutation::Clear,
@@ -1401,6 +1404,13 @@ mod tests {
                 .unwrap(),
             0
         );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM music_tag_artists")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
         sqlx::query("UPDATE metadata_refresh_runs SET status='running',claimed_run_id=$2,next_attempt_at=NULL WHERE id=$1")
             .bind(job.id).bind(run_id).execute(&pool).await.unwrap();
         assert!(matches!(
@@ -1418,6 +1428,15 @@ mod tests {
             .await
             .unwrap(),
             2
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM music_tag_artists WHERE name='Snapshot Artist'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
         );
         sqlx::query("UPDATE metadata_refresh_runs SET rerun_requested=TRUE WHERE id=$1")
             .bind(job.id)

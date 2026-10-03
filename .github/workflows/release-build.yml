@@ -116,6 +116,8 @@ jobs:
           cargo test --locked --test postgres_livetv -- --ignored --nocapture
           cargo test --locked --test postgres_livetv_dvr -- --ignored --nocapture
           cargo test --locked --lib media_features::livetv_recorder::tests::due_timer_claim_serializes_with_stale_channel_cleanup -- --ignored --exact --nocapture
+          cargo test --locked --lib metadata::worker::tests::changed_audio_snapshots_retry_and_concurrent_scans_request_another_pass -- --ignored --exact --nocapture
+          cargo test --locked --lib db::music_tag_artists::tests::tag_artist_identities_follow_current_visible_sources_and_survive_scans -- --ignored --exact --nocapture
       - name: Build project-only container image
         run: docker build --tag puffinbox:local --file Dockerfile .
 
