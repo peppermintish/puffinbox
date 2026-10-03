@@ -2602,7 +2602,8 @@ async fn run_item_page(
                 builder.push(", ");
             }
             // Only internal expressions enter SQL; request text is never interpolated.
-            let column = match field.trim().to_ascii_lowercase().as_str() {
+            let field = field.trim().to_ascii_lowercase();
+            let column = match field.as_str() {
                 "isfolder" => format!("(i.item_type IN {FOLDER_ITEM_TYPES_SQL})"),
                 "datecreated" | "dateadded" => "i.date_added".to_owned(),
                 "datemodified" => "i.date_modified".to_owned(),
@@ -2640,11 +2641,31 @@ async fn run_item_page(
                 }
                 _ => "i.sort_name".to_owned(),
             };
-            builder
-                .push(column)
-                .push(" ")
-                .push(direction(index))
-                .push(" NULLS LAST");
+            let order = direction(index);
+            let null_order = if matches!(field.as_str(), "indexnumber" | "parentindexnumber")
+                && order == "ASC"
+            {
+                " NULLS FIRST"
+            } else {
+                " NULLS LAST"
+            };
+            builder.push(column).push(" ").push(order).push(null_order);
+        }
+        let numeric_order = query.sort_by.split(',').any(|field| {
+            field.trim().eq_ignore_ascii_case("IndexNumber")
+                || field.trim().eq_ignore_ascii_case("ParentIndexNumber")
+        });
+        let explicit_sort_name = query
+            .sort_by
+            .split(',')
+            .any(|field| field.trim().eq_ignore_ascii_case("SortName"));
+        if numeric_order && !explicit_sort_name {
+            // The observed numeric comparers keep the default name tie-break
+            // ascending even when the requested numeric direction is descending.
+            let music = crate::metadata::catalog_sql::music_sort_name("i");
+            builder.push(format!(
+                ", CASE WHEN i.item_type='Audio' THEN lower({music}) ELSE i.sort_name END ASC"
+            ));
         }
     }
     builder

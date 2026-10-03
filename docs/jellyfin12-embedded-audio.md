@@ -79,7 +79,8 @@ Embedded zero indexes are retained. Name ordering continues to use display
 titles. Invalid or stale provider values do not participate. Local NFO parsing
 still accepts positive indexes only. Forced sort titles, broader collation,
 negative indexes and complete reference ordering remain unvalidated or
-qualified; numeric sorts retain Puffinbox's null-last policy.
+qualified; numeric sorts on core `6a8a4e3b` retain Puffinbox's preceding null-last
+policy.
 
 On core `6a8a4e3b`, nine byte-identical reference files were copied into the
 retained client's existing music grant and imported automatically after one
@@ -89,3 +90,39 @@ SortName page derived from the full reference order. IndexNumber and combined
 disc/track sorts retain qualified null and tie differences. Existing file
 hashes, grants and saved user data stayed unchanged. Exact mappings, queries
 and responses are under `.local/audio-sort-client-20261003`.
+
+## Numeric music ordering
+
+Thirteen further public queries used the same nine reference files, without
+adding a library or changing media or user data. Missing IndexNumber and
+ParentIndexNumber values sort first in ascending order and last in descending
+order. Explicit zero remains a number, after missing values in ascending
+order. Ties use SortName ascending by default, including when the requested
+numeric direction is descending. For example, the three tracks numbered 2
+remain Sort Zero Disc, Sort Both and Sort Track Only in both numeric
+directions. An explicit descending SortName reverses those ties; an explicit
+Name uses display-title order instead.
+
+The observations also cover separate disc/track/name directions, a page of
+missing indexes and a page crossing equal numeric values. Every query reports
+the same nine-item total. Independent before/after item reads and file hashes
+were unchanged, including the original reference album. Exact queries, ordered
+IDs, fields and fixture joins are under `.local/audio-numeric-contract-20261003`.
+This contract covers the synthetic audio fixture; it does not establish wider
+collation or episode sorting compatibility. No Jellyfin implementation source
+was read.
+
+On core `dcd0bad2`, all thirteen numeric queries and five preceding SortName,
+Name and numeric reads matched the exact reference order and total. All nine
+title, SortName and disc/track fields matched too. The same image matched all
+29 preserved personal-filter observations. The upgrade and read-only ordering
+checks retained every compared user-data field, grant and media hash, with no
+state reset. Records are under `.local/audio-numeric-client-20261003`.
+
+The item query uses missing-first ascending and missing-last descending
+numeric order. It appends ascending SortName for numeric ties when the query
+does not already supply SortName, before its stable item-ID tie. PostgreSQL
+coverage includes missing and explicit zero values, mixed directions, both
+pages, display Name ordering, personal filters, stale provider identity,
+malformed metadata and hidden parents. The numeric null rule also applies to
+episodes; the public observation above establishes only this audio contract.

@@ -986,9 +986,10 @@ async fn verify_music_artist_and_track_ordering(
     .await;
     let ordered = json_body(call(router, &format!("/Users/{owner}/Items?ParentId={album}&SortBy=ParentIndexNumber,IndexNumber,SortName"), Some(token)).await).await;
     assert_eq!(ordered["TotalRecordCount"], 4);
-    assert_eq!(item_ids(&ordered), tracks);
+    let ascending_tracks = vec![tracks[3], tracks[0], tracks[1], tracks[2]];
+    assert_eq!(item_ids(&ordered), ascending_tracks);
     let album_queue = json_body(call(router, &format!("/Users/{owner}/Items?ParentId={album}&Filters=IsNotFolder&Recursive=true&SortBy=Album,ParentIndexNumber,IndexNumber,SortName&MediaTypes=Audio,Video&Limit=300&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false&CollapseBoxSetItems=false"), Some(token)).await).await;
-    assert_eq!(item_ids(&album_queue), tracks);
+    assert_eq!(item_ids(&album_queue), ascending_tracks);
     assert!(album_queue.get("TotalRecordCount").is_none());
     for (id, name) in [(album, "Zebra album"), (unrelated, "Alpha album")] {
         sqlx::query("UPDATE items SET name=$2 WHERE id=$1")
@@ -1015,19 +1016,19 @@ async fn verify_music_artist_and_track_ordering(
     )
     .await;
     let expected = std::iter::once(unrelated_track)
-        .chain(tracks.iter().copied())
+        .chain(ascending_tracks.iter().copied())
         .collect::<Vec<_>>();
     assert_eq!(item_ids(&grouped), expected);
     assert_eq!(grouped["Items"][0]["Album"], "Alpha album");
     assert_eq!(grouped["Items"][1]["Album"], "Zebra album");
     let grouped_descending = json_body(call(router, &format!("/Items?Ids={explicit_ids}&SortBy=Album,ParentIndexNumber,IndexNumber,SortName&SortOrder=Descending,Ascending,Ascending,Ascending"), Some(token)).await).await;
-    let expected = tracks
+    let expected = ascending_tracks
         .iter()
         .copied()
         .chain(std::iter::once(unrelated_track))
         .collect::<Vec<_>>();
     assert_eq!(item_ids(&grouped_descending), expected);
-    for (row, disc, track) in [(0, 1, 1), (1, 1, 2), (2, 2, 1)] {
+    for (row, disc, track) in [(1, 1, 1), (2, 1, 2), (3, 2, 1)] {
         assert_eq!(ordered["Items"][row]["ParentIndexNumber"], disc);
         assert_eq!(ordered["Items"][row]["IndexNumber"], track);
     }
@@ -1051,7 +1052,7 @@ async fn verify_music_artist_and_track_ordering(
     }
     let selected = json_body(call(router, &format!("/Items?ParentId={artist}&Recursive=true&IncludeItemTypes=Audio&AlbumArtistIds={artist}&SortBy=ParentIndexNumber,IndexNumber,SortName&Limit=2&StartIndex=1"), Some(token)).await).await;
     assert_eq!(selected["TotalRecordCount"], 4);
-    assert_eq!(item_ids(&selected), vec![tracks[1], tracks[2]]);
+    assert_eq!(item_ids(&selected), vec![tracks[0], tracks[1]]);
     let disjoint = json_body(call(router, &format!("/Items?Recursive=true&IncludeItemTypes=MusicAlbum&ArtistIds={artist}&AlbumArtistIds={other}"), Some(token)).await).await;
     assert_eq!(disjoint["TotalRecordCount"], 0);
     let excluded = json_body(call(router, &format!("/Items?Recursive=true&IncludeItemTypes=MusicAlbum&AlbumArtistIds={artist}&ExcludeItemIds={album}"), Some(token)).await).await;
@@ -1172,9 +1173,9 @@ async fn verify_music_artist_and_track_ordering(
             .await,
         )
         .await;
-        assert_eq!(item_ids(&result), tracks);
-        assert!(result["Items"][3].get("IndexNumber").is_none());
-        assert!(result["Items"][3].get("ParentIndexNumber").is_none());
+        assert_eq!(item_ids(&result), ascending_tracks);
+        assert!(result["Items"][0].get("IndexNumber").is_none());
+        assert!(result["Items"][0].get("ParentIndexNumber").is_none());
     }
     let unnumbered = json_body(
         call(
@@ -1226,11 +1227,11 @@ async fn verify_music_artist_and_track_ordering(
     let episode_page = json_body(call(router, &format!("/Items?ParentId={series}&Recursive=true&IncludeItemTypes=Episode&SortBy=ParentIndexNumber,IndexNumber,SortName"), Some(token)).await).await;
     assert_eq!(
         item_ids(&episode_page),
-        vec![episodes[2], episodes[1], episodes[0], visible_episode]
+        vec![visible_episode, episodes[2], episodes[1], episodes[0]]
     );
-    assert_eq!(episode_page["Items"][0]["ParentIndexNumber"], 1);
-    assert_eq!(episode_page["Items"][0]["IndexNumber"], 1);
-    assert!(episode_page["Items"][3].get("ParentIndexNumber").is_none());
+    assert_eq!(episode_page["Items"][1]["ParentIndexNumber"], 1);
+    assert_eq!(episode_page["Items"][1]["IndexNumber"], 1);
+    assert!(episode_page["Items"][0].get("ParentIndexNumber").is_none());
     assert_eq!(
         call(router, "/Items?ArtistIds=invalid", Some(token))
             .await
@@ -1347,6 +1348,59 @@ async fn verify_audio_sort_names(
         item_ids(&names),
         [8, 3, 2, 4, 0, 1, 5, 6, 7].map(|index| tracks[index])
     );
+    // Frozen public-reference orders include nulls, equal numeric values,
+    // independent directions, explicit name overrides and pages within ties.
+    let numeric_cases: [(&str, &[usize]); 13] = [
+        ("SortBy=IndexNumber", &[2, 0, 5, 7, 6, 3, 1, 8, 4]),
+        (
+            "SortBy=IndexNumber&SortOrder=Descending",
+            &[4, 8, 6, 3, 1, 7, 5, 2, 0],
+        ),
+        (
+            "SortBy=IndexNumber,SortName&SortOrder=Ascending,Ascending",
+            &[2, 0, 5, 7, 6, 3, 1, 8, 4],
+        ),
+        (
+            "SortBy=IndexNumber,SortName&SortOrder=Descending,Descending",
+            &[4, 8, 1, 3, 6, 7, 5, 0, 2],
+        ),
+        ("SortBy=IndexNumber,Name", &[2, 0, 5, 7, 3, 1, 6, 8, 4]),
+        (
+            "SortBy=IndexNumber,Name&SortOrder=Descending,Descending",
+            &[4, 8, 6, 1, 3, 7, 5, 0, 2],
+        ),
+        ("SortBy=ParentIndexNumber", &[1, 0, 5, 6, 7, 3, 8, 2, 4]),
+        (
+            "SortBy=ParentIndexNumber&SortOrder=Descending",
+            &[4, 2, 7, 3, 8, 5, 6, 1, 0],
+        ),
+        (
+            "SortBy=ParentIndexNumber,IndexNumber,SortName",
+            &[0, 1, 5, 6, 7, 3, 8, 2, 4],
+        ),
+        (
+            "SortBy=ParentIndexNumber,IndexNumber,SortName&SortOrder=Descending",
+            &[4, 2, 8, 3, 7, 6, 5, 1, 0],
+        ),
+        (
+            "SortBy=ParentIndexNumber,IndexNumber,SortName&SortOrder=Ascending,Descending,Ascending",
+            &[1, 0, 6, 5, 8, 3, 7, 2, 4],
+        ),
+        ("SortBy=IndexNumber&StartIndex=0&Limit=2", &[2, 0]),
+        ("SortBy=IndexNumber&StartIndex=3&Limit=2", &[7, 6]),
+    ];
+    for (query, expected) in numeric_cases {
+        let result = json_body(call(router, &format!("{prefix}&{query}"), Some(token)).await).await;
+        assert_eq!(result["TotalRecordCount"], 9, "{query}");
+        assert_eq!(
+            item_ids(&result),
+            expected
+                .iter()
+                .map(|index| tracks[*index])
+                .collect::<Vec<_>>(),
+            "{query}"
+        );
+    }
     let page = json_body(
         call(
             router,
@@ -1379,6 +1433,17 @@ async fn verify_audio_sort_names(
     .await;
     assert_eq!(likes["TotalRecordCount"], 4);
     assert_eq!(item_ids(&likes), [tracks[2], tracks[1]]);
+    let numeric_likes = json_body(
+        call(
+            router,
+            &format!("{prefix}&Filters=Likes&SortBy=IndexNumber&StartIndex=1&Limit=2"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(numeric_likes["TotalRecordCount"], 4);
+    assert_eq!(item_ids(&numeric_likes), [tracks[0], tracks[3]]);
 
     // A changed file identity invalidates both the returned prefix and SQL
     // order. The stale metadata row stays available for diagnosis.
@@ -1395,6 +1460,12 @@ async fn verify_audio_sort_names(
     assert_eq!(
         item_ids(&changed),
         [6, 7, 3, 8, 2, 1, 4, 5, 0].map(|index| tracks[index])
+    );
+    let changed_numeric =
+        json_body(call(router, &format!("{prefix}&SortBy=IndexNumber"), Some(token)).await).await;
+    assert_eq!(
+        item_ids(&changed_numeric),
+        [2, 5, 0, 7, 6, 3, 1, 8, 4].map(|index| tracks[index])
     );
 }
 
