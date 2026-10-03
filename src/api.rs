@@ -2393,6 +2393,14 @@ pub(crate) struct ItemsQueryParams {
     artist_ids: Option<String>,
     #[serde(default, rename = "AlbumArtistIds", alias = "albumArtistIds")]
     album_artist_ids: Option<String>,
+    #[serde(
+        default,
+        rename = "ContributingArtistIds",
+        alias = "contributingArtistIds"
+    )]
+    contributing_artist_ids: Option<String>,
+    #[serde(default, rename = "ExcludeArtistIds", alias = "excludeArtistIds")]
+    exclude_artist_ids: Option<String>,
     #[serde(default, rename = "SearchTerm", alias = "searchTerm")]
     search_term: Option<String>,
     #[serde(default, rename = "IncludeItemTypes", alias = "includeItemTypes")]
@@ -2521,6 +2529,12 @@ pub(crate) struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     album_artists: Option<Vec<BaseItemPersonDto>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    song_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    album_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    child_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_data: Option<UserDataDto>,
@@ -2563,22 +2577,38 @@ fn item_dto(
     include_path: bool,
 ) -> BaseItemDto {
     let is_music = matches!(item.item_type.as_str(), "Audio" | "MusicAlbum");
-    let artist_items = navigation
-        .and_then(|links| {
-            links.artist_id.map(|id| {
-                vec![BaseItemPersonDto {
-                    name: links.artist.clone().unwrap_or_default(),
-                    id,
-                    role: None,
-                    person_type: "Artist",
-                }]
-            })
-        })
-        .or_else(|| is_music.then(Vec::new));
+    let music = navigation.and_then(|links| links.music.as_ref());
+    let credit_dto = |credit: &db::MusicArtistCredit| BaseItemPersonDto {
+        name: credit.name.clone(),
+        id: credit.id,
+        role: None,
+        person_type: "Artist",
+    };
+    let artist_items = music
+        .filter(|_| is_music)
+        .map(|music| music.artists.iter().map(credit_dto).collect())
+        .or_else(|| {
+            navigation
+                .and_then(|links| {
+                    links.artist_id.map(|id| {
+                        vec![BaseItemPersonDto {
+                            name: links.artist.clone().unwrap_or_default(),
+                            id,
+                            role: None,
+                            person_type: "Artist",
+                        }]
+                    })
+                })
+                .or_else(|| is_music.then(Vec::new))
+        });
     let artists = artist_items
         .as_ref()
         .map(|items| items.iter().map(|item| item.name.clone()).collect());
-    let album_artists = is_music.then(|| artist_items.clone().unwrap_or_default());
+    let album_artists = is_music.then(|| {
+        music
+            .map(|music| music.album_artists.iter().map(credit_dto).collect())
+            .unwrap_or_else(|| artist_items.clone().unwrap_or_default())
+    });
     BaseItemDto {
         id: item.id,
         server_id,
@@ -2591,7 +2621,9 @@ fn item_dto(
             .map(crate::library::MediaType::name),
         parent_id: item.parent_id,
         container: item.container.clone(),
-        run_time_ticks: item.runtime_ticks,
+        run_time_ticks: music
+            .and_then(|music| music.runtime_ticks)
+            .or(item.runtime_ticks),
         date_created: item.date_added,
         date_modified: item.date_modified,
         overview: metadata
@@ -2628,6 +2660,11 @@ fn item_dto(
         artist_items,
         artists,
         album_artists,
+        song_count: music.and_then(|music| music.song_count),
+        album_count: music.and_then(|music| music.album_count),
+        child_count: music
+            .and_then(|music| music.song_count.zip(music.album_count))
+            .map(|(songs, albums)| songs.saturating_add(albums)),
         path: include_path.then(|| item.path.to_string_lossy().into_owned()),
         user_data,
     }
@@ -2652,6 +2689,12 @@ pub(crate) fn item_query(
     let artist_ids = parse_catalog_item_ids(params.artist_ids.as_deref(), "ArtistIds")?;
     let album_artist_ids =
         parse_catalog_item_ids(params.album_artist_ids.as_deref(), "AlbumArtistIds")?;
+    let contributing_artist_ids = parse_catalog_item_ids(
+        params.contributing_artist_ids.as_deref(),
+        "ContributingArtistIds",
+    )?;
+    let exclude_artist_ids =
+        parse_catalog_item_ids(params.exclude_artist_ids.as_deref(), "ExcludeArtistIds")?;
     let preserve_item_order = !item_ids.is_empty() && params.sort_by.is_none();
     if [
         params.audio_languages.as_deref(),
@@ -2758,6 +2801,8 @@ pub(crate) fn item_query(
         exclude_item_ids,
         artist_ids,
         album_artist_ids,
+        contributing_artist_ids,
+        exclude_artist_ids,
         preserve_item_order,
         search_term,
         exact_name: None,
@@ -3144,6 +3189,8 @@ async fn latest_items(
         exclude_item_ids: Vec::new(),
         artist_ids: Vec::new(),
         album_artist_ids: Vec::new(),
+        contributing_artist_ids: Vec::new(),
+        exclude_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: params.is_played,
@@ -3198,6 +3245,8 @@ async fn resume_items(
         exclude_item_ids: Vec::new(),
         artist_ids: Vec::new(),
         album_artist_ids: Vec::new(),
+        contributing_artist_ids: Vec::new(),
+        exclude_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3251,6 +3300,8 @@ async fn show_seasons(
         exclude_item_ids: Vec::new(),
         artist_ids: Vec::new(),
         album_artist_ids: Vec::new(),
+        contributing_artist_ids: Vec::new(),
+        exclude_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3295,6 +3346,8 @@ async fn show_episodes(
         exclude_item_ids: Vec::new(),
         artist_ids: Vec::new(),
         album_artist_ids: Vec::new(),
+        contributing_artist_ids: Vec::new(),
+        exclude_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3463,6 +3516,8 @@ async fn list_music_persons(
         exclude_item_ids: Vec::new(),
         artist_ids: Vec::new(),
         album_artist_ids: Vec::new(),
+        contributing_artist_ids: Vec::new(),
+        exclude_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3684,6 +3739,8 @@ async fn list_music_artists(
         exclude_item_ids: Vec::new(),
         artist_ids: Vec::new(),
         album_artist_ids: Vec::new(),
+        contributing_artist_ids: Vec::new(),
+        exclude_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -3929,6 +3986,8 @@ async fn search_hints(
         exclude_item_ids: Vec::new(),
         artist_ids: Vec::new(),
         album_artist_ids: Vec::new(),
+        contributing_artist_ids: Vec::new(),
+        exclude_artist_ids: Vec::new(),
         preserve_item_order: false,
         is_folder: None,
         is_played: None,
@@ -4303,6 +4362,9 @@ mod item_dto_tests {
             artist_items: None,
             artists: None,
             album_artists: None,
+            song_count: None,
+            album_count: None,
+            child_count: None,
             path: None,
             user_data: None,
         };

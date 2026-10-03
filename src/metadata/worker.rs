@@ -399,6 +399,12 @@ fn local_nfo_outcome(
     }
     if let Some(parsed) = parsed.as_ref() {
         metadata.insert("tags".to_owned(), json!(parsed.tags));
+        if !parsed.artists.is_empty() {
+            metadata.insert("artists".to_owned(), json!(parsed.artists));
+        }
+        if !parsed.album_artists.is_empty() {
+            metadata.insert("albumArtists".to_owned(), json!(parsed.album_artists));
+        }
         if let Some(number) = parsed.track_number {
             metadata.insert("trackNumber".to_owned(), json!(number));
         }

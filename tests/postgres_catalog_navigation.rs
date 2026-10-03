@@ -1250,12 +1250,314 @@ async fn navigation_and_theme_media_keep_library_rating_and_user_boundaries() {
         StatusCode::CONFLICT
     );
 
+    verify_music_credit_queries(&router, &pool, owner, &owner_token, &peer_token).await;
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
         .execute(&admin_pool)
         .await
         .unwrap();
     admin_pool.close().await;
+}
+
+async fn verify_music_credit_queries(
+    router: &Router,
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    token: &str,
+    denied_token: &str,
+) {
+    let library = Uuid::new_v4();
+    sqlx::query("INSERT INTO libraries(id,name,collection_type,locations) VALUES ($1,'Credit fixture','music','[\"/credits\"]')").bind(library).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES ($1,$2)")
+        .bind(user_id)
+        .bind(library)
+        .execute(pool)
+        .await
+        .unwrap();
+    let lead = item(
+        pool,
+        library,
+        None,
+        "Reference Lead Artist",
+        "MusicArtist",
+        "/credits/lead",
+        None,
+    )
+    .await;
+    let guest = item(
+        pool,
+        library,
+        None,
+        "Reference Guest Artist",
+        "MusicArtist",
+        "/credits/guest",
+        None,
+    )
+    .await;
+    let shared = item(
+        pool,
+        library,
+        Some(lead),
+        "Shared album",
+        "MusicAlbum",
+        "/credits/lead/shared",
+        None,
+    )
+    .await;
+    let solo = item(
+        pool,
+        library,
+        Some(guest),
+        "Guest album",
+        "MusicAlbum",
+        "/credits/guest/solo",
+        None,
+    )
+    .await;
+    let lead_track = item(
+        pool,
+        library,
+        Some(shared),
+        "Lead track",
+        "Audio",
+        "/credits/lead/shared/lead.flac",
+        None,
+    )
+    .await;
+    let guest_track = item(
+        pool,
+        library,
+        Some(shared),
+        "Guest track",
+        "Audio",
+        "/credits/lead/shared/guest.flac",
+        None,
+    )
+    .await;
+    let solo_track = item(
+        pool,
+        library,
+        Some(solo),
+        "Solo track",
+        "Audio",
+        "/credits/guest/solo/solo.flac",
+        None,
+    )
+    .await;
+    for id in [lead_track, guest_track, solo_track] {
+        sqlx::query("UPDATE items SET runtime_ticks=50000000 WHERE id=$1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO item_metadata(item_id,provider_key,metadata_json) VALUES ($1,'local-nfo',$2)",
+    )
+    .bind(guest_track)
+    .bind(json!({"artists":["Reference Guest Artist"],"albumArtists":["Reference Lead Artist"]}))
+    .execute(pool)
+    .await
+    .unwrap();
+    // Expectations come from the opaque Jellyfin 12 public-API fixture:
+    // a guest belongs to the shared album but is not its album artist.
+    for (kind, selector, artist, expected) in [
+        ("Audio", "ArtistIds", lead, vec![lead_track, guest_track]),
+        (
+            "Audio",
+            "AlbumArtistIds",
+            lead,
+            vec![lead_track, guest_track],
+        ),
+        ("Audio", "ContributingArtistIds", lead, vec![]),
+        ("Audio", "ArtistIds", guest, vec![guest_track, solo_track]),
+        ("Audio", "AlbumArtistIds", guest, vec![solo_track]),
+        ("Audio", "ContributingArtistIds", guest, vec![guest_track]),
+        ("Audio", "ExcludeArtistIds", lead, vec![solo_track]),
+        ("Audio", "ExcludeArtistIds", guest, vec![lead_track]),
+        ("MusicAlbum", "ArtistIds", lead, vec![shared]),
+        ("MusicAlbum", "ArtistIds", guest, vec![shared, solo]),
+        ("MusicAlbum", "AlbumArtistIds", guest, vec![solo]),
+        ("MusicAlbum", "ContributingArtistIds", guest, vec![shared]),
+        ("MusicAlbum", "ContributingArtistIds", lead, vec![]),
+        ("MusicAlbum", "ExcludeArtistIds", lead, vec![solo]),
+        ("MusicAlbum", "ExcludeArtistIds", guest, vec![]),
+        ("MusicArtist", "ArtistIds", guest, vec![]),
+        ("MusicArtist", "AlbumArtistIds", guest, vec![]),
+        ("MusicArtist", "ContributingArtistIds", guest, vec![]),
+        ("MusicArtist", "ExcludeArtistIds", guest, vec![lead, guest]),
+    ] {
+        for endpoint in ["/Items".to_owned(), format!("/Users/{user_id}/Items")] {
+            let path = format!(
+                "{endpoint}?ParentId={library}&Recursive=true&IncludeItemTypes={kind}&{selector}={artist}"
+            );
+            let result = body_json(call(router, &path, Some(token)).await).await;
+            assert_eq!(
+                result["TotalRecordCount"],
+                expected.len(),
+                "{path}: {result}"
+            );
+            let mut actual = result["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| Uuid::parse_str(item["Id"].as_str().unwrap()).unwrap())
+                .collect::<Vec<_>>();
+            actual.sort();
+            let mut expected = expected.clone();
+            expected.sort();
+            assert_eq!(actual, expected, "{path}");
+        }
+    }
+    let details =
+        body_json(call(router, &format!("/Items/{guest_track}"), Some(token)).await).await;
+    assert_eq!(details["ArtistItems"][0]["Id"], guest.to_string());
+    assert_eq!(details["Artists"], json!(["Reference Guest Artist"]));
+    assert_eq!(details["AlbumArtists"][0]["Id"], lead.to_string());
+    assert_eq!(details["ArtistItems"].as_array().unwrap().len(), 1);
+    for (artist, songs, albums) in [(lead, 2, 1), (guest, 2, 2)] {
+        let details = body_json(
+            call(
+                router,
+                &format!("/Items/{artist}?Fields=ItemCounts"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(details["SongCount"], songs);
+        assert_eq!(details["AlbumCount"], albums);
+        assert_eq!(details["ChildCount"], songs + albums);
+        assert_eq!(details["RunTimeTicks"], 100000000);
+    }
+    let paged = body_json(call(router,&format!("/Items?ParentId={library}&Recursive=true&IncludeItemTypes=MusicAlbum&ArtistIds={guest}&StartIndex=1&Limit=1"),Some(token)).await).await;
+    assert_eq!(paged["TotalRecordCount"], 2);
+    assert_eq!(paged["Items"].as_array().unwrap().len(), 1);
+    let combined = body_json(call(router,&format!("/Items?ParentId={library}&Recursive=true&IncludeItemTypes=MusicAlbum&AlbumArtistIds={lead}&ContributingArtistIds={guest}"),Some(token)).await).await;
+    assert_eq!(combined["TotalRecordCount"], 1);
+    assert_eq!(combined["Items"][0]["Id"], shared.to_string());
+    for selector in [
+        "ArtistIds",
+        "AlbumArtistIds",
+        "ContributingArtistIds",
+        "ExcludeArtistIds",
+    ] {
+        let path = format!(
+            "/Items?ParentId={library}&Recursive=true&IncludeItemTypes=MusicAlbum&{selector}={}",
+            Uuid::new_v4()
+        );
+        let data = body_json(call(router, &path, Some(token)).await).await;
+        assert_eq!(
+            data["TotalRecordCount"],
+            if selector == "ExcludeArtistIds" { 2 } else { 0 }
+        );
+        assert_eq!(
+            call(router, &format!("/Items?{selector}=invalid"), Some(token))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        call(router, &format!("/Items/{guest}"), Some(denied_token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let denied = body_json(
+        call(
+            router,
+            &format!("/Items?Recursive=true&ArtistIds={guest}"),
+            Some(denied_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(denied["TotalRecordCount"], 0);
+    // An explicit hidden credit must not become a fallback credit or disclose
+    // its name through another artist's visible album.
+    sqlx::query("UPDATE items SET path='/credits/.guest' WHERE id=$1")
+        .bind(guest)
+        .execute(pool)
+        .await
+        .unwrap();
+    let hidden = body_json(
+        call(
+            router,
+            &format!("/Items?Recursive=true&ContributingArtistIds={guest}"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(hidden["TotalRecordCount"], 0);
+    let details =
+        body_json(call(router, &format!("/Items/{guest_track}"), Some(token)).await).await;
+    assert_eq!(details["Artists"], json!([]));
+    assert_eq!(details["ArtistItems"], json!([]));
+    assert_eq!(details["AlbumArtists"][0]["Id"], lead.to_string());
+    let album = body_json(call(router, &format!("/Items/{shared}"), Some(token)).await).await;
+    assert!(!album.to_string().contains("Reference Guest Artist"));
+    sqlx::query("UPDATE items SET path='/credits/guest' WHERE id=$1")
+        .bind(guest)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,policy_rating_scale,policy_rating_value) VALUES ($1,'local-nfo','US-MPAA-v1',100)").bind(guest).execute(pool).await.unwrap();
+    let hidden = body_json(
+        call(
+            router,
+            &format!("/Items?Recursive=true&ContributingArtistIds={guest}"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(hidden["TotalRecordCount"], 0);
+    sqlx::query("DELETE FROM item_metadata WHERE item_id=$1")
+        .bind(guest)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE items SET path='/credits/lead/shared/.guest.flac' WHERE id=$1")
+        .bind(guest_track)
+        .execute(pool)
+        .await
+        .unwrap();
+    let details = body_json(call(router, &format!("/Items/{guest}"), Some(token)).await).await;
+    assert_eq!(details["SongCount"], 1);
+    assert_eq!(details["AlbumCount"], 1);
+    assert_eq!(details["RunTimeTicks"], 50000000);
+    let hidden = body_json(
+        call(
+            router,
+            &format!("/Items?Recursive=true&ContributingArtistIds={guest}"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(hidden["TotalRecordCount"], 0);
+    sqlx::query("UPDATE items SET path='/credits/lead/shared/guest.flac' WHERE id=$1")
+        .bind(guest_track)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(library)
+        .execute(pool)
+        .await
+        .unwrap();
+    let disabled = body_json(
+        call(
+            router,
+            &format!("/Items?Recursive=true&ArtistIds={guest}"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(disabled["TotalRecordCount"], 0);
 }
 
 async fn item(

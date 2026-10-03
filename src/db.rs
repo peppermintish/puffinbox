@@ -13,7 +13,9 @@ mod catalog_filters;
 pub(crate) use catalog_filters::{CatalogFacets, GenreFacet, catalog_facets};
 mod catalog_relations;
 pub(crate) use catalog_relations::similar_items;
+mod music_credits;
 mod music_mix;
+pub(crate) use music_credits::MusicArtistCredit;
 pub(crate) use music_mix::{MusicMixSeed, instant_mix, visible_music_genre};
 
 use crate::{
@@ -139,6 +141,7 @@ pub struct ItemNavigationLinks {
     pub album: Option<String>,
     pub artist_id: Option<Uuid>,
     pub artist: Option<String>,
+    pub music: Option<music_credits::MusicNavigation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -961,7 +964,8 @@ pub async fn item_navigation_links(
          WHERE i.id=ANY(",
     ).push_bind(item_ids.to_vec()).push("::uuid[])");
     let rows = builder.build().fetch_all(pool).await?;
-    rows.into_iter()
+    let mut links = rows
+        .into_iter()
         .map(|row| {
             let id: Uuid = row.try_get("id")?;
             let name: String = row.try_get("name")?;
@@ -994,10 +998,13 @@ pub async fn item_navigation_links(
                     album: row.try_get("album")?,
                     artist_id: row.try_get("artist_id")?,
                     artist: row.try_get("artist")?,
+                    music: None,
                 },
             ))
         })
-        .collect()
+        .collect::<Result<HashMap<_, _>, sqlx::Error>>()?;
+    music_credits::enrich_navigation(pool, user, item_ids, &mut links).await?;
+    Ok(links)
 }
 
 fn parse_episode_index(name: &str) -> Option<i32> {
@@ -2263,6 +2270,8 @@ fn push_item_source(
     let tree = item_cte(parent, query.recursive);
     let catalog_nodes = !query.artist_ids.is_empty()
         || !query.album_artist_ids.is_empty()
+        || !query.contributing_artist_ids.is_empty()
+        || !query.exclude_artist_ids.is_empty()
         || query.sort_by.split(',').any(|field| {
             field.trim().eq_ignore_ascii_case("ParentIndexNumber")
                 || field.trim().eq_ignore_ascii_case("Album")
@@ -2281,7 +2290,14 @@ fn push_item_source(
         }
         builder.push("visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type FROM items i JOIN libraries l ON l.id=i.library_id");
         push_item_conditions(builder, user, &ItemQuery::default(), None, true);
-        builder.push(" AND i.item_type IN ('MusicArtist','MusicAlbum','Season')) ");
+        builder.push(" AND i.item_type IN ('Audio','MusicArtist','MusicAlbum','Season')) ");
+        if !query.artist_ids.is_empty()
+            || !query.album_artist_ids.is_empty()
+            || !query.contributing_artist_ids.is_empty()
+            || !query.exclude_artist_ids.is_empty()
+        {
+            builder.push(music_credits::CREDIT_CTES);
+        }
     }
 }
 
@@ -2309,14 +2325,24 @@ fn push_item_conditions(
             .push_bind(query.exclude_item_ids.clone())
             .push(") ");
     }
-    for ids in [&query.artist_ids, &query.album_artist_ids] {
+    for (ids, source, contributing, exclude) in [
+        (&query.artist_ids, "music_credits", false, false),
+        (&query.album_artist_ids, "music_album_roles", false, false),
+        (&query.contributing_artist_ids, "music_credits", true, false),
+        (&query.exclude_artist_ids, "music_credits", false, true),
+    ] {
         if !ids.is_empty() {
-            builder.push(" AND EXISTS (SELECT 1 FROM visible_catalog_nodes artist \
-                LEFT JOIN visible_catalog_nodes album ON album.id=i.parent_id AND album.item_type='MusicAlbum' AND album.library_id=i.library_id \
-                WHERE artist.item_type='MusicArtist' AND artist.library_id=i.library_id \
-                AND artist.id=CASE WHEN i.item_type='MusicArtist' THEN i.id WHEN i.item_type='MusicAlbum' THEN i.parent_id \
-                WHEN i.item_type='Audio' THEN album.parent_id END AND artist.id=ANY(")
-                .push_bind(ids.clone()).push(")) ");
+            builder.push(if exclude {
+                " AND NOT EXISTS ("
+            } else {
+                " AND EXISTS ("
+            });
+            builder.push(format!("SELECT 1 FROM {source} credit WHERE credit.item_id=i.id AND credit.artist_id=ANY("))
+                .push_bind(ids.clone()).push("::uuid[])");
+            if contributing {
+                builder.push(" AND credit.contributing=TRUE");
+            }
+            builder.push(") ");
         }
     }
     if let Some((library_id, parent_item_id)) = parent {

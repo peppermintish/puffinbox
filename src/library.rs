@@ -59,6 +59,8 @@ pub struct ItemQuery {
     pub exclude_item_ids: Vec<Uuid>,
     pub artist_ids: Vec<Uuid>,
     pub album_artist_ids: Vec<Uuid>,
+    pub contributing_artist_ids: Vec<Uuid>,
+    pub exclude_artist_ids: Vec<Uuid>,
     pub preserve_item_order: bool,
     pub search_term: Option<String>,
     pub exact_name: Option<String>,

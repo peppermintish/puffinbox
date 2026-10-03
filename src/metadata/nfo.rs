@@ -23,6 +23,8 @@ pub(super) struct LocalNfo {
     pub year: Option<i32>,
     pub track_number: Option<i32>,
     pub disc_number: Option<i32>,
+    pub artists: Vec<String>,
+    pub album_artists: Vec<String>,
     pub genres: Vec<String>,
     pub tags: Vec<String>,
     pub content_rating: Option<String>,
@@ -237,6 +239,8 @@ fn is_supported_field(name: &str) -> bool {
             | "tracknumber"
             | "disc"
             | "discnumber"
+            | "artist"
+            | "albumartist"
             | "mpaa"
             | "genre"
             | "tag"
@@ -275,6 +279,23 @@ fn apply_field(fields: &mut LocalNfo, name: &str, raw: &str) -> Result<(), &'sta
         }
         "disc" | "discnumber" => {
             fields.disc_number = value.parse::<i32>().ok().filter(|number| *number > 0);
+        }
+        "artist" | "albumartist" => {
+            let names = if name == "artist" {
+                &mut fields.artists
+            } else {
+                &mut fields.album_artists
+            };
+            let value = bound(value, 512)?;
+            if !names
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&value))
+            {
+                if names.len() >= 32 {
+                    return Err("nfo-too-many-artists");
+                }
+                names.push(value);
+            }
         }
         "mpaa" => {
             fields.content_rating = Some(bound(value, 64)?);
@@ -402,6 +423,25 @@ mod tests {
                 "unexpected mapping for {unknown}"
             );
         }
+    }
+
+    #[test]
+    fn music_credit_names_keep_roles_and_limits() {
+        let parsed=parse(b"<audio><artist> Guest &amp; Friend </artist><artist>guest &amp; friend</artist><albumartist>Lead</albumartist></audio>").unwrap();
+        assert_eq!(parsed.artists, ["Guest & Friend"]);
+        assert_eq!(parsed.album_artists, ["Lead"]);
+        let names = (0..33)
+            .map(|index| format!("<artist>Artist {index}</artist>"))
+            .collect::<String>();
+        assert_eq!(
+            parse(format!("<audio>{names}</audio>").as_bytes()),
+            Err("nfo-too-many-artists")
+        );
+        let name = "x".repeat(513);
+        assert_eq!(
+            parse(format!("<audio><albumartist>{name}</albumartist></audio>").as_bytes()),
+            Err("nfo-field-too-large")
+        );
     }
 
     #[test]
