@@ -39,6 +39,7 @@ const playlists = [];
 const entriesByPlaylist = new Map();
 const apiRequests = [];
 const playbackItems = [];
+const playbackStarts = [];
 let failPlaylistItemGetFor = null;
 let delayedMutation = null;
 let bodyProbeSent = false;
@@ -197,7 +198,12 @@ function createTestServer() {
       response.end(wave);
       return;
     }
-    if (url.pathname === '/Sessions/Playing' || url.pathname === '/Sessions/Playing/Progress' || url.pathname === '/Sessions/Playing/Stopped') { emptyResponse(response); return; }
+    if (url.pathname === '/Sessions/Playing') {
+      playbackStarts.push((await readJson(request)).ItemId);
+      emptyResponse(response);
+      return;
+    }
+    if (url.pathname === '/Sessions/Playing/Progress' || url.pathname === '/Sessions/Playing/Stopped') { emptyResponse(response); return; }
     response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); response.end('test server route not found');
   });
 }
@@ -412,10 +418,20 @@ async function main() {
 
     await cdp.evaluate(page.sessionId, 'document.querySelector("#play-playlist").click(); true');
     await cdp.waitFor(page, 'document.querySelector("#player-title")?.textContent', (value) => value === 'Track One', 'the first playlist track');
-    await cdp.waitFor(page, 'window.__playlistTestReady = Boolean(document.querySelector("#player-stage audio")); window.__playlistTestReady', Boolean, 'the first audio player');
+    async function waitForAudioPlayback(item, label) {
+      // The heading changes before PlaybackInfo completes. Observe the audio
+      // source and its start report before ending or asserting a queued track.
+      await cdp.waitFor(page, `(() => {
+        const media = document.querySelector('#player-stage audio');
+        return media && media.readyState >= 2 && !media.error ? new URL(media.currentSrc).pathname : null;
+      })()`, (value) => value === `/Audio/${item.Id}/stream` && playbackStarts.includes(item.Id), label);
+    }
+    await waitForAudioPlayback(AUDIO_ITEMS[0], 'the first audio stream and playback start');
     await cdp.evaluate(page.sessionId, 'document.querySelector("#player-stage audio").dispatchEvent(new Event("ended")); true');
     await cdp.waitFor(page, 'document.querySelector("#player-title")?.textContent', (value) => value === 'Track Three', 'the queued next track');
+    await waitForAudioPlayback(AUDIO_ITEMS[2], 'the queued audio stream and playback start');
     assert.deepEqual(playbackItems, [AUDIO_ITEMS[0].Id, AUDIO_ITEMS[2].Id], 'playlist playback did not follow the edited order');
+    assert.deepEqual(playbackStarts, [AUDIO_ITEMS[0].Id, AUDIO_ITEMS[2].Id], 'playlist start reports did not follow the edited order');
     assert.ok(apiRequests.some((item) => item.pathname === '/Playlists' && item.method === 'POST'), 'playlist creation did not use the collection API');
     assert.ok(apiRequests.some((item) => item.pathname === `/Playlists/${playlistId}/Items` && item.method === 'POST'), 'adding an item did not use the playlist item API');
     assert.ok(apiRequests.some((item) => item.pathname.endsWith('/Move/1') && item.method === 'POST'), 'reordering did not use the item move route');
