@@ -447,9 +447,18 @@ nonempty input objects have an owner: 416 package objects, 16 project server
 objects and two original entry objects. Its compile-input capture preserves
 67 verified byte copies covering 68 native paths; none has a mapped instruction
 interval. These counts do not assert preprocessing-only input completeness.
-Evidence is under `.local/rustix-libc-gnu-20261004`. This exact candidate has no
-container or official-client result yet; earlier candidates retain their
-separate runtime observations. Its standard-library hash remains
+Evidence is under `.local/rustix-libc-gnu-20261004`. This exact candidate also
+passed 35 isolated container checks, 29 HTTPS checks and nine album projections.
+Both official clients completed the original four-track FLAC album with fifteen
+successful playback reports each. Advancing web audio and Desktop audio EOF
+were observed; all 50 saved rows matched the added plays without a reset.
+The retained backend was restored to the static image with its original mounts,
+identity and grants. Joined evidence is under
+`.local/rustix-libc-gnu-client-20261004`. The build preserves 323 file hashes;
+316 unchanged files were checked at client review, with seven subsequent
+documentation and audit revisions recorded separately. Server and build inputs
+are unchanged. These runtime checks do not clear licensing or production
+adoption. Its standard-library hash remains
 `5a3f35a0e2e734369effc845ebad8b182912c600ad2114ce400ee3d2502b1ea0`.
 
 A subsequent summary replay found that the collector discarded successful
