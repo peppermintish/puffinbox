@@ -94,7 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/Persons", get(list_music_persons))
         .route("/Persons/{name}", get(get_music_person))
         .route("/Artists", get(list_music_artists))
-        .route("/Artists/AlbumArtists", get(list_music_artists))
+        .route("/Artists/AlbumArtists", get(list_music_album_artists))
         .route(
             "/Items",
             get(browse_items).delete(crate::playlists::delete_catalog_playlists),
@@ -3774,36 +3774,63 @@ async fn list_music_artists(
     CurrentUser(current): CurrentUser,
     Query(params): Query<ArtistListParams>,
 ) -> Result<Json<ItemsResultDto>, ApiError> {
-    let user = selected_user(&state, &current, params.user_id).await?;
-    ensure_parent_visible(&state, &user, params.parent_id).await?;
-    let (start_index, limit) = page_values(params.start_index, params.limit, &state)?;
+    music_artist_result(&state, &current, params, db::MusicArtistRole::Performer).await
+}
+
+async fn list_music_album_artists(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Query(params): Query<ArtistListParams>,
+) -> Result<Json<ItemsResultDto>, ApiError> {
+    music_artist_result(&state, &current, params, db::MusicArtistRole::AlbumArtist).await
+}
+
+async fn music_artist_result(
+    state: &AppState,
+    current: &UserRecord,
+    params: ArtistListParams,
+    role: db::MusicArtistRole,
+) -> Result<Json<ItemsResultDto>, ApiError> {
+    let user = selected_user(state, current, params.user_id).await?;
+    ensure_parent_visible(state, &user, params.parent_id).await?;
+    let (start_index, limit) = page_values(params.start_index, params.limit, state)?;
+    if params.limit.is_some_and(|limit| limit < 0) {
+        return Err(ApiError::BadRequest("Limit cannot be negative".to_owned()));
+    }
+    let limit = if params.limit == Some(0) { 0 } else { limit };
+    let search = normalized_search_term(params.search_term)?;
     let query = ItemQuery {
         parent_id: params.parent_id,
-        search_term: normalized_search_term(params.search_term)?,
-        exact_name: None,
-        include_item_types: vec!["MusicArtist".to_owned()],
-        media_types: Vec::new(),
+        include_item_types: vec!["Audio".to_owned(), "MusicAlbum".to_owned()],
         recursive: true,
         start_index,
         limit,
-        enable_total_record_count: params.enable_total_record_count,
-        sort_by: "SortName".to_owned(),
-        sort_order: "Ascending".to_owned(),
-        item_ids: Vec::new(),
-        exclude_item_ids: Vec::new(),
-        artist_ids: Vec::new(),
-        album_artist_ids: Vec::new(),
-        contributing_artist_ids: Vec::new(),
-        exclude_artist_ids: Vec::new(),
-        preserve_item_order: false,
-        is_folder: None,
-        is_played: None,
-        is_favorite: false,
-        is_liked: None,
-        is_resumable: false,
-        facets: Default::default(),
+        ..Default::default()
     };
-    Ok(Json(item_query_result(&state, &user, query).await?))
+    let (entries, total) =
+        db::music_artist_page(&state.db, &user, &query, role, search.as_deref()).await?;
+    let items = entries
+        .iter()
+        .map(|entry| entry.item.clone())
+        .collect::<Vec<_>>();
+    let mut dtos = item_dtos_for_user(state, &user, &items).await?;
+    for (dto, entry) in dtos.iter_mut().zip(entries) {
+        // A role listing represents the artist across its credited sources,
+        // independently of the folder containing the local catalogue entry.
+        dto.parent_id = None;
+        dto.song_count = Some(entry.song_count);
+        dto.album_count = Some(entry.album_count);
+        dto.child_count = Some(entry.song_count.saturating_add(entry.album_count));
+    }
+    Ok(Json(ItemsResultDto {
+        items: dtos,
+        total_record_count: Some(if params.enable_total_record_count {
+            total
+        } else {
+            0
+        }),
+        start_index,
+    }))
 }
 
 fn page_values(

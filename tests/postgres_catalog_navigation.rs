@@ -1274,10 +1274,11 @@ async fn verify_music_credit_queries(
         .execute(pool)
         .await
         .unwrap();
+    let folder = item(pool, library, None, "Music", "Folder", "/credits", None).await;
     let lead = item(
         pool,
         library,
-        None,
+        Some(folder),
         "Reference Lead Artist",
         "MusicArtist",
         "/credits/lead",
@@ -1287,7 +1288,7 @@ async fn verify_music_credit_queries(
     let guest = item(
         pool,
         library,
-        None,
+        Some(folder),
         "Reference Guest Artist",
         "MusicArtist",
         "/credits/guest",
@@ -1415,6 +1416,13 @@ async fn verify_music_credit_queries(
     assert_eq!(details["Artists"], json!(["Reference Guest Artist"]));
     assert_eq!(details["AlbumArtists"][0]["Id"], lead.to_string());
     assert_eq!(details["ArtistItems"].as_array().unwrap().len(), 1);
+    verify_artist_role_lists(
+        router,
+        [library, shared, solo, lead, guest],
+        token,
+        denied_token,
+    )
+    .await;
     for path in [
         format!("/Items/{guest}/InstantMix"),
         format!("/Artists/{guest}/InstantMix"),
@@ -1564,6 +1572,20 @@ async fn verify_music_credit_queries(
     assert_eq!(details["Artists"], json!([]));
     assert_eq!(details["ArtistItems"], json!([]));
     assert_eq!(details["AlbumArtists"][0]["Id"], lead.to_string());
+    for endpoint in ["/Artists", "/Artists/AlbumArtists"] {
+        let list = body_json(
+            call(
+                router,
+                &format!("{endpoint}?ParentId={library}"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(list["TotalRecordCount"], 1);
+        assert_eq!(list["Items"][0]["Id"], lead.to_string());
+        assert!(!list.to_string().contains("Reference Guest Artist"));
+    }
     let album = body_json(call(router, &format!("/Items/{shared}"), Some(token)).await).await;
     assert!(!album.to_string().contains("Reference Guest Artist"));
     let similar =
@@ -1591,6 +1613,19 @@ async fn verify_music_credit_queries(
     )
     .await;
     assert_eq!(hidden["TotalRecordCount"], 0);
+    for endpoint in ["/Artists", "/Artists/AlbumArtists"] {
+        let list = body_json(
+            call(
+                router,
+                &format!("{endpoint}?ParentId={library}&SearchTerm=Guest"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(list["TotalRecordCount"], 0);
+        assert_eq!(list["Items"], json!([]));
+    }
     sqlx::query("DELETE FROM item_metadata WHERE item_id=$1")
         .bind(guest)
         .execute(pool)
@@ -1605,6 +1640,22 @@ async fn verify_music_credit_queries(
     assert_eq!(details["SongCount"], 1);
     assert_eq!(details["AlbumCount"], 1);
     assert_eq!(details["RunTimeTicks"], 50000000);
+    for endpoint in ["/Artists", "/Artists/AlbumArtists"] {
+        let list = body_json(
+            call(
+                router,
+                &format!("{endpoint}?ParentId={library}&SearchTerm=Guest"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(list["TotalRecordCount"], 1);
+        assert_eq!(list["Items"][0]["Id"], guest.to_string());
+        assert_eq!(list["Items"][0]["SongCount"], 1);
+        assert_eq!(list["Items"][0]["AlbumCount"], 1);
+        assert_eq!(list["Items"][0]["ChildCount"], 2);
+    }
     let mix =
         body_json(call(router, &format!("/Artists/{guest}/InstantMix"), Some(token)).await).await;
     assert_eq!(mix["TotalRecordCount"], 1);
@@ -1639,6 +1690,169 @@ async fn verify_music_credit_queries(
     )
     .await;
     assert_eq!(disabled["TotalRecordCount"], 0);
+    for endpoint in ["/Artists", "/Artists/AlbumArtists"] {
+        let list = body_json(
+            call(
+                router,
+                &format!("{endpoint}?SearchTerm=Reference"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(list["TotalRecordCount"], 0);
+        assert_eq!(list["Items"], json!([]));
+    }
+}
+
+async fn verify_artist_role_lists(
+    router: &Router,
+    targets: [Uuid; 5],
+    token: &str,
+    denied_token: &str,
+) {
+    let [library, shared, solo, lead, guest] = targets;
+    // Frozen public queries distinguish role-specific counts from the
+    // artist detail's aggregate runtime. A parent album is outside its own
+    // descendant selection, so its artist list has zero album counts.
+    for (endpoint, library_counts, shared_counts) in [
+        (
+            "/Artists",
+            vec![(guest, 2, 2), (lead, 1, 1)],
+            vec![(guest, 1, 0), (lead, 1, 0)],
+        ),
+        (
+            "/Artists/AlbumArtists",
+            vec![(guest, 1, 1), (lead, 2, 1)],
+            vec![(lead, 2, 0)],
+        ),
+    ] {
+        for (parent, expected) in [
+            (library, library_counts.clone()),
+            (shared, shared_counts),
+            (solo, vec![(guest, 1, 0)]),
+        ] {
+            let path = format!("{endpoint}?ParentId={parent}&Fields=ItemCounts");
+            let result = body_json(call(router, &path, Some(token)).await).await;
+            assert_eq!(
+                result["TotalRecordCount"],
+                expected.len(),
+                "{path}: {result}"
+            );
+            assert_eq!(result["StartIndex"], 0);
+            for (row, (id, songs, albums)) in
+                result["Items"].as_array().unwrap().iter().zip(expected)
+            {
+                assert_eq!(row["Id"], id.to_string(), "{path}");
+                assert_eq!(row["SongCount"], songs, "{path}");
+                assert_eq!(row["AlbumCount"], albums, "{path}");
+                assert_eq!(row["ChildCount"], songs + albums, "{path}");
+                assert_eq!(row["RunTimeTicks"], 100000000, "{path}");
+                assert!(row["ParentId"].is_null(), "{path}: {row}");
+                assert!(row.get("Path").is_none());
+            }
+        }
+        let search = body_json(
+            call(
+                router,
+                &format!("{endpoint}?ParentId={library}&SearchTerm=reference%20guest"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(search["TotalRecordCount"], 1);
+        assert_eq!(search["Items"][0]["Id"], guest.to_string());
+        assert_eq!(search["Items"][0]["SongCount"], library_counts[0].1);
+        assert_eq!(search["Items"][0]["AlbumCount"], library_counts[0].2);
+        for start in [0, 1, 2] {
+            let page = body_json(
+                call(
+                    router,
+                    &format!("{endpoint}?ParentId={library}&StartIndex={start}&Limit=1"),
+                    Some(token),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(page["TotalRecordCount"], 2);
+            assert_eq!(page["StartIndex"], start);
+            assert_eq!(
+                page["Items"].as_array().unwrap().len(),
+                usize::from(start < 2)
+            );
+            if start < 2 {
+                assert_eq!(
+                    page["Items"][0]["Id"],
+                    library_counts[start as usize].0.to_string()
+                );
+            }
+        }
+        let empty = body_json(
+            call(
+                router,
+                &format!("{endpoint}?ParentId={library}&Limit=0"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(empty["TotalRecordCount"], 2);
+        assert_eq!(empty["Items"], json!([]));
+        let uncounted = body_json(
+            call(
+                router,
+                &format!("{endpoint}?ParentId={library}&EnableTotalRecordCount=false"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(uncounted["TotalRecordCount"], 0);
+        assert_eq!(uncounted["Items"].as_array().unwrap().len(), 2);
+        let literal_search = body_json(
+            call(
+                router,
+                &format!("{endpoint}?ParentId={library}&SearchTerm=%25"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(literal_search["TotalRecordCount"], 0);
+        assert_eq!(
+            call(
+                router,
+                &format!("{endpoint}?ParentId={library}"),
+                Some(denied_token)
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        let denied = body_json(
+            call(
+                router,
+                &format!("{endpoint}?SearchTerm=Reference"),
+                Some(denied_token),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(denied["TotalRecordCount"], 0);
+        for options in [
+            "StartIndex=-1".to_owned(),
+            "Limit=-1".to_owned(),
+            format!("SearchTerm={}", "x".repeat(201)),
+        ] {
+            assert_eq!(
+                call(router, &format!("{endpoint}?{options}"), Some(token))
+                    .await
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
 }
 
 async fn item(

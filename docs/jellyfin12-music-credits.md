@@ -15,6 +15,8 @@ The lead artist matches both tracks on the shared album through ArtistIds and Al
 
 The reference's guest artist response has SongCount=2, AlbumCount=2 and ChildCount=4. The lead has SongCount=2, AlbumCount=1 and ChildCount=3. Each artist's RunTimeTicks aggregates the two related five-second tracks. These are catalogue counts, independent of playback state.
 
+Artist details use those aggregate counts. The separate [artist and album-artist lists](jellyfin12-artist-lists.md) select and count their requested role within the library or album scope; the list runtime remains aggregate. Their later validation has its own source and image record.
+
 Puffinbox resolves explicit local NFO artist and albumartist names to existing visible MusicArtist items in the same library. Each role accepts up to 32 distinct names of 512 bytes. Without explicit names, the visible artist/album folder relationship supplies the fallback. An explicit hidden credit cannot fall back to a different artist or disclose its name. Artist selections and exclusions run before counting and paging. Details distinguish ArtistItems from AlbumArtists, and artist counts include only visible related songs and albums.
 
 The PostgreSQL fixture covers both item-query routes, combined selections, paging, unknown and malformed IDs, denied libraries, hidden and restricted artists, hidden tracks, and disabled libraries. On core `ed473c4b`, the same original reference files with local NFO credits passed 24 public selector reads and both artist count checks. The unchanged official web and Qt 6 Desktop show the guest's own album under Albums and the shared album under Appears On, excluding unrelated albums. Web shared-album details distinguish each track's performer from its lead album artist.

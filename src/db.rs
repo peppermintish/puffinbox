@@ -16,7 +16,7 @@ pub(crate) use catalog_relations::similar_items;
 mod music_credits;
 mod music_mix;
 mod studios;
-pub(crate) use music_credits::MusicArtistCredit;
+pub(crate) use music_credits::{MusicArtistCredit, MusicArtistRole, music_artist_page};
 pub(crate) use music_mix::{MusicMixSeed, instant_mix, visible_music_genre};
 pub(crate) use studios::{StudioRecord, StudioSelection, set_studio_favorite, studio_page};
 

@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 
+use serde::Deserialize;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 use uuid::Uuid;
 
-use crate::{auth::UserRecord, library::ItemQuery};
+use crate::{
+    ApiError,
+    auth::UserRecord,
+    library::{ItemQuery, ItemRecord},
+};
 
 use super::ItemNavigationLinks;
 
@@ -103,6 +108,69 @@ pub struct MusicNavigation {
     pub song_count: Option<i64>,
     pub album_count: Option<i64>,
     pub runtime_ticks: Option<i64>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum MusicArtistRole {
+    Performer,
+    AlbumArtist,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct MusicArtistListing {
+    pub item: ItemRecord,
+    pub song_count: i64,
+    pub album_count: i64,
+}
+
+pub(crate) async fn music_artist_page(
+    pool: &PgPool,
+    user: &UserRecord,
+    scope: &ItemQuery,
+    role: MusicArtistRole,
+    search: Option<&str>,
+) -> Result<(Vec<MusicArtistListing>, i64), ApiError> {
+    let parent = super::item_query_parent(pool, scope.parent_id).await?;
+    if scope.parent_id.is_some() && parent.is_none() {
+        return Ok((Vec::new(), 0));
+    }
+    let mut builder = QueryBuilder::<Postgres>::new("");
+    super::push_item_source(&mut builder, user, scope, parent);
+    builder.push(if super::item_cte(parent, scope.recursive) {
+        ", visible_catalog_nodes AS ("
+    } else {
+        "WITH visible_catalog_nodes AS ("
+    });
+    let rating = super::policy_rating_sql("i");
+    builder.push(format!(
+        "SELECT i.id,i.library_id,i.parent_id,i.name,i.sort_name,i.item_type,i.path,\
+         i.container,i.size_bytes,i.runtime_ticks,i.date_added,i.date_modified,i.path_hash,\
+         {rating} AS rating,i.overview,i.metadata_json FROM items i JOIN libraries l ON l.id=i.library_id"
+    ));
+    super::push_item_conditions(&mut builder, user, &ItemQuery::default(), None, true);
+    builder.push(" AND i.item_type IN ('Audio','MusicAlbum','MusicArtist'))")
+        .push(CREDIT_CTES)
+        .push(", scoped_sources AS (SELECT i.id,i.item_type FROM items i JOIN libraries l ON l.id=i.library_id");
+    super::push_item_conditions(&mut builder, user, scope, parent, scope.recursive);
+    builder.push("), role_counts AS (SELECT credit.artist_id,COUNT(*) FILTER (WHERE source.item_type='Audio') AS song_count,COUNT(*) FILTER (WHERE source.item_type='MusicAlbum') AS album_count FROM ")
+        .push(match role {
+            MusicArtistRole::Performer => "music_performers",
+            MusicArtistRole::AlbumArtist => "music_album_roles",
+        })
+        .push(" credit JOIN scoped_sources source ON source.id=credit.item_id GROUP BY credit.artist_id), matched AS (SELECT i.id,i.sort_name,jsonb_build_object('item',to_jsonb(i),'song_count',counts.song_count,'album_count',counts.album_count) AS entry FROM visible_catalog_nodes i JOIN role_counts counts ON counts.artist_id=i.id WHERE i.item_type='MusicArtist'");
+    if let Some(search) = search {
+        builder
+            .push(" AND strpos(lower(i.name),lower(")
+            .push_bind(search.to_owned())
+            .push("))>0");
+    }
+    builder.push("), page AS (SELECT * FROM matched ORDER BY sort_name,id LIMIT ")
+        .push_bind(scope.limit).push(" OFFSET ").push_bind(scope.start_index)
+        .push(") SELECT (SELECT COUNT(*) FROM matched) AS total,COALESCE((SELECT jsonb_agg(entry ORDER BY sort_name,id) FROM page),'[]'::jsonb) AS entries");
+    let row = builder.build().fetch_one(pool).await?;
+    let entries =
+        serde_json::from_value(row.try_get("entries")?).map_err(|_| ApiError::Unavailable)?;
+    Ok((entries, row.try_get("total")?))
 }
 
 pub(super) async fn enrich_navigation(
