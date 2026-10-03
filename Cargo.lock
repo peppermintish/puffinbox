@@ -1317,6 +1317,7 @@ dependencies = [
  "quick-xml",
  "rand 0.8.8",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha1",

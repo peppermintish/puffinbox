@@ -390,3 +390,70 @@ library remains `5a3f35a0e2e734369effc845ebad8b182912c600ad2114ce400ee3d2502b1ea
 it contains non-allowlisted components and must not be bundled. External
 OpenSSL and system libraries are separate operator infrastructure. Production
 packaging is unchanged, and all five release gates remain false.
+
+## Rust package input review
+
+For historical external-TLS executable `5f872697`, an independent review
+verified 1,207 mapped package files and their notices against locked registry
+archives or matching project Git bytes. A second pass verified 113 exact Rust
+dependency rules from named linked package archives, covering 2,167 source
+files. Their union has 2,258 files across 152 packages; all 1,116 overlapping
+paths have the same package owner and source hash. These conservative compiler
+inputs include files without a retained instruction mapping.
+
+Three generated Rust inputs replayed byte for byte from their checksum-verified
+locked build scripts using the original builder image: an empty MIME output
+with no mapping features, a 142-byte Serde private module and a 90-byte
+Serde Core private module. Source, feature, notice, generator and output hashes
+were verified separately after replay. The earlier replay permission failure
+remains recorded alongside the passing fixture. Evidence is under
+`.local/generated-rust-inputs-20261004b` and
+`.local/external-input-union-20261004`.
+
+The mapped tracing date-conversion file contains the complete musl notice,
+whose BSD exceptions describe other files. Its selected implementation
+identifies MIT time-conversion code. The [upstream author's permission
+comment](https://github.com/tokio-rs/tracing/issues/1644#issuecomment-963888244)
+also provides an MIT or Apache alternative for any contribution he owns. The
+text hits do not establish a selected BSD origin, and logging was left
+unchanged. The exact file and primary permission record are under
+`.local/external-file-notices-20261004`.
+
+The broader input review found Rustix's [Linux vDSO
+parser](https://github.com/bytecodealliance/rustix/blob/287214b889865d8e1406a0ee71cc409b6f6191c8/src/backend/linux_raw/vdso.rs),
+which identifies a CC0 source origin. Its exact hash is
+`1ef85f02ba89e5afa5b9b574143ed58c447aed18c4e50eb861183cd0e5cbefb0`.
+It appears in a selected dependency rule, but has no mapped instruction
+interval in the historical executable. The new Linux dependency selection
+requires Rustix's supported `use-libc` backend; the guard checks that feature,
+the reviewed build script and module gates. Two debug profiles and independent
+release fingerprint/dependency-rule checks exclude all raw-backend sources.
+The static release check joins the cached builder executable byte for byte to
+core `4bed5575` and server
+`f28cfbfd826a19a20c79f36ebbf6924e33f479318f29664afe5713e131a46f7e`.
+Its source suite, 35 container checks, 29 HTTPS checks, nine album projections
+and four-track album in both official clients passed. The 41 defined Unicode
+namespace symbols remain in that static server; this exclusion does not clear
+its linked runtime. Evidence is under `.local/rustix-libc-20261004`,
+`.local/rustix-libc-release-inputs-20261004` and the matching source, image,
+container, HTTPS and client directories.
+
+Fresh external-TLS GNU audit server
+`b957a857cd3e1723aea4d059152b9e7349bfc42e5cf1782d9ffc3f9056cb64af`
+also excludes the raw backend in its exact linked Rustix artifact. It passed
+startup, numerical, certificate, source and compiler-notice checks, with 246
+mapped standard-library files and 1,206 mapped package files. All 434 named
+nonempty input objects have an owner: 416 package objects, 16 project server
+objects and two original entry objects. Its compile-input capture preserves
+67 verified byte copies covering 68 native paths; none has a mapped instruction
+interval. These counts do not assert preprocessing-only input completeness.
+Evidence is under `.local/rustix-libc-gnu-20261004`. This exact candidate has no
+container or official-client result yet; earlier candidates retain their
+separate runtime observations. Its standard-library hash remains
+`5a3f35a0e2e734369effc845ebad8b182912c600ad2114ce400ee3d2502b1ea0`.
+
+These records are input provenance and review evidence. Text searches do not
+assign each file a license or establish exhaustive coverage of inlined,
+unmapped and linker-generated content. They leave whole-binary clearance and
+all five release gates false. The separately supplied standard library still
+contains non-allowlisted components and must not be bundled.

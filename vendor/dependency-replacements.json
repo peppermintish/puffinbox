@@ -59,6 +59,38 @@
         "openssl/providers/implementations/macs/build.info": "e80f104e03d19fbc9908048a61fa266b0bef9a4c57d3ab8044c90423465f5a42",
         "openssl/crypto/siphash/siphash.c": "67b99076c867bc014fcdad96f50c9195dec1971d0b41a59606fcee38844a2c3a"
       }
+    },
+    {
+      "name": "rustix",
+      "version": "1.1.5",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "upstreamArchiveSha256": "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d",
+      "allowedFeatures": [
+        "alloc",
+        "default",
+        "fs",
+        "libc",
+        "libc_errno",
+        "process",
+        "std",
+        "termios",
+        "time",
+        "use-libc"
+      ],
+      "requiredFeatures": [
+        "use-libc"
+      ],
+      "reason": "The Linux raw backend vDSO parser identifies a Creative Commons Zero source origin. Select the supported libc backend to exclude that parser from compilation, without interpreting package MIT/Apache declarations as permission for this file. The exact reviewed build script and module gates must remain unchanged.",
+      "upstreamRevision": "287214b889865d8e1406a0ee71cc409b6f6191c8",
+      "licenseSource": "https://github.com/bytecodealliance/rustix/blob/287214b889865d8e1406a0ee71cc409b6f6191c8/src/backend/linux_raw/vdso.rs",
+      "reviewedConfigFiles": {
+        "Cargo.toml": "f57824af546c008210d8d6d63bc0fe866a3887d06100469448de3432ffa108ec",
+        "build.rs": "f7609b919173e7121493266d0f89db724a1e47bb105ebd05397f869639603eec",
+        "src/lib.rs": "7c1bae7844fd63bfdab112e8b3bfa443f7bc7e6b78e59c33b0a162509c855d65",
+        "src/backend/linux_raw/mod.rs": "8edbb969111d27b64a90c42307799e0a5cb1828a7bec3cba7cda67ea68b532d7",
+        "src/backend/linux_raw/vdso.rs": "1ef85f02ba89e5afa5b9b574143ed58c447aed18c4e50eb861183cd0e5cbefb0",
+        "src/backend/libc/mod.rs": "92d16eed953b10d3a0eed59f1413352c6a1c64a2b75be2c8d20628c59e7da127"
+      }
     }
   ],
   "replacements": [

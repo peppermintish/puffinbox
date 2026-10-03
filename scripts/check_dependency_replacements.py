@@ -29,6 +29,9 @@ def validate_feature_constraint(metadata: dict, constraint: dict) -> bool:
     unexpected = set(features) - set(constraint["allowedFeatures"])
     if unexpected:
         raise ValueError(f"Unreviewed dependency features for {name}: {', '.join(sorted(unexpected))}.")
+    missing = set(constraint.get("requiredFeatures", [])) - set(features)
+    if missing:
+        raise ValueError(f"Required dependency features for {name}: {', '.join(sorted(missing))}.")
     manifest = Path(package["manifest_path"])
     directory = manifest.parent
     if not manifest.is_file() or manifest.is_symlink() or directory.is_symlink():
