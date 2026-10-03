@@ -236,7 +236,8 @@ def main() -> int:
               "productionChanged": False, "licenseClearance": False, "sourceMountedAt": str(root),
               "cargoLockSha256": digest(root / "Cargo.lock"),
               "auditScriptsSha256": {name: digest(root / "scripts" / name)
-                                      for name in ["capture_gnu_sources.py", "check_gnu_link_map.py", "check_gnu_shared_tls.py", "check_gnu_source_map.py", "check_gnu_notices.py", "check_tls.py"]},
+                                      for name in ["capture_gnu_sources.py", "check_dependency_replacements.py", "check_gnu_link_map.py", "check_gnu_shared_tls.py", "check_gnu_source_map.py", "check_gnu_notices.py", "check_tls.py"]},
+              "dependencyReplacementReviewSha256": digest(root / "vendor/dependency-replacements.json"),
               "tlsProbeSourceSha256": digest(root / "examples/tls_probe.rs"),
               "experimentSourceSha256": {name: digest(Path(__file__).with_name(name))
                                          for name in ["build.py", "compiler-wrapper.py", "native-source-wrapper.py", "linker-wrapper.py", "numeric.rs", "c-headers.h", "c-headers.c"]}}
@@ -262,6 +263,10 @@ def main() -> int:
             if not re.fullmatch(r"3[.][0-9]+[.][0-9]+", tls_version):
                 raise RuntimeError("The external TLS experiment requires an OpenSSL 3 development installation.")
             record["externalOpenSslBuildVersion"] = tls_version
+        run([sys.executable, str(root / "scripts/check_dependency_replacements.py"),
+             "--target", "x86_64-unknown-linux-gnu"], cwd=root, env=environment,
+            log=output / "dependency-replacements-check.log")
+        record["dependencyReplacementCheckSha256"] = digest(output / "dependency-replacements-check.log")
         record["cHeaderCheck"] = c_header_check(output, root, environment)
         if args.source_map:
             environment["CARGO_PROFILE_RELEASE_DEBUG"] = "2"

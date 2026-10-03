@@ -8,6 +8,10 @@ The locked Linux Cargo graph now passes the strict policy in [deny.toml](../deny
 
 The GNU target's Cargo license audit also passes with the same policy, and source CI now checks it explicitly. That graph check does not clear the separate shared standard library or system runtime used by the [GNU experiment](../experiments/linux-gnu-runtime/README.md).
 
+Package declarations do not settle file-level exceptions. The exact mapped `futures-channel 0.3.34/src/mpsc/queue.rs` carries a [two-clause BSD-style notice](https://github.com/rust-lang/futures-rs/blob/0.3.34/futures-channel/src/mpsc/queue.rs), although its package declares MIT OR Apache-2.0. Its source SHA-256 is `22034085dc22050b708a37854e215fc7cbb16d65edc60370cb5d8f4b7faca18e`. It was retained in the earlier GNU `10efeb22` experiment and remained in the preceding static build. Those package audit results do not clear that component.
+
+The working source replaces that file with an original mutex-protected `VecDeque`, keeping the private interface consumed by the unchanged channel code. The BSD implementation was excluded before extracting the verified archive; its notice was not removed from retained code. Both MIT and Apache upstream notices remain with the other byte-identical package files. Five public channel regressions passed, covering concurrent delivery, FIFO order per producer, backpressure wakeups, close, sender drop and value cleanup. Seven guard regressions passed. The license bundle and GNU experiment now verify the selected local package and reviewed file hashes against [dependency-replacements.json](../vendor/dependency-replacements.json). Full source checks passed: formatting, strict Clippy, 242 Rust, 23 database and 79 Python cases, both Linux target package audits, replacement guards and notice generation. Rebuilt static core beb244cf passed 31 container and 29 HTTPS checks, and both official clients completed the three-track FLAC mix. GNU candidate 2df83ea9 also passed its source inventory, numerical and TLS checks, plus 31 container and 29 HTTPS checks; its captured replacement bytes match the reviewed hash, with no mapped registry futures-channel source. Ledgers are under `.local/channel-source-20261003`, `.local/channel-image-20261003` and `.local/channel-gnu-runtime-20261003`, with matching container, HTTPS and client directories. This repairs one known file exception; other file-level inputs and the linked runtime still require review.
+
 ```sh
 cargo deny --locked check
 python3 scripts/build_license_bundle.py
@@ -23,6 +27,7 @@ The graph changed as follows:
 | matchit | An original segment-tree router implementing the public interface consumed by Axum. |
 | unicode-ident | An original ASCII identifier adapter for build macros. |
 | idna_mapping | The upstream ASCII-only idna_adapter 1.0 backend. Configured URL hostnames must be ASCII or explicitly Punycode encoded. Unicode media text remains supported. |
+| futures-channel's BSD queue | An original mutex-protected FIFO queue; upstream channel state and wakeup code are retained under MIT/Apache. |
 
 Vendored MIT/Apache sources retain their upstream notices. Exact tarball checksums and patch descriptions are in [vendor/upstream.json](../vendor/upstream.json) and [vendor/README.md](../vendor/README.md). The adapters are original code in [crates/](../crates). The dependency regressions are in [tests/dependency_behavior.rs](../tests/dependency_behavior.rs).
 

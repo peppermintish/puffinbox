@@ -10,10 +10,22 @@ checksums. The MIT and Apache-2.0 license texts are kept with each dependency.
   enabled. The table implementation is unchanged.
 - `hashlink 0.10.0`: its default hasher wrapper derives `Clone` without `Copy`,
   matching the randomized standard-library hasher used above.
+- `futures-channel 0.3.34`: an original mutex-protected `VecDeque` replaces
+  `src/mpsc/queue.rs`, whose upstream file carries a BSD notice without an
+  MIT or Apache alternative. The other retained files match the verified crate
+  archive, including both upstream license texts. The channel's state,
+  backpressure, wakeup and oneshot implementations are unchanged. Queue access
+  now takes a mutex; concurrent throughput at the target scale is unvalidated.
 
 These patches keep SQLx's existing database and cryptographic APIs while removing
 dependencies outside the project's license policy. Update them explicitly when
 upgrading SQLx; do not edit the Cargo registry cache.
+
+`dependency-replacements.json` records the reviewed channel file hashes.
+`scripts/check_dependency_replacements.py` verifies Cargo selects this local
+package and rejects changed, missing or added files. The license bundle and GNU
+experiment run it before building their audited outputs. This guard covers the
+known queue exception; it is not a complete file-level dependency license audit.
 
 The crates in `../crates` are original compatibility adapters. The route matcher
 implements the Axum interface with a segment tree; it is not copied from matchit.

@@ -13,6 +13,8 @@ on:
       - 'scripts/check_gnu_shared_tls.py'
       - 'scripts/test_gnu_shared_tls.py'
       - 'scripts/capture_gnu_sources.py'
+      - 'scripts/check_dependency_replacements.py'
+      - 'scripts/test_dependency_replacements.py'
       - 'scripts/test_gnu_sources.py'
       - 'scripts/test_gnu_notices.py'
       - 'scripts/check_tls.py'
@@ -34,6 +36,8 @@ on:
       - 'scripts/check_gnu_shared_tls.py'
       - 'scripts/test_gnu_shared_tls.py'
       - 'scripts/capture_gnu_sources.py'
+      - 'scripts/check_dependency_replacements.py'
+      - 'scripts/test_dependency_replacements.py'
       - 'scripts/test_gnu_sources.py'
       - 'scripts/test_gnu_notices.py'
       - 'scripts/check_tls.py'
@@ -66,7 +70,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check runtime inventory and notice regressions
-        run: python3 -m unittest discover -s scripts -p 'test_gnu_*.py'
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_gnu_*.py'
+          python3 -m unittest discover -s scripts -p 'test_dependency_replacements.py'
 
       - name: Build disposable probe infrastructure
         run: docker build --tag puffinbox:gnu-probe-builder --file experiments/linux-gnu-runtime/Dockerfile .

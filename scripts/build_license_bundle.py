@@ -6,6 +6,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -61,6 +62,7 @@ def main() -> int:
     backup = None
     try:
         run(["cargo", "fetch", "--locked"], root)
+        run([sys.executable, "scripts/check_dependency_replacements.py"], root)
         run(["cargo", "deny", "--locked", "check"], root)
         run(["cargo", "about", "generate", "--locked", "--output-file", str(staging / "RUST_DEPENDENCY_LICENSES.md"), "third-party.hbs"], root)
 

@@ -21,7 +21,7 @@ This project bundles the official `hls.js` v1.7.3 distribution from the npm regi
 
 The release build creates `dist/licenses/` from the locked Cargo graph using `cargo-deny` and `cargo-about`. It includes full accepted dependency license texts, the Rust standard library and toolchain copyright records, and the musl runtime copyright record for the static server binary. Release archives and the minimal container image include this directory when the strict license gate passes.
 
-The Cargo allowlist is limited to MIT and Apache-2.0. Run `cargo deny --locked check licenses` locally; any other or unclear expression stops the Cargo license gate. The current locked graph passes without exceptions. Rust's linked Unicode tables and musl component licenses remain outside that audit and block release packaging. See [`docs/licensing.md`](docs/licensing.md) for the runtime blocker, replacements, and external component inventory.
+The Cargo allowlist is limited to MIT and Apache-2.0. Run `cargo deny --locked check licenses` locally; any other or unclear expression stops the Cargo license gate. The current locked graph passes without exceptions. Package declarations do not clear individual file notices: the upstream futures-channel BSD queue is replaced with original MIT/Apache code, with both upstream license texts preserved for the other retained files. The build verifies the selected replacement and reviewed hashes. Rust's linked Unicode tables, musl components and remaining file-level inputs still block release packaging. See [`docs/licensing.md`](docs/licensing.md) for the runtime blocker, replacements, and external component inventory.
 
 ## External operator services and executables
 
