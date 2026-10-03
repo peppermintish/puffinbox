@@ -152,6 +152,8 @@ A read-only follow-up on 2026-10-03 checked all 245 mapped standard-library file
 
 A separate diagnostic searched 8,634 source files in the currently available locked GNU Cargo packages. Its 20 license hints are zerocopy files declaring `BSD-2-Clause OR Apache-2.0 OR MIT`, which offers an allowed alternative under the existing policy. Evidence is `.local/gnu-file-license-preflight-20261003.json`. This scan is not tied to every retained input of the earlier executable and excludes non-source files.
 
+The mapped Rust `pattern.rs` points to memchr revision `8037d11b4357b0f07be2bb66dc2659d9cf28ad32` for one adapted function. That exact revision declares [Unlicense OR MIT](https://raw.githubusercontent.com/BurntSushi/memchr/8037d11b4357b0f07be2bb66dc2659d9cf28ad32/Cargo.toml) and supplies an [MIT notice](https://raw.githubusercontent.com/BurntSushi/memchr/8037d11b4357b0f07be2bb66dc2659d9cf28ad32/LICENSE-MIT), so an allowed MIT choice is available for that cited adaptation. The notice, package declaration and hashes are preserved under `.local/gnu-memchr-adaptation-20261003`. This narrow result does not identify the historical revision behind `slice/memchr.rs` or clear the remaining runtime inputs.
+
 These searches help identify files for review. They do not establish all included-header licenses, unmapped code or constant provenance, the external runtime's distribution boundary, or whole-release compliance. Both records keep `licenseClearance: false`, and production remains the static musl image.
 
 ## Reproducing the link inventory
