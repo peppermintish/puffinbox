@@ -2765,6 +2765,7 @@ pub(crate) fn item_query(
     let mut is_played = params.is_played;
     let mut is_folder = params.is_folder;
     let mut is_favorite = false;
+    let mut is_liked = None;
     let mut is_resumable = false;
     if let Some(filters) = params.filters {
         for filter in filters
@@ -2798,7 +2799,18 @@ pub(crate) fn item_query(
                     }
                     is_played = Some(false);
                 }
-                "isfavorite" => is_favorite = true,
+                // Jellyfin 12 public observations select favorites for both names,
+                // including when an unfavorited track has a rating of 10.
+                "isfavorite" | "isfavoriteorlikes" => is_favorite = true,
+                "likes" | "dislikes" => {
+                    let liked = filter.eq_ignore_ascii_case("Likes");
+                    if is_liked.is_some_and(|current| current != liked) {
+                        return Err(ApiError::BadRequest(
+                            "Filters cannot combine Likes and Dislikes".to_owned(),
+                        ));
+                    }
+                    is_liked = Some(liked);
+                }
                 "isresumable" => is_resumable = true,
                 _ => {
                     return Err(ApiError::BadRequest(
@@ -2830,6 +2842,7 @@ pub(crate) fn item_query(
         is_folder,
         is_played,
         is_favorite,
+        is_liked,
         is_resumable,
         facets: crate::catalog_filters::selections(
             params.genres.as_deref(),
@@ -3220,6 +3233,7 @@ async fn latest_items(
         is_folder: None,
         is_played: params.is_played,
         is_favorite: false,
+        is_liked: None,
         is_resumable: false,
         facets: Default::default(),
     };
@@ -3276,6 +3290,7 @@ async fn resume_items(
         is_folder: None,
         is_played: None,
         is_favorite: false,
+        is_liked: None,
         is_resumable: true,
         facets: Default::default(),
     };
@@ -3331,6 +3346,7 @@ async fn show_seasons(
         is_folder: None,
         is_played: None,
         is_favorite: false,
+        is_liked: None,
         is_resumable: false,
         facets: Default::default(),
     };
@@ -3377,6 +3393,7 @@ async fn show_episodes(
         is_folder: None,
         is_played: None,
         is_favorite: false,
+        is_liked: None,
         is_resumable: false,
         facets: Default::default(),
     };
@@ -3547,6 +3564,7 @@ async fn list_music_persons(
         is_folder: None,
         is_played: None,
         is_favorite: false,
+        is_liked: None,
         is_resumable: false,
         facets: Default::default(),
     };
@@ -3770,6 +3788,7 @@ async fn list_music_artists(
         is_folder: None,
         is_played: None,
         is_favorite: false,
+        is_liked: None,
         is_resumable: false,
         facets: Default::default(),
     };
@@ -4020,6 +4039,7 @@ async fn search_hints(
         is_folder: None,
         is_played: None,
         is_favorite: false,
+        is_liked: None,
         is_resumable: false,
         facets: Default::default(),
     };

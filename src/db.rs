@@ -2475,6 +2475,16 @@ fn push_item_conditions(
             .push_bind(user.id)
             .push(" AND ud.item_id=i.id AND ud.is_favorite=TRUE) ");
     }
+    if let Some(liked) = query.is_liked {
+        builder.push(if liked {
+            " AND EXISTS (SELECT 1 FROM user_item_data ud WHERE ud.user_id="
+        } else {
+            " AND NOT EXISTS (SELECT 1 FROM user_item_data ud WHERE ud.user_id="
+        });
+        builder
+            .push_bind(user.id)
+            .push(" AND ud.item_id=i.id AND ud.rating>=6.5) ");
+    }
     catalog_filters::push_selections(builder, &query.facets);
 }
 

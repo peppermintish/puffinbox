@@ -264,6 +264,7 @@ pub(crate) async fn catalog_children_result(
         || !query.album_artist_ids.is_empty()
         || query.is_played.is_some()
         || query.is_favorite
+        || query.is_liked.is_some()
         || query.is_resumable
         || query.search_term.is_some()
         || !query.facets.genres.is_empty()
@@ -358,6 +359,7 @@ pub(crate) async fn catalog_result(
         || query.is_folder.is_some()
         || query.is_played.is_some()
         || query.is_favorite
+        || query.is_liked.is_some()
         || query.is_resumable
         || !query.facets.genres.is_empty()
         || !query.facets.genre_ids.is_empty()

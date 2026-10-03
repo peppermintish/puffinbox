@@ -365,6 +365,17 @@ async fn user_data_edits_preserve_omitted_fields_and_follow_user_and_media_permi
         before
     );
 
+    personal_catalog_filters(
+        &pool,
+        &router,
+        library,
+        owner,
+        peer,
+        &tokens,
+        &[hidden, denied, disabled_item, restricted],
+    )
+    .await;
+
     let count_edit = call(
         &router,
         "POST",
@@ -478,6 +489,251 @@ async fn user_data_edits_preserve_omitted_fields_and_follow_user_and_media_permi
         .execute(&admin_pool)
         .await
         .unwrap();
+}
+
+async fn personal_catalog_filters(
+    pool: &PgPool,
+    router: &Router,
+    library: Uuid,
+    owner: Uuid,
+    peer: Uuid,
+    tokens: &[String],
+    invisible: &[Uuid],
+) {
+    let album = item(pool, library, "MusicAlbum", "/media/Filter Album", None).await;
+    let mut tracks = Vec::new();
+    for (name, title) in [
+        ("a", "Filter Alpha"),
+        ("b", "Filter Beta"),
+        ("c", "Filter Gamma"),
+        ("d", "Filter Delta"),
+        ("e", "Filter Empty"),
+    ] {
+        let track = item(
+            pool,
+            library,
+            "Audio",
+            &format!("/media/Filter Album/{name}.flac"),
+            Some(50_000_000),
+        )
+        .await;
+        sqlx::query("UPDATE items SET parent_id=$1,name=$3 WHERE id=$2")
+            .bind(album)
+            .bind(track)
+            .bind(title)
+            .execute(pool)
+            .await
+            .unwrap();
+        tracks.push(track);
+    }
+    let prefix =
+        format!("/Items?ParentId={album}&Recursive=true&IncludeItemTypes=Audio&SortBy=SortName");
+    selection(
+        router,
+        &format!("{prefix}&Filters=Likes"),
+        &tokens[0],
+        &[],
+        0,
+    )
+    .await;
+    selection(
+        router,
+        &format!("{prefix}&Filters=Dislikes"),
+        &tokens[0],
+        &tracks,
+        5,
+    )
+    .await;
+    for (id, payload) in [
+        (
+            tracks[0],
+            json!({"Rating":6.5,"IsFavorite":false,"Played":true}),
+        ),
+        (tracks[1], json!({"Rating":6.4999,"IsFavorite":true})),
+        (
+            tracks[2],
+            json!({"Rating":0,"IsFavorite":false,"Played":true}),
+        ),
+        (tracks[3], json!({"IsFavorite":true})),
+    ] {
+        body(
+            call(
+                router,
+                "POST",
+                &format!("/UserItems/{id}/UserData"),
+                Some(&tokens[0]),
+                Some(payload),
+            )
+            .await,
+        )
+        .await;
+    }
+    for (filters, expected) in [
+        ("Likes", vec![tracks[0]]),
+        ("likes,Likes", vec![tracks[0]]),
+        ("Dislikes", tracks[1..].to_vec()),
+        ("IsFavoriteOrLikes", vec![tracks[1], tracks[3]]),
+        ("Likes,IsFavorite", vec![]),
+        ("IsFavorite,Likes", vec![]),
+        ("Dislikes,IsFavorite", vec![tracks[1], tracks[3]]),
+        ("IsFavoriteOrLikes,Dislikes", vec![tracks[1], tracks[3]]),
+        ("IsFavoriteOrLikes,Likes", vec![]),
+        ("IsFavorite,IsFavoriteOrLikes", vec![tracks[1], tracks[3]]),
+        ("IsPlayed,Likes", vec![tracks[0]]),
+        ("IsUnplayed,IsFavoriteOrLikes", vec![tracks[1], tracks[3]]),
+        ("Dislikes,IsResumable", vec![]),
+    ] {
+        selection(
+            router,
+            &format!("{prefix}&Filters={filters}"),
+            &tokens[0],
+            &expected,
+            expected.len(),
+        )
+        .await;
+    }
+    selection(
+        router,
+        &format!("{prefix}&Filters=Dislikes&StartIndex=1&Limit=1"),
+        &tokens[0],
+        &[tracks[2]],
+        4,
+    )
+    .await;
+    selection(
+        router,
+        &format!("{prefix}&Filters=Dislikes&ExcludeItemIds={}", tracks[1]),
+        &tokens[0],
+        &tracks[2..],
+        3,
+    )
+    .await;
+    selection(
+        router,
+        &format!("{prefix}&filters=Likes&searchTerm=Alpha"),
+        &tokens[0],
+        &[tracks[0]],
+        1,
+    )
+    .await;
+    selection(
+        router,
+        &format!("{prefix}&Filters=Likes"),
+        &tokens[1],
+        &[],
+        0,
+    )
+    .await;
+    selection(
+        router,
+        &format!("{prefix}&Filters=Likes"),
+        &tokens[2],
+        &[],
+        0,
+    )
+    .await;
+    selection(
+        router,
+        &format!("{prefix}&Filters=Likes&userId={owner}"),
+        &tokens[2],
+        &[tracks[0]],
+        1,
+    )
+    .await;
+    for filters in ["Likes,Dislikes", "Dislikes,Likes"] {
+        assert_eq!(
+            call(
+                router,
+                "GET",
+                &format!("{prefix}&Filters={filters}"),
+                Some(&tokens[0]),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    body(
+        call(
+            router,
+            "POST",
+            &format!("/UserItems/{}/UserData", tracks[0]),
+            Some(&tokens[0]),
+            Some(json!({"Rating":10})),
+        )
+        .await,
+    )
+    .await;
+    selection(
+        router,
+        &format!("{prefix}&Filters=IsFavoriteOrLikes"),
+        &tokens[0],
+        &[tracks[1], tracks[3]],
+        2,
+    )
+    .await;
+    for id in invisible {
+        sqlx::query(
+            "INSERT INTO user_item_data(user_id,item_id,rating,is_favorite) VALUES ($1,$2,10,TRUE)",
+        )
+        .bind(owner)
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    let ids = std::iter::once(&tracks[0])
+        .chain(invisible)
+        .map(Uuid::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    selection(
+        router,
+        &format!("/Items?Ids={ids}&Recursive=true&Filters=Likes"),
+        &tokens[0],
+        &[tracks[0]],
+        1,
+    )
+    .await;
+    let legacy = prefix.replacen("/Items?", &format!("/Users/{owner}/Items?"), 1);
+    selection(
+        router,
+        &format!("{legacy}&Filters=Dislikes"),
+        &tokens[0],
+        &tracks[1..],
+        4,
+    )
+    .await;
+    for (path, expected) in [
+        (
+            "/Items?IncludeItemTypes=Playlist&Filters=Likes".to_owned(),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!("{prefix}&Filters=IsFavoriteOrLikes&userId={peer}"),
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        assert_eq!(
+            call(router, "GET", &path, Some(&tokens[0]), None)
+                .await
+                .status(),
+            expected
+        );
+    }
+}
+
+async fn selection(router: &Router, path: &str, token: &str, expected: &[Uuid], total: usize) {
+    let result = body(call(router, "GET", path, Some(token), None).await).await;
+    let ids = result["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["Id"].as_str().unwrap().parse::<Uuid>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, expected, "{path}");
+    assert_eq!(result["TotalRecordCount"], total, "{path}");
 }
 
 async fn item(pool: &PgPool, library: Uuid, kind: &str, path: &str, runtime: Option<i64>) -> Uuid {

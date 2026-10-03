@@ -75,6 +75,7 @@ pub struct ItemQuery {
     pub is_folder: Option<bool>,
     pub is_played: Option<bool>,
     pub is_favorite: bool,
+    pub is_liked: Option<bool>,
     pub is_resumable: bool,
     pub facets: ItemFacetFilters,
 }

@@ -1363,7 +1363,7 @@ async fn verify_folder_filters(
         "Filters=IsNotFolder,IsFolder",
         "IsFolder=true&Filters=IsNotFolder",
         "isFolder=false&filters=isfolder",
-        "Filters=Likes",
+        "Filters=UnknownFilter",
         "IsFolder=invalid",
     ] {
         assert_eq!(
