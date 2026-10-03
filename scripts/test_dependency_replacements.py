@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -153,6 +154,38 @@ class DependencyFeatureTests(unittest.TestCase):
         (self.directory / "Cargo.toml").unlink()
         with self.assertRaisesRegex(ValueError, "Invalid feature-constrained dependency path"):
             validate(self.root, self.metadata, self.review)
+
+    def test_recorded_tower_selection_rejects_compression_and_full_features(self):
+        record = json.loads((Path(__file__).resolve().parents[1]
+                             / "vendor/dependency-replacements.json").read_text(encoding="utf-8"))
+        constraint = copy.deepcopy(next(item for item in record["featureConstraints"]
+                                        if item["name"] == "tower-http"))
+        directory = self.root / "registry/tower-http"
+        directory.mkdir()
+        source = b"// Synthetic reviewed module gate fixture\n"
+        for name in constraint["reviewedConfigFiles"]:
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(source)
+            constraint["reviewedConfigFiles"][name] = hashlib.sha256(source).hexdigest()
+        identifier = "registry+crates.io#tower-http@0.6.11"
+        self.metadata["packages"].append({
+            "name": "tower-http", "version": constraint["version"],
+            "source": constraint["source"], "id": identifier,
+            "manifest_path": str(directory / "Cargo.toml"),
+        })
+        node = {"id": identifier, "features": constraint["allowedFeatures"].copy()}
+        self.metadata["resolve"]["nodes"].append(node)
+        self.review["featureConstraints"].append(constraint)
+        self.assertEqual(validate(self.root, self.metadata, self.review)["verifiedFeatureConstraints"], 2)
+        for feature in ["compression-br", "compression-deflate", "compression-gzip",
+                        "compression-zstd", "compression-full", "decompression-br",
+                        "decompression-deflate", "decompression-gzip", "decompression-zstd",
+                        "decompression-full", "full"]:
+            with self.subTest(feature=feature):
+                node["features"] = constraint["allowedFeatures"] + [feature]
+                with self.assertRaisesRegex(ValueError, "Unreviewed dependency features for tower-http"):
+                    validate(self.root, self.metadata, self.review)
 
 
 if __name__ == "__main__":

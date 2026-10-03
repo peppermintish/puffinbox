@@ -31,9 +31,17 @@ selected `std` feature. Its Unicode table modules have separate Unicode terms
 and are disabled in both Linux target graphs. The guard checks resolved Cargo
 features and hashes the reviewed manifest, module gates and license record. A
 new version, changed gates or added features require review. Removing the
-dependency entirely is allowed. No registry files were modified or copied into
-the repository. This covers known exceptions, not complete dependency or linked
-runtime license clearance.
+dependency entirely is allowed.
+
+Registry `tower-http 0.6.11` has a CC0 notice on its compression module's
+`pin_project_cfg` helper. Compression and decompression features are currently
+disabled. Its empty default feature and selected HTTP middleware features are
+reviewed; the same guard hashes its manifest, module gates and notice and
+rejects any added feature, including compression and `full`.
+
+No registry files were modified or copied into the repository. These checks
+cover known exceptions, not complete dependency or linked runtime license
+clearance.
 
 The crates in `../crates` are original compatibility adapters. The route matcher
 implements the Axum interface with a segment tree; it is not copied from matchit.
