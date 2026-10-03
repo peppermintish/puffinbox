@@ -36,8 +36,9 @@ Six fresh reference reads with lowercase `Recursive=true` supplied the mixed
 sort contract. Explicit SortName ordering preserves audio title case; the
 physical album's stored SortName remains lowercase. Name ordering uses display
 titles. The original reference reads used capitalized `Recursive=True`, which
-the reference accepted and Puffinbox rejected with 400. That query difference
-is retained as an open compatibility issue. Wider collation remains untested.
+the reference accepted and Puffinbox rejected with 400 on that image. The later
+[catalogue boolean fix](jellyfin12-catalog-booleans.md) matches those six
+original capitalized queries on core `edea4423`. Wider collation remains untested.
 A current embedded source with no track number now leaves IndexNumber absent;
 it does not infer `4` from the plain track's filename. Missing or stale
 embedded metadata still permits the existing filename fallback.

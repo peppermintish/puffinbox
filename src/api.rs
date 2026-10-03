@@ -2410,7 +2410,12 @@ pub(crate) struct ItemsQueryParams {
     include_item_types: Option<String>,
     #[serde(default, rename = "MediaTypes", alias = "mediaTypes")]
     media_types: Option<String>,
-    #[serde(default, rename = "Recursive", alias = "recursive")]
+    #[serde(
+        default,
+        rename = "Recursive",
+        alias = "recursive",
+        deserialize_with = "deserialize_optional_catalog_bool"
+    )]
     recursive: Option<bool>,
     #[serde(default, rename = "StartIndex", alias = "startIndex")]
     start_index: Option<i64>,
@@ -2419,16 +2424,27 @@ pub(crate) struct ItemsQueryParams {
     #[serde(
         default = "default_true",
         rename = "EnableTotalRecordCount",
-        alias = "enableTotalRecordCount"
+        alias = "enableTotalRecordCount",
+        deserialize_with = "deserialize_catalog_bool"
     )]
     enable_total_record_count: bool,
     #[serde(default, rename = "SortBy", alias = "sortBy")]
     sort_by: Option<String>,
     #[serde(default, rename = "SortOrder", alias = "sortOrder")]
     sort_order: Option<String>,
-    #[serde(default, rename = "IsPlayed", alias = "isPlayed")]
+    #[serde(
+        default,
+        rename = "IsPlayed",
+        alias = "isPlayed",
+        deserialize_with = "deserialize_optional_catalog_bool"
+    )]
     is_played: Option<bool>,
-    #[serde(default, rename = "IsFolder", alias = "isFolder")]
+    #[serde(
+        default,
+        rename = "IsFolder",
+        alias = "isFolder",
+        deserialize_with = "deserialize_optional_catalog_bool"
+    )]
     is_folder: Option<bool>,
     #[serde(default, rename = "Filters", alias = "filters")]
     filters: Option<String>,
@@ -2454,6 +2470,52 @@ pub(crate) struct ItemsQueryParams {
 
 fn default_true() -> bool {
     true
+}
+
+fn deserialize_optional_catalog_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct CatalogBoolVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for CatalogBoolVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("true, false, or an empty optional boolean")
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+            Ok(Some(value))
+        }
+
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            let value = value.trim_matches(|character: char| character.is_ascii_whitespace());
+            if value.is_empty() {
+                Ok(None)
+            } else if value.eq_ignore_ascii_case("true") {
+                Ok(Some(true))
+            } else if value.eq_ignore_ascii_case("false") {
+                Ok(Some(false))
+            } else {
+                Err(E::invalid_value(serde::de::Unexpected::Str(value), &self))
+            }
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(CatalogBoolVisitor)
+}
+
+fn deserialize_catalog_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_optional_catalog_bool(deserializer)?
+        .ok_or_else(|| serde::de::Error::custom("expected true or false"))
 }
 
 impl ItemsQueryParams {
@@ -4358,6 +4420,92 @@ pub(crate) async fn socket_user_data(
 #[cfg(test)]
 mod item_dto_tests {
     use super::*;
+
+    #[test]
+    fn catalog_boolean_queries_accept_case_and_whitespace_without_changing_text_fields() {
+        let uri: axum::http::Uri = "/Items?Recursive=%20tRuE%20&EnableTotalRecordCount=%09FaLsE%09&IsPlayed=TRUE&IsFolder=False&SearchTerm=TRUE"
+            .parse()
+            .unwrap();
+        let Query(params) = Query::<ItemsQueryParams>::try_from_uri(&uri).unwrap();
+        assert_eq!(params.recursive, Some(true));
+        assert!(!params.enable_total_record_count);
+        assert_eq!(params.is_played, Some(true));
+        assert_eq!(params.is_folder, Some(false));
+        assert_eq!(params.search_term.as_deref(), Some("TRUE"));
+
+        let aliases: axum::http::Uri =
+            "/Items?recursive=FALSE&enableTotalRecordCount=True&isPlayed=false&isFolder=TRUE"
+                .parse()
+                .unwrap();
+        let Query(params) = Query::<ItemsQueryParams>::try_from_uri(&aliases).unwrap();
+        assert_eq!(params.recursive, Some(false));
+        assert!(params.enable_total_record_count);
+        assert_eq!(params.is_played, Some(false));
+        assert_eq!(params.is_folder, Some(true));
+    }
+
+    #[test]
+    fn catalog_boolean_queries_keep_defaults_and_reject_invalid_values() {
+        for query in ["", "Recursive=&IsPlayed=&IsFolder="] {
+            let uri: axum::http::Uri = format!("/Items?{query}").parse().unwrap();
+            let Query(params) = Query::<ItemsQueryParams>::try_from_uri(&uri).unwrap();
+            assert_eq!(params.recursive, None);
+            assert_eq!(params.is_played, None);
+            assert_eq!(params.is_folder, None);
+            assert!(params.enable_total_record_count);
+        }
+
+        for field in [
+            "Recursive",
+            "EnableTotalRecordCount",
+            "IsPlayed",
+            "IsFolder",
+        ] {
+            for value in ["1", "0", "yes", "null", "true,false", "tr%20ue"] {
+                let uri: axum::http::Uri = format!("/Items?{field}={value}").parse().unwrap();
+                assert!(Query::<ItemsQueryParams>::try_from_uri(&uri).is_err());
+            }
+        }
+        for query in [
+            "EnableTotalRecordCount=",
+            "Recursive=true&recursive=false",
+            "EnableTotalRecordCount=True&enableTotalRecordCount=False",
+        ] {
+            let uri: axum::http::Uri = format!("/Items?{query}").parse().unwrap();
+            assert!(Query::<ItemsQueryParams>::try_from_uri(&uri).is_err());
+        }
+    }
+
+    #[test]
+    fn catalog_boolean_deserializers_preserve_typed_values_and_reject_numbers() {
+        let params: ItemsQueryParams = serde_json::from_value(serde_json::json!({
+            "Recursive": true,
+            "EnableTotalRecordCount": false,
+            "IsPlayed": null,
+            "IsFolder": false
+        }))
+        .unwrap();
+        assert_eq!(params.recursive, Some(true));
+        assert!(!params.enable_total_record_count);
+        assert_eq!(params.is_played, None);
+        assert_eq!(params.is_folder, Some(false));
+        for field in [
+            "Recursive",
+            "EnableTotalRecordCount",
+            "IsPlayed",
+            "IsFolder",
+        ] {
+            assert!(
+                serde_json::from_value::<ItemsQueryParams>(serde_json::json!({field: 1})).is_err()
+            );
+        }
+        assert!(
+            serde_json::from_value::<ItemsQueryParams>(serde_json::json!({
+                "EnableTotalRecordCount": null
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn person_kind_filters_accept_csv_and_repeated_query_values() {

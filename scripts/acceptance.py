@@ -1045,12 +1045,28 @@ def verify_catalog_ordering(admin: HttpClient, library_id: str, item_id: str) ->
         _, _, numbered = reader.json("GET", "/Items?Ids=" + item_id + "&SortBy=Album,ParentIndexNumber,IndexNumber,SortName")
         require(numbered["TotalRecordCount"] == 1 and numbered["Items"][0]["Id"] == item_id,
                 "disc/track sorting omitted an unnumbered visible fixture")
+        for prefix in ["/Items", f"/Users/{user_id}/Items"]:
+            base = prefix + "?Ids=" + item_id + "&SortBy=SortName"
+            for field in ["Recursive", "EnableTotalRecordCount", "IsPlayed", "IsFolder"]:
+                for value in ["true", "false"]:
+                    expected = reader.json("GET", base + "&" + field + "=" + value)[2]
+                    for variant in [value.title(), value.upper(), " \t" + value.title() + "\t "]:
+                        suffix = urllib.parse.urlencode({field: variant})
+                        _, headers, observed = reader.json("GET", base + "&" + suffix)
+                        require(observed == expected and headers.get("Cache-Control") == "private, no-store",
+                                "catalogue boolean case or whitespace changed selection, counts, or private headers")
+            expected = reader.json("GET", base)[2]
+            require(reader.json("GET", base + "&Recursive=&IsPlayed=&IsFolder=")[2] == expected,
+                    "empty optional catalogue booleans changed omitted-field behavior")
+            for suffix in ["Recursive=1", "IsPlayed=yes", "IsFolder=null", "EnableTotalRecordCount="]:
+                require(reader.request("GET", base + "&" + suffix)[0] == 400,
+                        "invalid catalogue boolean was silently accepted")
         admin.json("POST", f"/Users/{user_id}/Policy", {"EnableAllFolders": False, "EnabledFolders": []}, expected=(204,))
-        revoked = reader.json("GET", "/Items" + query)[2]
+        revoked = reader.json("GET", "/Items" + query + "&Recursive=True")[2]
         require(revoked["Items"] == [] and revoked["TotalRecordCount"] == 0,
                 "multi-field ordering retained a revoked library grant")
-        report("Catalogue date/year and disc/track sorting, artist filters, item exclusions, counts, legacy query, and access revocation", True,
-               "real album/track order and metadata precedence have separate PostgreSQL coverage")
+        report("Catalogue sorting, artist filters, exclusions, boolean parsing, counts, legacy query, and access revocation", True,
+               "real album/track order and metadata precedence have separate PostgreSQL coverage; folder filtering and omitted disabled counts retain Puffinbox behavior")
     finally:
         reader.json("POST", "/Sessions/Logout", expected=(204,))
 
