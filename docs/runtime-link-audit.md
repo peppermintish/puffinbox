@@ -452,6 +452,32 @@ container or official-client result yet; earlier candidates retain their
 separate runtime observations. Its standard-library hash remains
 `5a3f35a0e2e734369effc845ebad8b182912c600ad2114ce400ee3d2502b1ea0`.
 
+A subsequent summary replay found that the collector discarded successful
+preprocessor-only records, even though the wrapper had preserved their inputs.
+The corrected collector includes those records without counting them as native
+compilations. Synthetic probe-only and changed-header checks, plus the real
+four-mode compiler replay, failed before the fix and pass afterward. Failed
+probes remain outside selected inputs. All 106 Python regressions passed.
+
+Replaying all eight exact traces for `b957a857` recovered seven omitted paths,
+including OpenSSL configuration headers and its configuration probe. The
+updated index has 75 paths and 73 verified byte copies totaling 248,743 bytes;
+the two successful native compilation counts are unchanged. Source and
+compiler-notice checks pass against this derived snapshot. The original
+snapshot and executable are unchanged. Evidence is under
+`.local/preprocessor-summary-20261004`.
+
+An independent current Rust input review verified 1,206 mapped package files,
+2,163 selected dependency-rule files and their notices against exact locked
+archives or project bytes. Their union contains 2,254 files across 152 packages;
+all 1,115 overlaps have matching hashes and owners. No Rustix raw-backend path
+appears in that union. Three generated inputs have the same bytes, generator
+inputs, notices and features as the separately verified replays above. The only
+textual review-queue hit is the already qualified tracing date notice. Records
+are under `.local/rustix-libc-files-20261004`,
+`.local/rustix-libc-inputs-20261004` and
+`.local/preprocessor-summary-20261004/rust-input-union.json`.
+
 These records are input provenance and review evidence. Text searches do not
 assign each file a license or establish exhaustive coverage of inlined,
 unmapped and linker-generated content. They leave whole-binary clearance and

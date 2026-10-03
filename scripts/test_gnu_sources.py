@@ -313,6 +313,37 @@ class NativeSourceBytesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "directory is missing or linked"):
             capture_native(self.traces, require_compilations=False, require_source_bytes=True)
 
+    def test_preprocessor_inputs_survive_without_a_native_compilation(self):
+        self.record["compileSource"] = False
+        self.record["preprocessorDependencyRuleCaptured"] = True
+        self.write_trace()
+        with self.assertRaisesRegex(ValueError, "no successful compilation"):
+            capture_native(self.traces, require_source_bytes=True)
+        snapshot = capture_native(self.traces, require_compilations=False, require_source_bytes=True)
+        self.assertEqual(snapshot["nativeCompileInvocations"], 0)
+        self.assertEqual(snapshot["nativeSourceFiles"], self.record["sourceFiles"])
+        self.assertEqual(verify_native_source_bytes(snapshot, self.store)["verifiedFiles"], 1)
+        # Preserve both versions when a header changes between successful probes.
+        changed = copy.deepcopy(self.record)
+        changed_body = b"Synthetic changed preprocessor input\n"
+        changed_hash = hashlib.sha256(changed_body).hexdigest()
+        (self.store / changed_hash).write_bytes(changed_body)
+        changed["sourceFiles"] = dict.fromkeys(changed["sourceFiles"], changed_hash)
+        (self.traces / "two.json").write_text(json.dumps(changed))
+        snapshot = capture_native(self.traces, require_compilations=False, require_source_bytes=True)
+        self.assertEqual(snapshot["nativeSourceFiles"], {})
+        self.assertEqual(snapshot["ambiguousNativeSourceFiles"],
+                         dict.fromkeys(changed["sourceFiles"], sorted([self.value, changed_hash])))
+        self.assertEqual(verify_native_source_bytes(snapshot, self.store)["verifiedFiles"], 2)
+
+    def test_failed_preprocessor_records_do_not_add_selected_inputs(self):
+        self.record.update(compileSource=False, preprocessorDependencyRuleCaptured=True, exitCode=1)
+        self.write_trace()
+        snapshot = capture_native(self.traces, require_compilations=False, require_source_bytes=True)
+        self.assertEqual(snapshot["nativeSourceFiles"], {})
+        self.assertEqual(snapshot["nativeSourceByteFiles"], {})
+        self.assertEqual(verify_native_source_bytes(snapshot, self.store)["verifiedFiles"], 0)
+
 
 class NativeCompilerTraceTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "linux", "GNU dependency paths require the Linux probe environment")
@@ -504,6 +535,12 @@ class NativeCompilerTraceTests(unittest.TestCase):
                     self.assertEqual(record["sourceFiles"][str(path)], value)
                     path.unlink()
                     self.assertEqual((output / "native-source-bytes" / value).read_bytes(), content)
+                snapshot = capture_native(output / "native-compiler-traces", require_compilations=False,
+                                          require_source_bytes=True)
+                self.assertEqual(snapshot["nativeCompileInvocations"], 0)
+                self.assertEqual(snapshot["nativeSourceFiles"], record["sourceFiles"])
+                self.assertEqual(verify_native_source_bytes(snapshot, output / "native-source-bytes")["verifiedFiles"],
+                                 len(set(record["sourceFiles"].values())))
 
     @unittest.skipUnless(sys.platform == "linux" and shutil.which("cc"), "Requires the disposable Linux C compiler")
     def test_multiple_preprocessing_sources_fail_before_recording_partial_inputs(self):

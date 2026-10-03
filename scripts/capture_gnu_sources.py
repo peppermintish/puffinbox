@@ -139,8 +139,12 @@ def capture_native(traces: Path | None, *, require_compilations: bool = True,
                     raise ValueError("Unsafe native compiler source path or hash.")
                 if preserved:
                     verified_native_blob(traces.parent / "native-source-bytes", value)
-            if record["exitCode"] == 0 and record["compileSource"]:
-                invocations += 1
+            if record["exitCode"] == 0:
+                if record["compileSource"]:
+                    invocations += 1
+                # Configure probes can consume headers without producing an object.
+                if not record["compileSource"] and record.get("preprocessorDependencyRuleCaptured") is not True:
+                    continue
                 for source, value in record["sourceFiles"].items():
                     inputs.setdefault(source, set()).add(value)
                     if preserved:
