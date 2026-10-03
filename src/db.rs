@@ -120,6 +120,17 @@ pub struct UserItemData {
     pub is_favorite: bool,
     pub playback_position_ticks: i64,
     pub last_played_at: Option<DateTime<Utc>>,
+    pub rating: Option<f64>,
+}
+
+#[derive(Default)]
+pub(crate) struct UserItemDataPatch {
+    pub played: Option<bool>,
+    pub favorite: Option<bool>,
+    pub position_ticks: Option<i64>,
+    pub play_count: Option<i32>,
+    pub last_played_at: Option<DateTime<Utc>>,
+    pub rating: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, sqlx::FromRow)]
@@ -1961,7 +1972,7 @@ async fn save_playback_user_data(
     played: Option<bool>,
     position_ticks: i64,
 ) -> Result<DateTime<Utc>, sqlx::Error> {
-    sqlx::query_scalar("INSERT INTO user_item_data(user_id,item_id,played,playback_position_ticks,play_count,last_played_at) VALUES ($1,$2,COALESCE($3,FALSE),$4,CASE WHEN $3 THEN 1 ELSE 0 END,CASE WHEN $3 THEN NOW() ELSE NULL END) ON CONFLICT (user_id,item_id) DO UPDATE SET played=COALESCE($3,user_item_data.played),playback_position_ticks=$4,play_count=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN user_item_data.play_count+1 ELSE user_item_data.play_count END,last_played_at=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN NOW() ELSE user_item_data.last_played_at END,updated_at=NOW() RETURNING updated_at")
+    sqlx::query_scalar("INSERT INTO user_item_data(user_id,item_id,played,playback_position_ticks,play_count,last_played_at) VALUES ($1,$2,COALESCE($3,FALSE),$4,CASE WHEN $3 THEN 1 ELSE 0 END,CASE WHEN $3 THEN NOW() ELSE NULL END) ON CONFLICT (user_id,item_id) DO UPDATE SET played=COALESCE($3,user_item_data.played),playback_position_ticks=$4,play_count=CASE WHEN $3=TRUE AND user_item_data.played=FALSE AND user_item_data.play_count<2147483647 THEN user_item_data.play_count+1 ELSE user_item_data.play_count END,last_played_at=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN NOW() ELSE user_item_data.last_played_at END,updated_at=NOW() RETURNING updated_at")
         .bind(user_id).bind(item_id).bind(played).bind(position_ticks).fetch_one(&mut **tx).await
 }
 
@@ -2142,7 +2153,7 @@ pub async fn item_user_data(
     if item_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let rows = sqlx::query("SELECT item_id, played, play_count, is_favorite, playback_position_ticks, last_played_at FROM user_item_data WHERE user_id=$1 AND item_id=ANY($2)")
+    let rows = sqlx::query("SELECT item_id, played, play_count, is_favorite, playback_position_ticks, last_played_at, rating FROM user_item_data WHERE user_id=$1 AND item_id=ANY($2)")
         .bind(user_id).bind(item_ids).fetch_all(pool).await?;
     rows.into_iter()
         .map(|row| {
@@ -2154,25 +2165,43 @@ pub async fn item_user_data(
                     is_favorite: row.try_get("is_favorite")?,
                     playback_position_ticks: row.try_get("playback_position_ticks")?,
                     last_played_at: row.try_get("last_played_at")?,
+                    rating: row.try_get("rating")?,
                 },
             ))
         })
         .collect()
 }
 
-pub async fn upsert_user_item_data(
+pub(crate) async fn upsert_user_item_data(
     pool: &PgPool,
     run_id: Uuid,
     user_id: Uuid,
     item_id: Uuid,
-    played: Option<bool>,
-    favorite: Option<bool>,
-    position_ticks: Option<i64>,
+    patch: UserItemDataPatch,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     require_active_run(&mut tx, run_id).await?;
-    sqlx::query("INSERT INTO user_item_data(user_id,item_id,played,is_favorite,playback_position_ticks,play_count,last_played_at) VALUES ($1,$2,COALESCE($3,FALSE),COALESCE($4,FALSE),COALESCE($5,0),CASE WHEN $3 THEN 1 ELSE 0 END,CASE WHEN $3 THEN NOW() ELSE NULL END) ON CONFLICT (user_id,item_id) DO UPDATE SET played=COALESCE($3,user_item_data.played), is_favorite=COALESCE($4,user_item_data.is_favorite), playback_position_ticks=COALESCE($5,user_item_data.playback_position_ticks), play_count=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN user_item_data.play_count+1 ELSE user_item_data.play_count END, last_played_at=CASE WHEN $3=TRUE AND user_item_data.played=FALSE THEN NOW() ELSE user_item_data.last_played_at END, updated_at=NOW()")
-        .bind(user_id).bind(item_id).bind(played).bind(favorite).bind(position_ticks).execute(&mut *tx).await?;
+    sqlx::query(concat!(
+        "INSERT INTO user_item_data(user_id,item_id,played,is_favorite,playback_position_ticks,play_count,last_played_at,rating) ",
+        "VALUES ($1,$2,COALESCE($3,FALSE),COALESCE($4,FALSE),COALESCE($5,0),COALESCE($6,0),$7,$8) ",
+        "ON CONFLICT (user_id,item_id) DO UPDATE SET ",
+        "played=COALESCE($3,user_item_data.played), ",
+        "is_favorite=COALESCE($4,user_item_data.is_favorite), ",
+        "playback_position_ticks=COALESCE($5,user_item_data.playback_position_ticks), ",
+        "play_count=COALESCE($6,user_item_data.play_count), ",
+        "last_played_at=COALESCE($7,user_item_data.last_played_at), ",
+        "rating=COALESCE($8,user_item_data.rating), updated_at=NOW()"
+    ))
+    .bind(user_id)
+    .bind(item_id)
+    .bind(patch.played)
+    .bind(patch.favorite)
+    .bind(patch.position_ticks)
+    .bind(patch.play_count)
+    .bind(patch.last_played_at)
+    .bind(patch.rating)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -2187,7 +2216,7 @@ pub async fn set_item_played(
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     require_active_run(&mut tx, run_id).await?;
-    sqlx::query("INSERT INTO user_item_data(user_id,item_id,played,play_count,playback_position_ticks,last_played_at) VALUES ($1,$2,$3,CASE WHEN $3 THEN 1 ELSE 0 END,0,CASE WHEN $3 THEN COALESCE($4,NOW()) ELSE NULL END) ON CONFLICT (user_id,item_id) DO UPDATE SET played=$3,play_count=CASE WHEN $3 THEN CASE WHEN user_item_data.played THEN user_item_data.play_count ELSE user_item_data.play_count+1 END ELSE 0 END,playback_position_ticks=0,last_played_at=CASE WHEN $3 THEN COALESCE($4,NOW()) ELSE NULL END,updated_at=NOW()")
+    sqlx::query("INSERT INTO user_item_data(user_id,item_id,played,play_count,playback_position_ticks,last_played_at) VALUES ($1,$2,$3,CASE WHEN $3 THEN 1 ELSE 0 END,0,CASE WHEN $3 THEN COALESCE($4,NOW()) ELSE NULL END) ON CONFLICT (user_id,item_id) DO UPDATE SET played=$3,play_count=CASE WHEN $3 THEN CASE WHEN user_item_data.played OR user_item_data.play_count=2147483647 THEN user_item_data.play_count ELSE user_item_data.play_count+1 END ELSE 0 END,playback_position_ticks=0,last_played_at=CASE WHEN $3 THEN COALESCE($4,NOW()) ELSE NULL END,updated_at=NOW()")
         .bind(user_id).bind(item_id).bind(played).bind(date_played).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())

@@ -1,0 +1,2 @@
+ALTER TABLE user_item_data
+    ADD COLUMN rating DOUBLE PRECISION CHECK (rating BETWEEN 0 AND 10);

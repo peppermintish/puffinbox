@@ -502,6 +502,31 @@ def verify_scanner_root_identity(
            f"unchanged-inode statuses: {initial.get('Status')}, {empty_scan.get('Status')}, {restored_scan.get('Status')}; replacement status: completed_with_errors with old row retained")
 
 
+def verify_user_data_edits(client: HttpClient, item_id: str) -> dict:
+    path = f"/UserItems/{urllib.parse.quote(item_id)}/UserData"
+    before = client.json("GET", path)[2]
+    saved = client.json("POST", path, {
+        "Played": False, "PlayCount": 7, "LastPlayedDate": "2024-06-07T10:09:10+02:00", "Likes": True,
+    })[2]
+    require(saved.get("PlayCount") == 7 and saved.get("LastPlayedDate") == "2024-06-07T08:09:10Z"
+            and saved.get("Rating") == 10 and saved.get("Likes") is True,
+            "explicit count, date or like did not persist")
+    require(saved.get("PlaybackPositionTicks") == before.get("PlaybackPositionTicks"),
+            "a partial edit replaced the interrupted video's position")
+    edited = client.json("POST", path, {"PlayCount": 3, "Likes": False, "Rating": 8.5})[2]
+    require(edited.get("PlayCount") == 3 and edited.get("Rating") == 8.5 and edited.get("Likes") is True
+            and edited.get("LastPlayedDate") == saved.get("LastPlayedDate"),
+            "partial count edit or explicit rating precedence differs from the reference")
+    unchanged = client.json("POST", path, {
+        "PlayCount": None, "LastPlayedDate": None, "Rating": None, "Likes": None,
+        "PlayedPercentage": 85, "ItemId": "not-a-selector", "Key": "not-a-selector",
+    })[2]
+    require(unchanged == edited and client.json("GET", path)[2] == edited,
+            "null fields or response-only fields changed stored user data")
+    report("Partial user-data counts, dates, likes, ratings and independent read", True)
+    return {key: edited[key] for key in ("PlayCount", "LastPlayedDate", "Rating", "Likes")}
+
+
 def verify_container_restart(
     item_id: str,
     base_url: str,
@@ -511,6 +536,7 @@ def verify_container_restart(
     expected_position_ticks: int,
     env_file: Path,
     project_name: str,
+    expected_user_data: dict,
 ) -> None:
     file_settings = read_env_file(env_file)
     settings = effective_settings(file_settings, environ={} if project_name != COMPOSE_PROJECT else None)
@@ -584,6 +610,9 @@ def verify_container_restart(
     require(resume.get("PlaybackPositionTicks") == expected_position_ticks,
             f"shutdown did not retain the last committed playback position for play session {active_play_session_id}")
     require(resume.get("Played") is False, "shutdown incorrectly marked the interrupted item as played to completion")
+    require({key: resume.get(key) for key in expected_user_data} == expected_user_data,
+            "explicit count, date or personal rating changed across the container restart")
+    report("Explicit user-data counts, dates and personal rating across container restart", True)
     session_uuid = str(uuid.UUID(active_play_session_id))
     database_env = os.environ.copy()
     database_env["PGPASSWORD"] = settings["POSTGRES_PASSWORD"]
@@ -1603,6 +1632,7 @@ def run(args: argparse.Namespace) -> int:
         True,
         "the 300-second fixture negotiated HLS, served a playlist and segment, and persisted its playback position before restart validation",
     )
+    explicit_user_data = verify_user_data_edits(client, shutdown_item_id)
     if args.skip_container_restart:
         report(
             "Container/runtime restart validation",
@@ -1613,7 +1643,7 @@ def run(args: argparse.Namespace) -> int:
         verify_container_restart(
             shutdown_item_id, base_url, values["PUFFINBOX_ACCEPTANCE_ADMIN_USERNAME"],
             values["PUFFINBOX_ACCEPTANCE_ADMIN_PASSWORD"], active_play_session_id, active_position_ticks,
-            args.env_file, project_name,
+            args.env_file, project_name, explicit_user_data,
         )
         after_restart = HttpClient(base_url)
         login(after_restart, values["PUFFINBOX_ACCEPTANCE_ADMIN_USERNAME"], values["PUFFINBOX_ACCEPTANCE_ADMIN_PASSWORD"])

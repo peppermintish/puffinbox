@@ -24,7 +24,7 @@ The reference's resume settings were `MinResumePct=5`, `MaxResumePct=90` and `Mi
 
 The 20-second comparison includes stops at 0, 1, 5, 10, 17.09, 18, 18.01, 19, 19.75 and 20.021332 seconds; both zero/full duplicate orders; two complete plays; `Failed=true`; `NextMediaType=Audio`; and empty playback IDs. The longer fixtures cover progress and stop at 0, 1, 5, 50, 85, 90, 95 and 100 percent. These are immediate public API reports, not decoder, timing or audible playback tests.
 
-Explicit user-data writes reset `PlayCount` on the reference server. Puffinbox currently treats that field as server calculated, so its comparisons retain the baseline and assess the count increase. That write behavior remains a compatibility gap.
+Explicit user-data writes reset `PlayCount` on the reference server. Puffinbox now accepts explicit counts and last-played dates through its [partial user-data update](jellyfin12-user-data.md). The earlier playback comparisons retained the baseline and assessed count increases; those records were made before explicit count support.
 
 ## Puffinbox scope
 

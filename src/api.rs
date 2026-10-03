@@ -2481,9 +2481,10 @@ pub(crate) struct UserDataDto {
     is_favorite: bool,
     playback_position_ticks: i64,
     last_played_date: Option<DateTime<Utc>>,
+    likes: Option<bool>,
+    rating: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     item_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     played_percentage: Option<f64>,
 }
 
@@ -3148,17 +3149,12 @@ fn user_data_dto(
         is_favorite: data.is_favorite,
         playback_position_ticks: data.playback_position_ticks,
         last_played_date: data.last_played_at,
+        likes: data.rating.map(|rating| rating >= 6.5),
+        rating: data.rating,
         item_id: Some(item_id),
         played_percentage: runtime_ticks
-            .filter(|duration| *duration > 0)
-            .map(|duration| {
-                if data.played {
-                    100.0
-                } else {
-                    ((data.playback_position_ticks as f64 * 100.0) / duration as f64)
-                        .clamp(0.0, 100.0)
-                }
-            }),
+            .filter(|duration| *duration > 0 && data.playback_position_ticks > 0)
+            .map(|duration| (data.playback_position_ticks as f64 * 100.0) / duration as f64),
     }
 }
 
@@ -4062,8 +4058,6 @@ struct UserDataRequest {
         alias = "playbackPositionTicks"
     )]
     playback_position_ticks: Option<i64>,
-    #[serde(default, rename = "PlayedPercentage", alias = "playedPercentage")]
-    played_percentage: Option<f64>,
     #[serde(default, rename = "PlayCount", alias = "playCount")]
     play_count: Option<i32>,
     #[serde(default, rename = "LastPlayedDate", alias = "lastPlayedDate")]
@@ -4071,11 +4065,7 @@ struct UserDataRequest {
     #[serde(default, rename = "Likes", alias = "likes")]
     likes: Option<bool>,
     #[serde(default, rename = "Rating", alias = "rating")]
-    rating: Option<f32>,
-    #[serde(default, rename = "Key", alias = "key")]
-    key: Option<String>,
-    #[serde(default, rename = "ItemId", alias = "itemId")]
-    item_id: Option<Uuid>,
+    rating: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -4129,47 +4119,39 @@ async fn update_user_item_data(
     if body
         .playback_position_ticks
         .is_some_and(|ticks| !(0..=3_155_760_000_000_000).contains(&ticks))
-        || body.played_percentage.is_some_and(|percentage| {
-            !percentage.is_finite() || !(0.0..=100.0).contains(&percentage)
-        })
     {
         return Err(ApiError::BadRequest(
-            "Playback position or played percentage is outside the supported range".to_owned(),
+            "Playback position is outside the supported range".to_owned(),
         ));
     }
-    if body.item_id.is_some_and(|requested| requested != item_id) {
+    if body.play_count.is_some_and(|count| count < 0) {
         return Err(ApiError::BadRequest(
-            "ItemId in user data does not match the route item".to_owned(),
+            "PlayCount must be nonnegative".to_owned(),
         ));
     }
-    let _server_calculated_fields = (
-        body.play_count,
-        body.last_played_date,
-        body.likes,
-        body.rating,
-        body.key,
-    );
-    if body.playback_position_ticks.is_none()
-        && body.played_percentage.is_some()
-        && !item.runtime_ticks.is_some_and(|duration| duration > 0)
+    if body
+        .rating
+        .is_some_and(|rating| !rating.is_finite() || !(0.0..=10.0).contains(&rating))
     {
         return Err(ApiError::BadRequest(
-            "PlayedPercentage requires a known item runtime".to_owned(),
+            "Rating must be between 0 and 10".to_owned(),
         ));
     }
-    let position_ticks = body.playback_position_ticks.or_else(|| {
-        body.played_percentage
-            .zip(item.runtime_ticks.filter(|duration| *duration > 0))
-            .map(|(percentage, duration)| ((duration as f64 * percentage / 100.0).round()) as i64)
-    });
     db::upsert_user_item_data(
         &state.db,
         state.run_id,
         user.id,
         item_id,
-        body.played,
-        body.is_favorite,
-        position_ticks,
+        db::UserItemDataPatch {
+            played: body.played,
+            favorite: body.is_favorite,
+            position_ticks: body.playback_position_ticks,
+            play_count: body.play_count,
+            last_played_at: body.last_played_date,
+            rating: body
+                .rating
+                .or_else(|| body.likes.map(|likes| if likes { 10.0 } else { 1.0 })),
+        },
     )
     .await?;
     state.user_events.publish(user.id, item_id);

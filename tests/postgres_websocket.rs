@@ -198,11 +198,16 @@ async fn sockets_publish_committed_own_user_data_and_enforce_live_authorization(
         &token.token,
         "POST",
         &data_path,
-        Some(json!({"PlaybackPositionTicks":1200000000,"Played":false})),
+        Some(json!({"PlaybackPositionTicks":1200000000,"Played":false,"PlayCount":42,"LastPlayedDate":"2024-06-07T08:09:10Z","Rating":8.5})),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    expect_data(&mut own, user_id, response.json().await.unwrap()).await;
+    let committed: Value = response.json().await.unwrap();
+    assert_eq!(committed["PlayCount"], 42);
+    assert_eq!(committed["LastPlayedDate"], "2024-06-07T08:09:10Z");
+    assert_eq!(committed["Rating"], 8.5);
+    assert_eq!(committed["Likes"], true);
+    expect_data(&mut own, user_id, committed).await;
     quiet(&mut other).await;
     for (method, path, field, expected) in [
         (

@@ -101,6 +101,7 @@ jobs:
           cargo test --locked --test postgres_session_capabilities -- --ignored --nocapture
           cargo test --locked --test postgres_websocket -- --ignored --nocapture
           cargo test --locked --test postgres_user_preferences -- --ignored --nocapture
+          cargo test --locked --test postgres_user_data -- --ignored --nocapture
           cargo test --locked --test postgres_catalog_navigation -- --ignored --nocapture
           cargo test --locked --test postgres_catalog_filters -- --ignored --nocapture
           cargo test --locked --test postgres_studios -- --ignored --nocapture
