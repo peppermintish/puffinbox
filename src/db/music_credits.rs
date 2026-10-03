@@ -7,15 +7,25 @@ use crate::{auth::UserRecord, library::ItemQuery};
 
 use super::ItemNavigationLinks;
 
-// Only explicit, bounded local-NFO names supply credits. Resolve them to
+// Explicit, bounded local-NFO and current embedded audio names supply credits. Resolve them to
 // visible artists in the same library. Folder relationships remain the
 // fallback when no names were supplied; hidden explicit names never fall
 // back to another artist. No synthetic artist or album is invented here.
 pub(super) const CREDIT_CTES: &str = r#",
 music_names AS (
     SELECT i.id AS item_id, role.key AS role, btrim(n.value #>> '{}') AS name
-    FROM visible_catalog_nodes i JOIN item_metadata m ON m.item_id=i.id AND m.provider_key='local-nfo'
+    FROM visible_catalog_nodes i
     CROSS JOIN (VALUES ('artists'),('albumArtists')) role(key)
+    JOIN LATERAL (
+        SELECT metadata_json FROM item_metadata m WHERE m.item_id=i.id
+        AND (m.provider_key='local-nfo' OR (m.provider_key='embedded-audio' AND
+            i.item_type='Audio' AND i.library_id=m.source_library_id AND
+            i.size_bytes=m.source_size_bytes AND i.date_modified=m.source_date_modified AND
+            i.path_hash=m.source_path_hash))
+        AND jsonb_array_length(CASE WHEN jsonb_typeof(m.metadata_json->role.key)='array'
+            THEN m.metadata_json->role.key ELSE '[]'::jsonb END)>0
+        ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 ELSE 1 END LIMIT 1
+    ) m ON TRUE
     CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(m.metadata_json->role.key)='array'
         THEN m.metadata_json->role.key ELSE '[]'::jsonb END) WITH ORDINALITY n(value, ordinal)
     WHERE i.item_type IN ('Audio','MusicAlbum') AND n.ordinal<=32 AND jsonb_typeof(n.value)='string'
@@ -111,7 +121,7 @@ pub(super) async fn enrich_navigation(
         return Ok(());
     }
     let mut builder = QueryBuilder::<Postgres>::new(
-        "WITH visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type,i.runtime_ticks FROM items i JOIN libraries l ON l.id=i.library_id",
+        "WITH visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type,i.runtime_ticks,i.size_bytes,i.date_modified,i.path_hash FROM items i JOIN libraries l ON l.id=i.library_id",
     );
     super::push_item_conditions(&mut builder, user, &ItemQuery::default(), None, true);
     builder

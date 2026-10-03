@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from acceptance_socket import SocketClient
+import embedded_audio_fixtures
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1328,6 +1329,8 @@ def run(args: argparse.Namespace) -> int:
     audio_library_id, audio_item_id = verify_universal_audio(
         client, fixture_root, values.get("PUFFINBOX_ACCEPTANCE_MUSIC_ROOT", "/media/Music"), args.scan_timeout,
     )
+    embedded_audio_snapshot = embedded_audio_fixtures.observe(client, fixture_root, audio_library_id, args.scan_timeout)
+    report("Automatic embedded audio metadata, bounded fields and unmatched credit isolation", True, embedded_audio_snapshot["scope"])
     if args.require_transcode:
         audio_ffprobe = values.get("PUFFINBOX_ACCEPTANCE_FFPROBE_PATH") or shutil.which("ffprobe")
         require(bool(audio_ffprobe), "ffprobe is required to inspect converted audio")
@@ -1612,6 +1615,14 @@ def run(args: argparse.Namespace) -> int:
             values["PUFFINBOX_ACCEPTANCE_ADMIN_PASSWORD"], active_play_session_id, active_position_ticks,
             args.env_file, project_name,
         )
+        after_restart = HttpClient(base_url)
+        login(after_restart, values["PUFFINBOX_ACCEPTANCE_ADMIN_USERNAME"], values["PUFFINBOX_ACCEPTANCE_ADMIN_PASSWORD"])
+        try:
+            require(embedded_audio_fixtures.observe(after_restart, fixture_root, audio_library_id, args.scan_timeout) == embedded_audio_snapshot,
+                    "Embedded metadata or original tagged fixtures changed across the container restart.")
+        finally:
+            after_restart.json("POST", "/Sessions/Logout", expected=(204,))
+        report("Embedded audio metadata and fixture identity across container restart", True)
     return 0
 
 

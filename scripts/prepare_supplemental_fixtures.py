@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
+import embedded_audio_fixtures
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +119,8 @@ def main() -> int:
             "-metadata", "genre=Test",
             str(audio_fixture),
         ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    embedded_audio_fixtures.prepare(ffmpeg, music)
 
     book_fixture = books / "Puffinbox Original Acceptance Book.epub"
     if not os.path.lexists(book_fixture):

@@ -2290,7 +2290,7 @@ fn push_item_source(
         if tree {
             builder.push(", ");
         }
-        builder.push("visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type FROM items i JOIN libraries l ON l.id=i.library_id");
+        builder.push("visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type,i.size_bytes,i.date_modified,i.path_hash FROM items i JOIN libraries l ON l.id=i.library_id");
         push_item_conditions(builder, user, &ItemQuery::default(), None, true);
         builder.push(" AND i.item_type IN ('Audio','MusicArtist','MusicAlbum','Season')) ");
         if !query.artist_ids.is_empty()
@@ -2369,14 +2369,18 @@ fn push_item_conditions(
         .map(str::trim)
         .filter(|v| !v.is_empty())
     {
+        let title = crate::metadata::catalog_sql::title("candidate.item_id");
         builder
-            .push(" AND i.search_document @@ plainto_tsquery('simple', ")
+            .push(" AND (i.search_document @@ plainto_tsquery('simple', ")
             .push_bind(search.to_owned())
-            .push(") ");
+            .push(") OR (i.item_type='Audio' AND i.id IN (SELECT candidate.item_id FROM item_metadata candidate WHERE candidate.search_document @@ plainto_tsquery('simple', ")
+            .push_bind(search.to_owned())
+            .push(format!(") AND candidate.title={title}))) "));
     }
     if let Some(exact_name) = query.exact_name.as_deref() {
+        let title = crate::metadata::catalog_sql::title("i.id");
         builder
-            .push(" AND lower(COALESCE((SELECT m.title FROM item_metadata m WHERE m.item_id=i.id AND m.title IS NOT NULL AND (m.provider_key IN ('local-nfo','tvmaze') OR (m.provider_key LIKE 'plugin:%' AND EXISTS (SELECT 1 FROM trusted_plugins p WHERE p.plugin_id=substring(m.provider_key FROM 8) AND p.enabled=TRUE AND p.status='enabled' AND m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND m.metadata_json->>'moduleSha256'=p.binary_sha256))) ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'tvmaze' THEN 2 ELSE 1 END,m.provider_key LIMIT 1),i.name))=lower(")
+            .push(format!(" AND lower(COALESCE({title},i.name))=lower("))
             .push_bind(exact_name.to_owned())
             .push(") ");
     }
@@ -2574,14 +2578,26 @@ async fn run_item_page(
                 "premieredate" => crate::metadata::catalog_sql::premiere_date("i.id"),
                 "productionyear" => crate::metadata::catalog_sql::year("i.id"),
                 "album" => {
-                    "CASE WHEN i.item_type='MusicAlbum' THEN i.name WHEN i.item_type='Audio' THEN \
+                    let embedded = crate::metadata::catalog_sql::album("i.id");
+                    format!(
+                        "CASE WHEN i.item_type='MusicAlbum' THEN i.name WHEN i.item_type='Audio' THEN COALESCE({embedded}, \
                     (SELECT album.name FROM visible_catalog_nodes album WHERE album.id=i.parent_id \
-                    AND album.library_id=i.library_id AND album.item_type='MusicAlbum') END"
-                        .to_owned()
+                    AND album.library_id=i.library_id AND album.item_type='MusicAlbum')) END"
+                    )
                 }
                 "indexnumber" => crate::metadata::catalog_sql::index_number("i", false),
                 "parentindexnumber" => crate::metadata::catalog_sql::index_number("i", true),
-                "name" => "i.name".to_owned(),
+                "name" | "sortname" => {
+                    let title = crate::metadata::catalog_sql::title("i.id");
+                    let fallback = if field.trim().eq_ignore_ascii_case("Name") {
+                        "i.name"
+                    } else {
+                        "i.sort_name"
+                    };
+                    format!(
+                        "CASE WHEN i.item_type='Audio' THEN COALESCE(lower({title}),{fallback}) ELSE {fallback} END"
+                    )
+                }
                 _ => "i.sort_name".to_owned(),
             };
             builder

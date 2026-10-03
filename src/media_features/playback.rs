@@ -1889,6 +1889,7 @@ mod tests {
             duration_seconds: Some(1.0),
             bit_rate: Some(256_000),
             catalog_identity_matches: true,
+            embedded_audio: Default::default(),
             streams: vec![ProbedStream {
                 index: 0,
                 kind: "audio".to_owned(),
@@ -2016,6 +2017,7 @@ mod tests {
             duration_seconds: Some(20.0),
             bit_rate: Some(1_000_000),
             catalog_identity_matches: true,
+            embedded_audio: Default::default(),
             streams: vec![
                 ProbedStream {
                     index: 0,
@@ -2339,6 +2341,7 @@ mod tests {
             duration_seconds: Some(1.0),
             bit_rate: Some(500_000),
             catalog_identity_matches: true,
+            embedded_audio: Default::default(),
             streams: vec![ProbedStream {
                 index: 0,
                 kind: "video".to_owned(),
@@ -2385,6 +2388,7 @@ mod tests {
             duration_seconds: Some(20.0),
             bit_rate: None,
             catalog_identity_matches: true,
+            embedded_audio: Default::default(),
             streams: vec![
                 ProbedStream {
                     index: 0,
@@ -2445,6 +2449,7 @@ mod tests {
             duration_seconds: Some(1.0),
             bit_rate: Some(500_000),
             catalog_identity_matches: true,
+            embedded_audio: Default::default(),
             streams: vec![ProbedStream {
                 index: 0,
                 kind: "video".to_owned(),
@@ -2501,6 +2506,7 @@ mod tests {
             duration_seconds: Some(1.0),
             bit_rate: Some(500_000),
             catalog_identity_matches: true,
+            embedded_audio: Default::default(),
             streams: vec![
                 ProbedStream {
                     index: 0,
@@ -2866,6 +2872,7 @@ mod tests {
             duration_seconds: Some(1.0),
             bit_rate: Some(128_000),
             catalog_identity_matches: true,
+            embedded_audio: Default::default(),
             streams: Vec::new(),
         };
         let facts = PlaybackProfileFacts::for_negotiation(

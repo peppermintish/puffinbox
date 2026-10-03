@@ -1,15 +1,36 @@
 // These expressions use the same field precedence as item display metadata.
 // References and fields are internal SQL fragments, never request values.
+pub(crate) const PROVIDER_ORDER: &str = "CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'embedded-audio' THEN 1 WHEN 'tvmaze' THEN 3 ELSE 2 END,m.provider_key";
+
+pub(crate) const EMBEDDED_SOURCE_CURRENT: &str = "m.provider_key='embedded-audio' AND EXISTS (SELECT 1 FROM items source WHERE source.id=m.item_id AND source.item_type='Audio' AND source.library_id=m.source_library_id AND source.path_hash=m.source_path_hash AND source.size_bytes=m.source_size_bytes AND source.date_modified=m.source_date_modified)";
+
+pub(crate) fn valid_provider() -> String {
+    format!(
+        "(m.provider_key IN ('local-nfo','tvmaze') OR ({EMBEDDED_SOURCE_CURRENT}) OR \
+         (m.provider_key LIKE 'plugin:%' AND EXISTS (SELECT 1 FROM trusted_plugins p \
+         WHERE p.plugin_id=substring(m.provider_key FROM 8) AND p.enabled=TRUE AND p.status='enabled' AND \
+         m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND \
+         m.metadata_json->>'moduleSha256'=p.binary_sha256)))"
+    )
+}
+
 pub(crate) fn preferred(item: &str, field: &str, present: &str) -> String {
+    let valid = valid_provider();
     format!(
         "(SELECT {field} FROM item_metadata m WHERE m.item_id={item} AND {present} AND \
-         (m.provider_key IN ('local-nfo','tvmaze') OR (m.provider_key LIKE 'plugin:%' AND \
-         EXISTS (SELECT 1 FROM trusted_plugins p WHERE p.plugin_id=substring(m.provider_key FROM 8) \
-         AND p.enabled=TRUE AND p.status='enabled' AND \
-         m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND \
-         m.metadata_json->>'moduleSha256'=p.binary_sha256))) \
-         ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'tvmaze' THEN 2 ELSE 1 END, \
-         m.provider_key LIMIT 1)"
+         {valid} ORDER BY {PROVIDER_ORDER} LIMIT 1)"
+    )
+}
+
+pub(crate) fn title(item: &str) -> String {
+    let valid = valid_provider();
+    // A filename stem is only a last resort. It must not suppress an actual
+    // title supplied by any otherwise valid metadata provider.
+    format!(
+        "(SELECT m.title FROM item_metadata m WHERE m.item_id={item} AND m.title IS NOT NULL AND \
+         {valid} ORDER BY CASE WHEN m.provider_key='embedded-audio' AND \
+         m.metadata_json->'titleIsFileFallback'='true'::jsonb THEN 1 ELSE 0 END, \
+         {PROVIDER_ORDER} LIMIT 1)"
     )
 }
 
@@ -81,12 +102,16 @@ fn checked_index(value: &str, positive: bool) -> String {
 
 pub(crate) fn music_number(item: &str, disc: bool) -> String {
     let key = if disc { "discNumber" } else { "trackNumber" };
-    checked_index(
-        &format!(
-            "(SELECT m.metadata_json->>'{key}' FROM item_metadata m \
-        WHERE m.item_id={item} AND m.provider_key='local-nfo')"
-        ),
-        true,
+    let field = format!("m.metadata_json->>'{key}'");
+    let checked = checked_index(&field, true);
+    preferred(item, &checked, &format!("{checked} IS NOT NULL"))
+}
+
+pub(crate) fn album(item: &str) -> String {
+    preferred(
+        item,
+        "m.metadata_json->>'album'",
+        "jsonb_typeof(m.metadata_json->'album')='string' AND octet_length(m.metadata_json->>'album') BETWEEN 1 AND 512",
     )
 }
 

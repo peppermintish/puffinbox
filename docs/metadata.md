@@ -6,7 +6,8 @@ state in PostgreSQL; ordinary item responses read a bounded page of those
 results in one batch query. `GET /Items`, `GET /Items/{itemId}`, and search
 hints expose the supported display fields directly on each item.
 
-For each display field, Puffinbox prefers local NFO data, then enabled plugins
+For each display field, Puffinbox prefers local NFO data, then current embedded
+audio tags, then enabled plugins
 whose installed module and manifest hashes still match, then TVMaze data.
 Metadata can override an item's displayed name and overview. Genre, premiere
 date, production year, tags, official content label, and community score are included when present.
@@ -40,6 +41,45 @@ If a poster is unreadable but its NFO is valid, the metadata and policy label
 are still saved while the prior artwork is retained.
 If the NFO is missing while a poster cannot be safely read, stale NFO display
 fields and policy labels are cleared while previously stored artwork is kept.
+
+## Embedded audio tags
+
+A completed music library scan queues an `embedded-audio` refresh. An
+administrator can also request this provider for a library or item through
+the metadata refresh route. Jobs read audio items in bounded UUID pages,
+persist their cursor and retry temporary probe failures. A scan that overlaps
+an active job requests another full pass, including new tracks before the
+previous cursor. Startup recovery preserves the queued work.
+
+The external FFprobe process uses the same registered roots, forced concrete
+demuxer, inherited input descriptor, sandbox, timeout and output limits as
+playback probing. File metadata is checked before and after probing and again
+against the catalog in the write transaction. Stored tags carry their source
+library, path hash, size and modification time. Display, filters, search,
+sorting and credits discard a row when a rescan changes that snapshot.
+Size and modification time do not constitute a content hash.
+
+Supported fields are title, album, artist, album artist, date/year, genre,
+track and disc numbers. A date can be an ISO calendar date or a four-digit
+year; a year becomes January 1. Positive indexes accept a number or a
+`number/total` pair. Text is limited to 512 bytes, control characters are
+rejected, and semicolons remain part of the stored string. Missing album
+artist defaults to the artist. Format tags precede tags from the default
+audio stream. Comments, content ratings and embedded images are not imported.
+Embedded data never supplies parental policy.
+
+Imported titles participate in audio title sorting and search. Album labels
+and track/disc ordering use the same fields as item display. Artist credits
+resolve only to existing visible artist entries in the same library; unknown
+or hidden explicit credits do not fall back to an unrelated folder artist.
+When no embedded title is available, the refresh stores a bounded filename
+stem without its extension. This fallback is selected only if no valid
+provider supplies an actual title; it does not lower the priority of other
+embedded fields. Display, title ordering and metadata-title search use the
+same selection rule.
+Tag-based artist and album creation remains incomplete. The tested reference
+and remaining differences are in
+[jellyfin12-embedded-audio.md](jellyfin12-embedded-audio.md).
 
 ## Catalog filters
 

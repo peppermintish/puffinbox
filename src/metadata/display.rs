@@ -25,6 +25,7 @@ pub struct DisplayMetadata {
     pub production_year: Option<i32>,
     pub track_number: Option<i32>,
     pub disc_number: Option<i32>,
+    pub album: Option<String>,
     /// The original provider label. This is not a numeric policy threshold.
     pub official_rating: Option<String>,
     /// TVMaze's community score, kept separate from official/classification labels.
@@ -59,7 +60,7 @@ pub struct ProviderMetadata {
 }
 
 /// Load one bounded item page with a single small-projection query per 500 IDs.
-/// Precedence is local NFO, then enabled local plugin output, then opt-in
+/// Precedence is local NFO, then current embedded audio tags, then enabled local plugin output, then opt-in
 /// TVMaze data. Policy values are intentionally absent: core authorization
 /// reads only its correlated local-NFO/US-MPAA-v1 row.
 pub async fn load_display_metadata(
@@ -81,11 +82,11 @@ pub async fn load_display_metadata(
         let projection = format!(
             "SELECT requested.item_id, {} AS title, {} AS overview, {} AS premiere_date, \
              {} AS genres, {} AS official_rating, {} AS tags, {} AS production_year, \
-             {} AS track_number, {} AS disc_number, {studios} AS studios, \
+             {} AS track_number, {} AS disc_number, {} AS album, {studios} AS studios, \
              (SELECT m.metadata_json->>'communityScore' FROM item_metadata m \
               WHERE m.item_id=requested.item_id AND m.provider_key='tvmaze') AS community_score, \
              {} AS primary_image_tag FROM unnest($1::uuid[]) AS requested(item_id)",
-            catalog_sql::preferred("requested.item_id", "m.title", "m.title IS NOT NULL"),
+            catalog_sql::title("requested.item_id"),
             catalog_sql::preferred("requested.item_id", "m.overview", "m.overview IS NOT NULL"),
             catalog_sql::preferred(
                 "requested.item_id",
@@ -98,6 +99,7 @@ pub async fn load_display_metadata(
             catalog_sql::year("requested.item_id"),
             catalog_sql::music_number("requested.item_id", false),
             catalog_sql::music_number("requested.item_id", true),
+            catalog_sql::album("requested.item_id"),
             catalog_sql::preferred(
                 "requested.item_id",
                 "m.artwork_sha256",
@@ -115,6 +117,7 @@ pub async fn load_display_metadata(
                 production_year: row.try_get("production_year")?,
                 track_number: row.try_get("track_number")?,
                 disc_number: row.try_get("disc_number")?,
+                album: row.try_get("album")?,
                 studios: serde_json::from_value(row.try_get("studios")?)
                     .map_err(|_| ApiError::Unavailable)?,
                 ..DisplayMetadata::default()
@@ -154,7 +157,12 @@ pub(super) async fn load_provider_details(
     pool: &PgPool,
     item_id: Uuid,
 ) -> Result<Vec<ProviderMetadata>, ApiError> {
-    let rows = sqlx::query("SELECT m.provider_key,m.external_id,m.title,m.overview,m.premiere_date,m.genres,m.content_rating,m.metadata_json,m.attribution_name,m.attribution_url,m.attribution_license,m.artwork_size FROM item_metadata m WHERE m.item_id=$1 AND (m.provider_key IN ('local-nfo','tvmaze') OR (m.provider_key LIKE 'plugin:%' AND EXISTS (SELECT 1 FROM trusted_plugins p WHERE p.plugin_id=substring(m.provider_key FROM 8) AND p.enabled=TRUE AND p.status='enabled' AND m.metadata_json->>'manifestSha256'=p.manifest_sha256 AND m.metadata_json->>'moduleSha256'=p.binary_sha256))) ORDER BY CASE m.provider_key WHEN 'local-nfo' THEN 0 WHEN 'tvmaze' THEN 2 ELSE 1 END,m.provider_key LIMIT $2")
+    let query = format!(
+        "SELECT m.provider_key,m.external_id,m.title,m.overview,m.premiere_date,m.genres,m.content_rating,m.metadata_json,m.attribution_name,m.attribution_url,m.attribution_license,m.artwork_size FROM item_metadata m WHERE m.item_id=$1 AND {} ORDER BY {} LIMIT $2",
+        catalog_sql::valid_provider(),
+        catalog_sql::PROVIDER_ORDER
+    );
+    let rows = sqlx::query(&query)
         .bind(item_id)
         .bind((MAX_DETAIL_PROVIDERS + 1) as i64)
         .fetch_all(pool)

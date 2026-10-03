@@ -2664,7 +2664,10 @@ fn item_dto(
             .then(|| metadata.and_then(|metadata| metadata.disc_number))
             .flatten()
             .or_else(|| navigation.and_then(|links| links.parent_index_number)),
-        album: navigation.and_then(|links| links.album.clone()),
+        album: (item.item_type == "Audio")
+            .then(|| metadata.and_then(|metadata| metadata.album.clone()))
+            .flatten()
+            .or_else(|| navigation.and_then(|links| links.album.clone())),
         album_id: navigation.and_then(|links| links.album_id),
         artist_items,
         artists,
@@ -4513,6 +4516,7 @@ mod item_dto_tests {
             production_year: Some(2022),
             track_number: None,
             disc_number: None,
+            album: None,
             official_rating: Some("PG-13".to_owned()),
             community_score: Some(8.2),
             artwork_url: Some(format!("/Items/{}/Images/Primary", item.id)),

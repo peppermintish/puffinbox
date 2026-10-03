@@ -29,6 +29,7 @@ pub(super) struct ProbeInfo {
     pub duration_seconds: Option<f64>,
     pub bit_rate: Option<u64>,
     pub streams: Vec<ProbedStream>,
+    pub embedded_audio: crate::metadata::EmbeddedAudioMetadata,
     /// True only when the descriptor opened for this probe has the size and
     /// modification time recorded by the catalog.
     pub catalog_identity_matches: bool,
@@ -156,6 +157,7 @@ struct RawFormat {
     format_name: Option<String>,
     duration: Option<String>,
     bit_rate: Option<String>,
+    tags: Option<std::collections::HashMap<String, String>>,
 }
 
 /// Probe a file only when its extension maps to a concrete, non-playlist
@@ -185,13 +187,18 @@ pub(super) async fn probe(
     let opened = tokio::task::spawn_blocking(move || {
         let _filesystem_permit = filesystem_permit;
         let opened = secure_path::open_in_blocking(&media).ok()?;
+        let verifier = opened.file.try_clone().ok()?;
+        let before = verifier.metadata().ok()?;
+        if before.len() != opened.size || before.modified().ok() != opened.modified {
+            return None;
+        }
         let size = i64::try_from(opened.size).ok();
         let modified = opened.modified_utc;
-        Some((opened, size, modified, permit))
+        Some((opened, size, modified, permit, verifier, before))
     })
     .await
     .map_err(|_| ApiError::Unavailable)?;
-    let Some((opened, size, modified, permit)) = opened else {
+    let Some((opened, size, modified, permit, verifier, before)) = opened else {
         return Ok(None);
     };
     let result = run_ffprobe(
@@ -203,6 +210,18 @@ pub(super) async fn probe(
         permit,
     )
     .await?;
+    let filesystem_permit = secure_path::filesystem_permit()?;
+    let unchanged = tokio::task::spawn_blocking(move || {
+        let _filesystem_permit = filesystem_permit;
+        verifier
+            .metadata()
+            .is_ok_and(|after| same_file_snapshot(&before, &after))
+    })
+    .await
+    .map_err(|_| ApiError::Unavailable)?;
+    if !unchanged {
+        return Ok(None);
+    }
     if let Some(info) = result.as_ref()
         && info.catalog_identity_matches
         && let Some(ticks) = info.duration_seconds.and_then(duration_to_ticks)
@@ -210,6 +229,17 @@ pub(super) async fn probe(
         db::set_item_runtime_ticks(&state.db, state.run_id, item_id, size, modified, ticks).await?;
     }
     Ok(result)
+}
+
+fn same_file_snapshot(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.len() == after.len()
+        && before.mtime() == after.mtime()
+        && before.mtime_nsec() == after.mtime_nsec()
+        && before.ctime() == after.ctime()
+        && before.ctime_nsec() == after.ctime_nsec()
 }
 
 async fn run_ffprobe(
@@ -433,6 +463,26 @@ fn parse_output(output: &[u8], extension: &str) -> Option<ProbeInfo> {
     if raw.streams.len() > MAX_STREAMS {
         return None;
     }
+    let audio_tags = raw
+        .streams
+        .iter()
+        .find(|stream| {
+            stream.codec_type.as_deref() == Some("audio")
+                && stream
+                    .disposition
+                    .as_ref()
+                    .is_some_and(|flags| flags.default == Some(1))
+        })
+        .or_else(|| {
+            raw.streams
+                .iter()
+                .find(|stream| stream.codec_type.as_deref() == Some("audio"))
+        })
+        .and_then(|stream| stream.tags.as_ref());
+    let embedded_audio = crate::metadata::EmbeddedAudioMetadata::from_tags(
+        raw.format.as_ref().and_then(|format| format.tags.as_ref()),
+        audio_tags,
+    );
     let mut streams = Vec::with_capacity(raw.streams.len());
     for stream in raw.streams {
         let video_range_type = explicit_video_range(&stream);
@@ -502,6 +552,7 @@ fn parse_output(output: &[u8], extension: &str) -> Option<ProbeInfo> {
         duration_seconds,
         bit_rate,
         streams,
+        embedded_audio,
         catalog_identity_matches: false,
     })
 }
@@ -562,6 +613,35 @@ mod tests {
         let parsed = parse_output(br#"{"streams":[{"index":0,"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":1}},{"index":1,"codec_type":"video","codec_name":"h264","width":640,"height":360,"disposition":{"attached_pic":0}}],"format":{"format_name":"mov,mp4"}}"#, "m4a").unwrap();
         assert_eq!(parsed.streams[0].kind, "embedded_image");
         assert_eq!(parsed.streams[1].kind, "video");
+    }
+
+    #[test]
+    fn embedded_tags_use_the_default_audio_stream_and_ignore_picture_tags() {
+        let parsed = parse_output(br#"{"streams":[{"index":0,"codec_type":"video","tags":{"artist":"Picture credit"},"disposition":{"attached_pic":1}},{"index":1,"codec_type":"audio","tags":{"artist":"First audio"}},{"index":2,"codec_type":"audio","tags":{"artist":"Default audio"},"disposition":{"default":1}}],"format":{"format_name":"flac","tags":{"title":"Container title"}}}"#, "flac").unwrap();
+        assert_eq!(
+            parsed.embedded_audio.title.as_deref(),
+            Some("Container title")
+        );
+        assert_eq!(parsed.embedded_audio.artists, ["Default audio"]);
+    }
+
+    #[test]
+    fn a_file_modified_during_probing_loses_its_snapshot() {
+        let path =
+            std::env::temp_dir().join(format!("puffinbox-probe-snapshot-{}", uuid::Uuid::new_v4()));
+        fs::write(&path, b"before").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let before = file.metadata().unwrap();
+        assert!(super::same_file_snapshot(
+            &before,
+            &file.metadata().unwrap()
+        ));
+        fs::write(&path, b"replacement bytes").unwrap();
+        assert!(!super::same_file_snapshot(
+            &before,
+            &file.metadata().unwrap()
+        ));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

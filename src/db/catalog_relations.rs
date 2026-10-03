@@ -21,7 +21,7 @@ pub(crate) async fn similar_items(
     let mut builder = QueryBuilder::<Postgres>::new(format!(
         "WITH visible_catalog_nodes AS (SELECT i.id,i.library_id,i.parent_id,i.name,i.sort_name,\
          i.item_type,i.path,i.container,i.size_bytes,i.runtime_ticks,i.date_added,\
-         i.date_modified,{rating} AS rating,i.overview,i.metadata_json,{genres} AS genres \
+         i.date_modified,i.path_hash,{rating} AS rating,i.overview,i.metadata_json,{genres} AS genres \
          FROM items i JOIN libraries l ON l.id=i.library_id"
     ));
     super::push_item_conditions(&mut builder, user, &ItemQuery::default(), None, true);

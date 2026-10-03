@@ -1,4 +1,5 @@
 mod display;
+mod embedded_audio;
 mod nfo;
 mod tvmaze;
 mod worker;
@@ -16,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
+
+pub(crate) use embedded_audio::EmbeddedAudioMetadata;
 
 use crate::{
     auth::{AdminUser, CurrentUser, MediaUser, UserRecord},
@@ -202,7 +205,7 @@ enum ScopeInput {
 }
 
 fn valid_provider_key(value: &str) -> bool {
-    if matches!(value, "local-nfo" | "tvmaze") {
+    if matches!(value, "local-nfo" | "embedded-audio" | "tvmaze") {
         return true;
     }
     value

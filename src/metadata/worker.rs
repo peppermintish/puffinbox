@@ -1,6 +1,10 @@
-use std::{path::PathBuf, sync::atomic::Ordering, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+    time::Duration,
+};
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Row, Transaction, types::Json};
 use uuid::Uuid;
@@ -169,23 +173,29 @@ async fn scope_upper_bound(
     tx: &mut Transaction<'_, Postgres>,
     job: &Job,
 ) -> Result<Option<Uuid>, sqlx::Error> {
-    let filter_series = job.provider_key == "tvmaze";
-    match (job.scope_kind.as_str(), job.scope_library_id, job.scope_item_id) {
-        ("library", Some(library_id), None) if filter_series => {
-            sqlx::query_scalar("SELECT id FROM items WHERE library_id=$1 AND item_type='Series' ORDER BY id DESC LIMIT 1")
-                .bind(library_id)
-                .fetch_optional(&mut **tx)
-                .await
-        }
+    let item_type = provider_item_type(&job.provider_key);
+    match (
+        job.scope_kind.as_str(),
+        job.scope_library_id,
+        job.scope_item_id,
+    ) {
+        ("library", Some(library_id), None) if item_type.is_some() => sqlx::query_scalar(
+            "SELECT id FROM items WHERE library_id=$1 AND item_type=$2 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(library_id)
+        .bind(item_type)
+        .fetch_optional(&mut **tx)
+        .await,
         ("library", Some(library_id), None) => {
             sqlx::query_scalar("SELECT id FROM items WHERE library_id=$1 ORDER BY id DESC LIMIT 1")
                 .bind(library_id)
                 .fetch_optional(&mut **tx)
                 .await
         }
-        ("item", None, Some(item_id)) if filter_series => {
-            sqlx::query_scalar("SELECT id FROM items WHERE id=$1 AND item_type='Series'")
+        ("item", None, Some(item_id)) if item_type.is_some() => {
+            sqlx::query_scalar("SELECT id FROM items WHERE id=$1 AND item_type=$2")
                 .bind(item_id)
+                .bind(item_type)
                 .fetch_optional(&mut **tx)
                 .await
         }
@@ -196,6 +206,14 @@ async fn scope_upper_bound(
                 .await
         }
         _ => Ok(None),
+    }
+}
+
+fn provider_item_type(provider: &str) -> Option<&'static str> {
+    match provider {
+        "tvmaze" => Some("Series"),
+        "embedded-audio" => Some("Audio"),
+        _ => None,
     }
 }
 
@@ -241,19 +259,20 @@ async fn load_batch(
     upper: Uuid,
 ) -> Result<Vec<WorkItem>, sqlx::Error> {
     let limit = i64::from(job.batch_limit).clamp(1, MAX_BATCH);
+    let item_type = provider_item_type(&job.provider_key);
     let rows = match (job.scope_kind.as_str(), job.scope_library_id, job.scope_item_id) {
-        ("library", Some(library_id), None) if job.provider_key == "tvmaze" => {
-            sqlx::query("SELECT id,name,item_type,path,overview FROM items WHERE library_id=$1 AND id<=$2 AND ($3::uuid IS NULL OR id>$3) AND item_type='Series' ORDER BY id LIMIT $4")
-                .bind(library_id).bind(upper).bind(job.cursor_item_id).bind(limit).fetch_all(&state.db).await?
+        ("library", Some(library_id), None) if item_type.is_some() => {
+            sqlx::query("SELECT id,name,item_type,path,overview FROM items WHERE library_id=$1 AND id<=$2 AND ($3::uuid IS NULL OR id>$3) AND item_type=$5 ORDER BY id LIMIT $4")
+                .bind(library_id).bind(upper).bind(job.cursor_item_id).bind(limit).bind(item_type).fetch_all(&state.db).await?
         }
         ("library", Some(library_id), None) => {
             sqlx::query("SELECT id,name,item_type,path,overview FROM items WHERE library_id=$1 AND id<=$2 AND ($3::uuid IS NULL OR id>$3) ORDER BY id LIMIT $4")
                 .bind(library_id).bind(upper).bind(job.cursor_item_id).bind(limit).fetch_all(&state.db).await?
         }
-        ("item", None, Some(item_id)) if job.provider_key == "tvmaze" => {
+        ("item", None, Some(item_id)) if item_type.is_some() => {
             if job.cursor_item_id.is_some() { return Ok(Vec::new()); }
-            sqlx::query("SELECT id,name,item_type,path,overview FROM items WHERE id=$1 AND item_type='Series'")
-                .bind(item_id).fetch_all(&state.db).await?
+            sqlx::query("SELECT id,name,item_type,path,overview FROM items WHERE id=$1 AND item_type=$2")
+                .bind(item_id).bind(item_type).fetch_all(&state.db).await?
         }
         ("item", None, Some(item_id)) => {
             if job.cursor_item_id.is_some() { return Ok(Vec::new()); }
@@ -288,6 +307,7 @@ enum PreparedOutcome {
 #[derive(Clone, Debug)]
 struct MetadataWrite {
     provider_key: String,
+    source: Option<MetadataSource>,
     external_id: Option<String>,
     title: Option<String>,
     overview: Option<String>,
@@ -300,6 +320,14 @@ struct MetadataWrite {
     attribution_name: Option<String>,
     attribution_url: Option<String>,
     attribution_license: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct MetadataSource {
+    library_id: Uuid,
+    path: String,
+    size_bytes: i64,
+    date_modified: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
@@ -316,6 +344,7 @@ enum ArtworkMutation {
 async fn prepare_item(state: &AppState, provider: &str, item: &WorkItem) -> PreparedOutcome {
     match provider {
         "local-nfo" => prepare_local_nfo(state, item).await,
+        "embedded-audio" => prepare_embedded_audio(state, item).await,
         "tvmaze" => prepare_tvmaze(state, item).await,
         _ => {
             let Some(plugin_id) = provider.strip_prefix("plugin:") else {
@@ -327,6 +356,86 @@ async fn prepare_item(state: &AppState, provider: &str, item: &WorkItem) -> Prep
             prepare_plugin(state, plugin_id, item).await
         }
     }
+}
+
+async fn prepare_embedded_audio(state: &AppState, item: &WorkItem) -> PreparedOutcome {
+    if item.item_type != "Audio" {
+        return PreparedOutcome::NoChange;
+    }
+    let (source, tags) = match media_features::probe_embedded_audio(state, item.id).await {
+        Ok(Some(result)) => result,
+        Ok(None) => return PreparedOutcome::NoChange,
+        Err(ApiError::RateLimited | ApiError::Unavailable) => {
+            return PreparedOutcome::Failure {
+                code: "audio-probe-unavailable",
+                retryable: true,
+            };
+        }
+        Err(ApiError::NotFound) => return PreparedOutcome::NoChange,
+        Err(_) => {
+            return PreparedOutcome::Failure {
+                code: "audio-probe-rejected",
+                retryable: false,
+            };
+        }
+    };
+    let (Some(size_bytes), Some(date_modified), Some(path)) = (
+        source.size_bytes,
+        source.date_modified,
+        source.path.to_str(),
+    ) else {
+        return PreparedOutcome::Failure {
+            code: "audio-source-identity-missing",
+            retryable: false,
+        };
+    };
+    if source.path != item.path {
+        return PreparedOutcome::Failure {
+            code: "audio-source-changed",
+            retryable: true,
+        };
+    }
+    let title_is_file_fallback = tags.title.is_none();
+    let metadata = json!({
+        "titleIsFileFallback": title_is_file_fallback,
+        "album": tags.album,
+        "artists": tags.artists,
+        "albumArtists": tags.album_artists,
+        "trackNumber": tags.track_number,
+        "discNumber": tags.disc_number,
+    });
+    PreparedOutcome::Write(Box::new(MetadataWrite {
+        provider_key: "embedded-audio".to_owned(),
+        source: Some(MetadataSource {
+            library_id: source.library_id,
+            path: path.to_owned(),
+            size_bytes,
+            date_modified,
+        }),
+        external_id: None,
+        title: embedded_audio_title(tags.title, &item.path),
+        overview: None,
+        premiere_date: tags.premiere_date,
+        genres: tags.genres,
+        metadata_json: metadata,
+        content_rating: None,
+        policy_rating_value: None,
+        artwork: ArtworkMutation::Clear,
+        attribution_name: None,
+        attribution_url: None,
+        attribution_license: None,
+    }))
+}
+
+fn embedded_audio_title(tagged_title: Option<String>, path: &Path) -> Option<String> {
+    tagged_title.or_else(|| {
+        let stem = path.file_stem()?.to_str()?;
+        if stem.chars().any(char::is_control) {
+            return None;
+        }
+        let stem = stem.trim();
+        (!stem.is_empty() && stem.len() <= 512).then(|| stem.to_owned())
+    })
 }
 
 async fn prepare_local_nfo(state: &AppState, item: &WorkItem) -> PreparedOutcome {
@@ -428,6 +537,7 @@ fn local_nfo_outcome(
     }
     PreparedOutcome::Write(Box::new(MetadataWrite {
         provider_key: "local-nfo".to_owned(),
+        source: None,
         external_id: None,
         title: parsed.as_ref().and_then(|parsed| parsed.title.clone()),
         overview: parsed.as_ref().and_then(|parsed| parsed.overview.clone()),
@@ -498,6 +608,7 @@ async fn prepare_tvmaze(state: &AppState, item: &WorkItem) -> PreparedOutcome {
             });
             PreparedOutcome::Write(Box::new(MetadataWrite {
                 provider_key: "tvmaze".to_owned(),
+                source: None,
                 external_id: Some(metadata.external_id),
                 title: Some(metadata.title),
                 overview: metadata.overview,
@@ -564,6 +675,7 @@ async fn prepare_plugin(state: &AppState, plugin_id: &str, item: &WorkItem) -> P
             });
             PreparedOutcome::Write(Box::new(MetadataWrite {
                 provider_key: format!("plugin:{plugin_id}"),
+                source: None,
                 external_id: None,
                 title: None,
                 overview: output.overview,
@@ -822,6 +934,31 @@ async fn persist_item_outcome(
         }
     }
 
+    if let PreparedOutcome::Write(write) = &outcome
+        && let Some(source) = &write.source
+    {
+        // Serialize against scanner upserts. A probe that loses its file
+        // snapshot must be retried, never attached to the replacement file.
+        let current = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM items WHERE id=$1 AND library_id=$2 AND path=$3 AND path_hash=$4 \
+             AND item_type='Audio' AND size_bytes=$5 AND date_modified=$6 FOR UPDATE",
+        )
+        .bind(item.id)
+        .bind(source.library_id)
+        .bind(&source.path)
+        .bind(db::path_hash(&source.path))
+        .bind(source.size_bytes)
+        .bind(source.date_modified)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if current.is_none() {
+            outcome = PreparedOutcome::Failure {
+                code: "audio-source-changed",
+                retryable: true,
+            };
+        }
+    }
+
     let attempt_count: i16 = job_row.try_get("attempt_count")?;
     if let PreparedOutcome::Failure {
         code,
@@ -905,7 +1042,7 @@ async fn write_metadata(
             2_i16,
         ),
     };
-    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,external_id,title,overview,premiere_date,genres,metadata_json,content_rating,policy_rating_scale,policy_rating_value,artwork_mime,artwork_size,artwork_sha256,artwork_bytes,attribution_name,attribution_url,attribution_license) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $10::smallint IS NULL THEN NULL ELSE 'US-MPAA-v1' END,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT(item_id,provider_key) DO UPDATE SET external_id=EXCLUDED.external_id,title=EXCLUDED.title,overview=EXCLUDED.overview,premiere_date=EXCLUDED.premiere_date,genres=EXCLUDED.genres,metadata_json=EXCLUDED.metadata_json,content_rating=EXCLUDED.content_rating,policy_rating_scale=EXCLUDED.policy_rating_scale,policy_rating_value=EXCLUDED.policy_rating_value,artwork_mime=CASE WHEN $18=0 THEN item_metadata.artwork_mime WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_mime END,artwork_size=CASE WHEN $18=0 THEN item_metadata.artwork_size WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_size END,artwork_sha256=CASE WHEN $18=0 THEN item_metadata.artwork_sha256 WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_sha256 END,artwork_bytes=CASE WHEN $18=0 THEN item_metadata.artwork_bytes WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_bytes END,attribution_name=EXCLUDED.attribution_name,attribution_url=EXCLUDED.attribution_url,attribution_license=EXCLUDED.attribution_license,updated_at=NOW()")
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,external_id,title,overview,premiere_date,genres,metadata_json,content_rating,policy_rating_scale,policy_rating_value,artwork_mime,artwork_size,artwork_sha256,artwork_bytes,attribution_name,attribution_url,attribution_license,source_library_id,source_path_hash,source_size_bytes,source_date_modified) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $10::smallint IS NULL THEN NULL ELSE 'US-MPAA-v1' END,$10,$11,$12,$13,$14,$15,$16,$17,$19,$20,$21,$22) ON CONFLICT(item_id,provider_key) DO UPDATE SET external_id=EXCLUDED.external_id,title=EXCLUDED.title,overview=EXCLUDED.overview,premiere_date=EXCLUDED.premiere_date,genres=EXCLUDED.genres,metadata_json=EXCLUDED.metadata_json,content_rating=EXCLUDED.content_rating,policy_rating_scale=EXCLUDED.policy_rating_scale,policy_rating_value=EXCLUDED.policy_rating_value,artwork_mime=CASE WHEN $18=0 THEN item_metadata.artwork_mime WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_mime END,artwork_size=CASE WHEN $18=0 THEN item_metadata.artwork_size WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_size END,artwork_sha256=CASE WHEN $18=0 THEN item_metadata.artwork_sha256 WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_sha256 END,artwork_bytes=CASE WHEN $18=0 THEN item_metadata.artwork_bytes WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_bytes END,attribution_name=EXCLUDED.attribution_name,attribution_url=EXCLUDED.attribution_url,attribution_license=EXCLUDED.attribution_license,source_library_id=EXCLUDED.source_library_id,source_path_hash=EXCLUDED.source_path_hash,source_size_bytes=EXCLUDED.source_size_bytes,source_date_modified=EXCLUDED.source_date_modified,updated_at=NOW()")
         .bind(item_id)
         .bind(write.provider_key)
         .bind(write.external_id)
@@ -924,6 +1061,10 @@ async fn write_metadata(
         .bind(write.attribution_url)
         .bind(write.attribution_license)
         .bind(art_action)
+        .bind(write.source.as_ref().map(|source| source.library_id))
+        .bind(write.source.as_ref().map(|source| db::path_hash(&source.path)))
+        .bind(write.source.as_ref().map(|source| source.size_bytes))
+        .bind(write.source.as_ref().map(|source| source.date_modified))
         .execute(&mut **tx)
         .await?;
     Ok(())
@@ -939,7 +1080,7 @@ enum ItemPersistResult {
 async fn finish_job(state: &AppState, job: &Job) -> Result<(), sqlx::Error> {
     let mut tx = state.db.begin().await?;
     db::require_active_run(&mut tx, state.run_id).await?;
-    sqlx::query("UPDATE metadata_refresh_runs SET status=CASE WHEN items_errors=0 THEN 'completed' ELSE 'completed_with_errors' END,claimed_run_id=NULL,next_attempt_at=NULL,finished_at=NOW(),updated_at=NOW() WHERE id=$1 AND status='running' AND claimed_run_id=$2")
+    sqlx::query("UPDATE metadata_refresh_runs SET status=CASE WHEN rerun_requested THEN 'queued' WHEN items_errors=0 THEN 'completed' ELSE 'completed_with_errors' END,claimed_run_id=NULL,next_attempt_at=NULL,finished_at=CASE WHEN rerun_requested THEN NULL ELSE NOW() END,started_at=CASE WHEN rerun_requested THEN NULL ELSE started_at END,attempt_count=CASE WHEN rerun_requested THEN 0 ELSE attempt_count END,cursor_item_id=CASE WHEN rerun_requested THEN NULL ELSE cursor_item_id END,upper_item_id=CASE WHEN rerun_requested THEN NULL ELSE upper_item_id END,rerun_requested=FALSE,updated_at=NOW() WHERE id=$1 AND status='running' AND claimed_run_id=$2")
         .bind(job.id)
         .bind(state.run_id)
         .execute(&mut *tx)
@@ -984,7 +1125,7 @@ mod tests {
 
     use super::{
         Artwork, ArtworkMutation, ArtworkRead, MetadataWrite, PreparedOutcome, WorkItem,
-        bounded_plugin_input, local_nfo_outcome, nfo,
+        bounded_plugin_input, embedded_audio_title, local_nfo_outcome, nfo,
     };
     use crate::plugins::MAX_INPUT_BYTES;
 
@@ -996,6 +1137,24 @@ mod tests {
             path: PathBuf::from("/media/Synthetic item.mkv"),
             overview,
         }
+    }
+
+    #[test]
+    fn audio_title_falls_back_to_a_bounded_filename_stem() {
+        let path = std::path::Path::new("/media/04 Plain.Track.flac");
+        assert_eq!(
+            embedded_audio_title(None, path).as_deref(),
+            Some("04 Plain.Track")
+        );
+        assert_eq!(
+            embedded_audio_title(Some("Tagged title".to_owned()), path).as_deref(),
+            Some("Tagged title")
+        );
+        for name in [".flac\n", "  .flac", "control\n.flac"] {
+            assert!(embedded_audio_title(None, std::path::Path::new(name)).is_none());
+        }
+        let oversized = format!("{}.flac", "x".repeat(513));
+        assert!(embedded_audio_title(None, std::path::Path::new(&oversized)).is_none());
     }
 
     #[test]
@@ -1022,6 +1181,7 @@ mod tests {
     fn boxed_write_outcome_preserves_metadata_payload() {
         let outcome = PreparedOutcome::Write(Box::new(MetadataWrite {
             provider_key: "local-nfo".to_owned(),
+            source: None,
             external_id: None,
             title: Some("A title".to_owned()),
             overview: Some("A summary".to_owned()),
@@ -1108,5 +1268,176 @@ mod tests {
             local_nfo_outcome(None, ArtworkRead::Unavailable, false),
             PreparedOutcome::NoChange
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL database via PUFFINBOX_TEST_DATABASE_URL"]
+    async fn changed_audio_snapshots_retry_and_concurrent_scans_request_another_pass() {
+        use super::{ItemPersistResult, Job, MetadataSource, finish_job, persist_item_outcome};
+        use crate::{AppState, Config, db};
+        use sqlx::{Row, postgres::PgPoolOptions};
+        use std::{env, sync::Arc, time::Duration};
+
+        let url = env::var("PUFFINBOX_TEST_DATABASE_URL").unwrap();
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        let schema = format!("puffinbox_audio_snapshot_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let selected = schema.clone();
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .acquire_timeout(Duration::from_secs(5))
+            .after_connect(move |connection, _| {
+                let selected = selected.clone();
+                Box::pin(async move {
+                    sqlx::query(&format!("SET search_path TO \"{selected}\""))
+                        .execute(connection)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let run_id = Uuid::new_v4();
+        db::activate_run(&pool, run_id).await.unwrap();
+        let library_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO libraries(id,name,collection_type,locations) VALUES ($1,'Audio snapshot test','music','[]')")
+            .bind(library_id).execute(&pool).await.unwrap();
+        let mut item = item(None);
+        item.item_type = "Audio".to_owned();
+        item.path = PathBuf::from("/media/track.flac");
+        let path = item.path.to_str().unwrap();
+        let modified = chrono::DateTime::parse_from_rfc3339("2021-04-05T00:00:00Z")
+            .unwrap()
+            .to_utc();
+        sqlx::query("INSERT INTO items(id,library_id,name,sort_name,item_type,path,path_hash,size_bytes,date_modified) VALUES ($1,$2,'track','track','Audio',$3,$4,2,$5)")
+            .bind(item.id).bind(library_id).bind(path).bind(db::path_hash(path)).bind(modified)
+            .execute(&pool).await.unwrap();
+        let job = Job {
+            id: Uuid::new_v4(),
+            scope_kind: "library".to_owned(),
+            scope_library_id: Some(library_id),
+            scope_item_id: None,
+            provider_key: "embedded-audio".to_owned(),
+            cursor_item_id: None,
+            upper_item_id: Some(item.id),
+            batch_limit: 250,
+            attempt_count: 1,
+        };
+        sqlx::query("INSERT INTO metadata_refresh_runs(id,scope_kind,scope_library_id,scope_library_name,provider_key,status,claimed_run_id,upper_item_id,attempt_count) VALUES ($1,'library',$2,'Audio snapshot test','embedded-audio','running',$3,$4,1)")
+            .bind(job.id).bind(library_id).bind(run_id).bind(item.id).execute(&pool).await.unwrap();
+        let config = Config {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            public_base_url: None,
+            database_url: url,
+            server_name: "Audio snapshot test".to_owned(),
+            web_root: PathBuf::from("web"),
+            data_dir: env::temp_dir(),
+            ffmpeg_path: None,
+            max_scan_workers: 1,
+            max_page_size: 100,
+            access_token_lifetime_hours: 24,
+            cookie_secure: false,
+            cors_origins: vec![],
+            trusted_proxies: vec![],
+            local_networks: vec![],
+            setup_token: None,
+            bootstrap_admin_username: None,
+            bootstrap_admin_password: None,
+        };
+        let state =
+            AppState::new_for_run(pool.clone(), Arc::new(config), Uuid::new_v4(), run_id, None);
+        let write = |size_bytes| {
+            PreparedOutcome::Write(Box::new(MetadataWrite {
+                provider_key: "embedded-audio".to_owned(),
+                source: Some(MetadataSource {
+                    library_id,
+                    path: path.to_owned(),
+                    size_bytes,
+                    date_modified: modified,
+                }),
+                external_id: None,
+                title: Some("Current tagged title".to_owned()),
+                overview: None,
+                premiere_date: None,
+                genres: vec![],
+                metadata_json: serde_json::json!({}),
+                content_rating: None,
+                policy_rating_value: None,
+                artwork: ArtworkMutation::Clear,
+                attribution_name: None,
+                attribution_url: None,
+                attribution_license: None,
+            }))
+        };
+        assert!(matches!(
+            persist_item_outcome(&state, &job, &item, write(1))
+                .await
+                .unwrap(),
+            ItemPersistResult::Retry
+        ));
+        let row = sqlx::query(
+            "SELECT status,cursor_item_id,items_seen FROM metadata_refresh_runs WHERE id=$1",
+        )
+        .bind(job.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("status"), "retry_wait");
+        assert_eq!(row.get::<Option<Uuid>, _>("cursor_item_id"), None);
+        assert_eq!(row.get::<i64, _>("items_seen"), 0);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM item_metadata")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        sqlx::query("UPDATE metadata_refresh_runs SET status='running',claimed_run_id=$2,next_attempt_at=NULL WHERE id=$1")
+            .bind(job.id).bind(run_id).execute(&pool).await.unwrap();
+        assert!(matches!(
+            persist_item_outcome(&state, &job, &item, write(2))
+                .await
+                .unwrap(),
+            ItemPersistResult::Continue { .. }
+        ));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT source_size_bytes FROM item_metadata WHERE item_id=$1"
+            )
+            .bind(item.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            2
+        );
+        sqlx::query("UPDATE metadata_refresh_runs SET rerun_requested=TRUE WHERE id=$1")
+            .bind(job.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        finish_job(&state, &job).await.unwrap();
+        let row = sqlx::query("SELECT status,cursor_item_id,upper_item_id,rerun_requested FROM metadata_refresh_runs WHERE id=$1").bind(job.id).fetch_one(&pool).await.unwrap();
+        assert_eq!(row.get::<String, _>("status"), "queued");
+        assert_eq!(row.get::<Option<Uuid>, _>("cursor_item_id"), None);
+        assert_eq!(row.get::<Option<Uuid>, _>("upper_item_id"), None);
+        assert!(!row.get::<bool, _>("rerun_requested"));
+        state
+            .shutdown_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
 }

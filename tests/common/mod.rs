@@ -73,5 +73,10 @@ pub async fn apply_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(include_str!("../../migrations/0024_studio_favorites.sql"))
         .execute(pool)
         .await?;
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0025_embedded_audio_metadata.sql"
+    ))
+    .execute(pool)
+    .await?;
     Ok(())
 }

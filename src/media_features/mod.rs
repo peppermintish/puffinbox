@@ -49,6 +49,7 @@ use crate::{
     ApiError,
     auth::{CurrentUser, MediaUser, UserRecord},
     db,
+    library::ItemRecord,
     state::AppState,
 };
 
@@ -403,6 +404,32 @@ pub(crate) async fn read_adjacent_file(
     }
     let media = secure_path::resolve_under_roots(&state.db, item, &library.locations).await?;
     secure_path::read_adjacent_bounded(media, PathBuf::from(sibling_name), max_bytes).await
+}
+
+/// Internal metadata jobs use the same registered roots, descriptor-only
+/// input, process sandbox and output bounds as playback probing. The returned
+/// catalog snapshot must still be checked in the metadata write transaction.
+pub(crate) async fn probe_embedded_audio(
+    state: &AppState,
+    item_id: Uuid,
+) -> Result<Option<(ItemRecord, crate::metadata::EmbeddedAudioMetadata)>, ApiError> {
+    let item = db::get_item(&state.db, item_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if item.item_type != "Audio" {
+        return Ok(None);
+    }
+    let library = db::get_library(&state.db, item.library_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let media = secure_path::resolve_under_roots(&state.db, item, &library.locations).await?;
+    let Some(info) = probe::probe(state, &media).await? else {
+        return Err(ApiError::Unavailable);
+    };
+    if !info.catalog_identity_matches || !info.streams.iter().any(|stream| stream.kind == "audio") {
+        return Err(ApiError::Unavailable);
+    }
+    Ok(Some((media.item, info.embedded_audio)))
 }
 
 fn folder_asset_item_type(item_type: &str) -> bool {

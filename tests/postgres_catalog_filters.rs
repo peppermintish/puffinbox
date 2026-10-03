@@ -535,6 +535,7 @@ async fn facets_and_selections_share_metadata_and_current_user_boundaries() {
     )
     .await;
     assert_eq!(old_id["TotalRecordCount"], 0);
+    verify_embedded_audio_metadata(&router, &pool, library, private, owner, owner_token).await;
     sqlx::query("UPDATE users SET block_unrated_items=ARRAY['Music'] WHERE id=$1")
         .bind(owner)
         .execute(&pool)
@@ -1251,6 +1252,295 @@ async fn metadata(
     sqlx::query("INSERT INTO item_metadata(item_id,provider_key,genres,metadata_json,content_rating,policy_rating_scale,policy_rating_value) VALUES ($1,$2,$3,$4,$5,CASE WHEN $6::smallint IS NOT NULL THEN 'US-MPAA-v1' END,$6)")
         .bind(id).bind(provider).bind(Json(genres)).bind(Json(metadata)).bind(label).bind(policy)
         .execute(pool).await.unwrap();
+}
+
+async fn verify_embedded_audio_metadata(
+    router: &Router,
+    pool: &PgPool,
+    library: Uuid,
+    private: Uuid,
+    owner: Uuid,
+    token: &str,
+) {
+    let artist = item(
+        pool,
+        library,
+        None,
+        "MusicArtist",
+        "/media/embedded/Embedded Lead",
+    )
+    .await;
+    let album = item(
+        pool,
+        library,
+        Some(artist),
+        "MusicAlbum",
+        "/media/embedded/Folder Album",
+    )
+    .await;
+    let first = item(
+        pool,
+        library,
+        Some(album),
+        "Audio",
+        "/media/embedded/blob-a.flac",
+    )
+    .await;
+    let second = item(
+        pool,
+        library,
+        Some(album),
+        "Audio",
+        "/media/embedded/blob-b.flac",
+    )
+    .await;
+    let hidden = item(
+        pool,
+        private,
+        None,
+        "Audio",
+        "/media/private/embedded-hidden.flac",
+    )
+    .await;
+    for (id, name) in [
+        (artist, "Embedded Lead"),
+        (album, "Folder Album"),
+        (first, "blob-a"),
+        (second, "blob-b"),
+    ] {
+        sqlx::query("UPDATE items SET name=$2,sort_name=lower($2) WHERE id=$1")
+            .bind(id)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    for (id, title, album_name, number, genre, credit) in [
+        (
+            first,
+            "Embedded Alpha Title",
+            "Zebra tagged album",
+            3,
+            "Rock; Jazz",
+            "Embedded Lead",
+        ),
+        (
+            second,
+            "Embedded Beta Title",
+            "Alpha tagged album",
+            4,
+            "Jazz",
+            "Embedded Lead",
+        ),
+        (
+            hidden,
+            "Private tagged title",
+            "Private tagged album",
+            1,
+            "PrivateTagGenre",
+            "Private tagged artist",
+        ),
+    ] {
+        sqlx::query(
+            "UPDATE items SET size_bytes=100,date_modified='2021-04-05T00:00:00Z' WHERE id=$1",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO item_metadata(item_id,provider_key,title,premiere_date,genres,metadata_json,source_library_id,source_path_hash,source_size_bytes,source_date_modified) SELECT id,'embedded-audio',$2,'2021-04-05',$3,$4,library_id,path_hash,size_bytes,date_modified FROM items WHERE id=$1")
+            .bind(id).bind(title).bind(Json(json!([genre])))
+            .bind(Json(json!({"album":album_name,"artists":[credit],"albumArtists":[credit],"trackNumber":number,"discNumber":2})))
+            .execute(pool).await.unwrap();
+    }
+    let prefix = format!("/Users/{owner}/Items?ParentId={album}&IncludeItemTypes=Audio");
+    let ordered = json_body(
+        call(
+            router,
+            &format!("{prefix}&SortBy=Album,IndexNumber"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(item_ids(&ordered), [second, first]);
+    let tagged = &ordered["Items"][1];
+    assert_eq!(tagged["Name"], "Embedded Alpha Title");
+    assert_eq!(tagged["Album"], "Zebra tagged album");
+    assert_eq!(tagged["IndexNumber"], 3);
+    assert_eq!(tagged["ParentIndexNumber"], 2);
+    assert_eq!(tagged["ProductionYear"], 2021);
+    assert_eq!(tagged["Artists"], json!(["Embedded Lead"]));
+    assert_eq!(tagged["ArtistItems"][0]["Id"], artist.to_string());
+    let search = json_body(
+        call(
+            router,
+            &format!("{prefix}&SearchTerm=Alpha%20Title"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(item_ids(&search), [first]);
+    let by_artist = json_body(
+        call(
+            router,
+            &format!("{prefix}&ArtistIds={artist}&SortBy=IndexNumber"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(item_ids(&by_artist), [first, second]);
+    let private_facet =
+        json_body(call(router, "/Items/Filters?mediaTypes=Audio", Some(token)).await).await;
+    assert!(
+        !private_facet["Genres"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PrivateTagGenre"))
+    );
+    assert_eq!(
+        call(router, &format!("/Items/{hidden}"), Some(token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // A filename fallback is lower priority than actual provider titles,
+    // without demoting the embedded genres and other fields on that row.
+    sqlx::query("INSERT INTO trusted_plugins(plugin_id,name,version,api_version,manifest_sha256,binary_sha256,declared_license,declared_provenance,enabled,status) VALUES ('embedded-title-test','Embedded title test','1',1,$1,$2,'MIT','Synthetic fixture',TRUE,'enabled')")
+        .bind("c".repeat(64)).bind("d".repeat(64)).execute(pool).await.unwrap();
+    metadata(
+        pool,
+        first,
+        "plugin:embedded-title-test",
+        json!(["Plugin genre"]),
+        json!({"manifestSha256":"c".repeat(64),"moduleSha256":"d".repeat(64)}),
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE item_metadata SET title='Plugin audio title' WHERE item_id=$1 AND provider_key='plugin:embedded-title-test'")
+        .bind(first).execute(pool).await.unwrap();
+    let actual_tag = json_body(call(router, &format!("/Items/{first}"), Some(token)).await).await;
+    assert_eq!(actual_tag["Name"], "Embedded Alpha Title");
+    sqlx::query("UPDATE item_metadata SET title='File fallback',metadata_json=metadata_json || '{\"titleIsFileFallback\":true}'::jsonb WHERE item_id=$1 AND provider_key='embedded-audio'")
+        .bind(first).execute(pool).await.unwrap();
+    let plugin_title = json_body(call(router, &format!("/Items/{first}"), Some(token)).await).await;
+    assert_eq!(plugin_title["Name"], "Plugin audio title");
+    assert_eq!(plugin_title["Genres"], json!(["Rock; Jazz"]));
+    let plugin_search = json_body(
+        call(
+            router,
+            &format!("{prefix}&SearchTerm=Plugin%20audio%20title"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(item_ids(&plugin_search), [first]);
+    let fallback_search = json_body(
+        call(
+            router,
+            &format!("{prefix}&SearchTerm=File%20fallback"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(fallback_search["TotalRecordCount"], 0);
+    sqlx::query("UPDATE trusted_plugins SET enabled=FALSE,status='disabled' WHERE plugin_id='embedded-title-test'")
+        .execute(pool).await.unwrap();
+    let file_title = json_body(call(router, &format!("/Items/{first}"), Some(token)).await).await;
+    assert_eq!(file_title["Name"], "File fallback");
+    sqlx::query(
+        "DELETE FROM item_metadata WHERE item_id=$1 AND provider_key='plugin:embedded-title-test'",
+    )
+    .bind(first)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM trusted_plugins WHERE plugin_id='embedded-title-test'")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE item_metadata SET title='Embedded Alpha Title',metadata_json=metadata_json - 'titleIsFileFallback' WHERE item_id=$1 AND provider_key='embedded-audio'")
+        .bind(first).execute(pool).await.unwrap();
+
+    metadata(
+        pool,
+        first,
+        "local-nfo",
+        json!(["Local genre"]),
+        json!({"trackNumber":9,"artists":["Hidden explicit credit"]}),
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE item_metadata SET title='Local title' WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(first).execute(pool).await.unwrap();
+    let local = json_body(call(router, &format!("/Items/{first}"), Some(token)).await).await;
+    assert_eq!(local["Name"], "Local title");
+    assert_eq!(local["IndexNumber"], 9);
+    assert_eq!(local["Genres"], json!(["Local genre"]));
+    assert_eq!(local["Artists"], json!([]));
+    let overridden = json_body(
+        call(
+            router,
+            &format!("{prefix}&SearchTerm=Alpha%20Title"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(overridden["TotalRecordCount"], 0);
+    sqlx::query("DELETE FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(first)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    // The old embedded row remains for diagnosis, but none of its fields may
+    // survive a changed catalog snapshot in display, sorting or credits.
+    sqlx::query("UPDATE items SET size_bytes=101 WHERE id=$1")
+        .bind(first)
+        .execute(pool)
+        .await
+        .unwrap();
+    let changed = json_body(call(router, &format!("/Items/{first}"), Some(token)).await).await;
+    assert_eq!(changed["Name"], "blob-a");
+    assert_eq!(changed["Album"], "Folder Album");
+    assert!(changed["IndexNumber"].is_null());
+    assert!(changed["ProductionYear"].is_null());
+    assert_eq!(changed["Genres"], json!([]));
+    let no_stale_genre = json_body(
+        call(
+            router,
+            &format!("{prefix}&Genres=Rock%3B%20Jazz"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(no_stale_genre["TotalRecordCount"], 0);
+    let no_stale_title = json_body(
+        call(
+            router,
+            &format!("{prefix}&SearchTerm=Alpha%20Title"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(no_stale_title["TotalRecordCount"], 0);
+    // Restore this fixture's snapshot so later broad facet checks can inspect
+    // the current embedded genre; no playback state is created or reset here.
+    sqlx::query("UPDATE items SET size_bytes=100 WHERE id=$1")
+        .bind(first)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 async fn call(router: &Router, path: &str, token: Option<&str>) -> Response {

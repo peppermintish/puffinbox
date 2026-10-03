@@ -68,8 +68,10 @@ class SupplementalFixtureTests(unittest.TestCase):
                 alternate_media / "Music" / "Puffinbox Original Acceptance Track.flac",
                 alternate_media / "Books" / "Puffinbox Original Acceptance Book.epub",
             ]
-            self.assertEqual(run.call_count, 2)
-            self.assertEqual([Path(call.args[0][-1]) for call in run.call_args_list], expected_targets[:2])
+            self.assertEqual(run.call_count, 6)
+            generated = [Path(call.args[0][-1]) for call in run.call_args_list]
+            self.assertEqual(generated[:2], expected_targets[:2])
+            self.assertEqual(generated[2:], [alternate_media / "Music" / supplemental_fixtures.embedded_audio_fixtures.RELATIVE_ROOT / name for name in supplemental_fixtures.embedded_audio_fixtures.TAGS])
             self.assertTrue(all(target.is_file() for target in expected_targets))
             self.assertTrue(all(target.read_bytes() == b"existing active fixture" for target in active_targets))
             self.assertEqual(active_env.read_text(encoding="utf-8"), active_env_contents)
@@ -86,6 +88,7 @@ class SupplementalFixtureTests(unittest.TestCase):
                 alternate_media / "Music" / "Puffinbox Original Acceptance Track.flac",
                 alternate_media / "Books" / "Puffinbox Original Acceptance Book.epub",
             ]
+            targets.extend(alternate_media / "Music" / supplemental_fixtures.embedded_audio_fixtures.RELATIVE_ROOT / name for name in supplemental_fixtures.embedded_audio_fixtures.TAGS)
             for target in targets:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(b"pre-existing target")

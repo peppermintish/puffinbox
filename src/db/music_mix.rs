@@ -17,7 +17,7 @@ pub(crate) struct MusicMixSeed<'a> {
 fn push_visible_music(builder: &mut QueryBuilder<'_, Postgres>, user: &UserRecord) {
     builder.push(format!(
         "SELECT i.id,i.library_id,i.parent_id,i.name,i.sort_name,i.item_type,i.path,\
-         i.container,i.size_bytes,i.runtime_ticks,i.date_added,i.date_modified,\
+         i.container,i.size_bytes,i.runtime_ticks,i.date_added,i.date_modified,i.path_hash,\
          {} AS rating,i.overview,i.metadata_json,{} AS genres \
          FROM items i JOIN libraries l ON l.id=i.library_id",
         super::policy_rating_sql("i"),
