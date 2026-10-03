@@ -14,8 +14,11 @@ COPY crates ./crates
 COPY vendor ./vendor
 COPY src ./src
 COPY migrations ./migrations
+COPY .cargo ./.cargo
+COPY scripts/openssl-configure.py scripts/check_openssl_exclusions.py ./scripts/
 
-RUN CARGO_BUILD_JOBS=2 cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
+RUN CARGO_BUILD_JOBS=2 cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server \
+    && python3 scripts/check_openssl_exclusions.py --binary target/x86_64-unknown-linux-musl/release/puffinbox-server
 
 COPY web ./web
 COPY docs ./docs

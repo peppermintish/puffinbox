@@ -23,6 +23,42 @@ cargo deny --locked check
 python3 scripts/build_license_bundle.py
 ```
 
+## Bundled OpenSSL exclusion
+
+The selected `openssl-src 300.6.1+3.6.3` archive contains a separate CC0 reference
+notice in [the SipHash implementation](https://github.com/openssl/openssl/blob/openssl-3.6.3/crypto/siphash/siphash.c),
+alongside its Apache header. Its source SHA-256 is
+`67b99076c867bc014fcdad96f50c9195dec1971d0b41a59606fcee38844a2c3a`.
+The earlier static server retained five named SipHash functions. Package-level
+Apache declarations did not clear that input.
+
+Linux builds now exclude the implementation through an original Configure
+wrapper with `no-siphash` and `no-quic`. The first `no-siphash` build still
+retained those functions: OpenSSL's internal QUIC code uses them independently of
+the disabled provider. The combined options remove both paths; Puffinbox's
+native TLS clients do not use QUIC. No upstream source or license terms changed.
+The [dependency record](../vendor/dependency-replacements.json) guards the exact
+package, selected features, archive and configuration inputs.
+
+The exclusion checker rejects the old binary and the failed single-option build.
+Fresh source, static core `88c03d90` and experimental GNU server `e02164b6` pass.
+The GNU link map has no SipHash objects, and its successful native compilation
+capture has no SipHash implementation input. Mapped-source inspection and
+compiler-notice classification also passed. Source checks passed formatting,
+strict Clippy, 243 Rust cases, 24 database cases, 92 Python checks, both target
+package audits and full notice generation. Trusted certificates were accepted;
+wrong CAs and hostnames were rejected. The rebuilt core passed 31 container and
+29 local HTTPS checks, including active FFmpeg shutdown and saved video progress
+after restart. Both official clients completed the original three-track FLAC
+mix on the retained backend. Evidence is under `.local/openssl-exclusion-*`,
+with the failed first builds preserved separately from the passing `20261003b`
+source and GNU runs.
+
+This resolves the known retained OpenSSL file exception. Whole-runtime license
+clearance remains false for the linked-runtime reasons below. Existing Cargo
+build directories need a native dependency rebuild when adopting or changing the
+wrapper; see [the build note](../vendor/README.md).
+
 The graph changed as follows:
 
 | Previous dependency | Replacement or adjustment |

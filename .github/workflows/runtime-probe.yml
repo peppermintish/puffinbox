@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
     paths:
+      - '.cargo/**'
+      - 'scripts/openssl-configure.py'
+      - 'scripts/check_openssl_exclusions.py'
+      - 'scripts/test_openssl_exclusions.py'
       - '.github/workflows/runtime-probe.yml'
       - 'experiments/linux-gnu-entry/**'
       - 'experiments/linux-gnu-runtime/**'
@@ -27,6 +31,10 @@ on:
       - 'migrations/**'
   pull_request:
     paths:
+      - '.cargo/**'
+      - 'scripts/openssl-configure.py'
+      - 'scripts/check_openssl_exclusions.py'
+      - 'scripts/test_openssl_exclusions.py'
       - '.github/workflows/runtime-probe.yml'
       - 'experiments/linux-gnu-entry/**'
       - 'experiments/linux-gnu-runtime/**'
@@ -73,6 +81,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts -p 'test_gnu_*.py'
           python3 -m unittest discover -s scripts -p 'test_dependency_replacements.py'
+          python3 -m unittest discover -s scripts -p 'test_openssl_exclusions.py'
 
       - name: Build disposable probe infrastructure
         run: docker build --tag puffinbox:gnu-probe-builder --file experiments/linux-gnu-runtime/Dockerfile .
@@ -117,6 +126,7 @@ jobs:
             ${{ runner.temp }}/gnu-probe/output/probe.json
             ${{ runner.temp }}/gnu-probe/output/runtime-input-inventory.json
             ${{ runner.temp }}/gnu-probe/output/shared-tls-inventory.json
+            ${{ runner.temp }}/gnu-probe/output/openssl-exclusions.json
             ${{ runner.temp }}/gnu-probe/output/tls-client-check.json
             ${{ runner.temp }}/gnu-probe/output/tls-client-check.log
             ${{ runner.temp }}/gnu-probe/output/server-elf.txt

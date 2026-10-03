@@ -79,6 +79,7 @@ jobs:
           python3 scripts/api_coverage.py --check --output "$RUNNER_TEMP/api-route-coverage.md"
           python3 scripts/build_license_bundle.py
           cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
+          python3 scripts/check_openssl_exclusions.py --binary target/x86_64-unknown-linux-musl/release/puffinbox-server
       - name: Check offline behavior in Chromium
         timeout-minutes: 5
         run: node scripts/test_offline_browser.js
@@ -204,6 +205,7 @@ jobs:
         run: |
           python3 scripts/build_license_bundle.py
           cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
+          python3 scripts/check_openssl_exclusions.py --binary target/x86_64-unknown-linux-musl/release/puffinbox-server
           package="dist/archive/puffinbox-${RELEASE_TAG}-linux-x86_64"
           mkdir -p "$package"
           install -m 0555 target/x86_64-unknown-linux-musl/release/puffinbox-server "$package/puffinbox-server"

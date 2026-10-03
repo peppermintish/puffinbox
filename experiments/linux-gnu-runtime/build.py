@@ -236,7 +236,8 @@ def main() -> int:
               "productionChanged": False, "licenseClearance": False, "sourceMountedAt": str(root),
               "cargoLockSha256": digest(root / "Cargo.lock"),
               "auditScriptsSha256": {name: digest(root / "scripts" / name)
-                                      for name in ["capture_gnu_sources.py", "check_dependency_replacements.py", "check_gnu_link_map.py", "check_gnu_shared_tls.py", "check_gnu_source_map.py", "check_gnu_notices.py", "check_tls.py"]},
+                                      for name in ["capture_gnu_sources.py", "check_dependency_replacements.py", "check_gnu_link_map.py", "check_gnu_shared_tls.py", "check_gnu_source_map.py", "check_gnu_notices.py", "check_tls.py", "openssl-configure.py", "check_openssl_exclusions.py"]},
+              "cargoConfigSha256": digest(root / ".cargo/config.toml"),
               "dependencyReplacementReviewSha256": digest(root / "vendor/dependency-replacements.json"),
               "tlsProbeSourceSha256": digest(root / "examples/tls_probe.rs"),
               "experimentSourceSha256": {name: digest(Path(__file__).with_name(name))
@@ -310,6 +311,14 @@ def main() -> int:
         record["tlsCheck"] = tls_check(output, root, environment)
         if args.source_map:
             record["sourceMapping"] = capture_source_mapping(output, sysroot, environment, external_openssl=args.external_openssl)
+        if not args.external_openssl:
+            exclusion = [sys.executable, str(root / "scripts/check_openssl_exclusions.py"),
+                         "--binary", str(output / "server"), "--map", str(output / "server-link.map"),
+                         "--output", str(output / "openssl-exclusions.json")]
+            if args.source_map:
+                exclusion += ["--native-sources", str(output / "dependency-source-hashes.json")]
+            run(exclusion, cwd=root, env=environment, log=output / "openssl-exclusions.log")
+            record["openSslExclusionsSha256"] = digest(output / "openssl-exclusions.json")
         result = 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         record["failure"] = str(error)

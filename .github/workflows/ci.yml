@@ -156,7 +156,9 @@ jobs:
           cargo deny --locked --target x86_64-unknown-linux-gnu check licenses
 
       - name: Build the static Linux release binary
-        run: cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
+        run: |
+          cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
+          python3 scripts/check_openssl_exclusions.py --binary target/x86_64-unknown-linux-musl/release/puffinbox-server
 
       - name: Verify static Linux TLS certificate checks
         run: |

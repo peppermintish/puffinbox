@@ -39,6 +39,27 @@ disabled. Its empty default feature and selected HTTP middleware features are
 reviewed; the same guard hashes its manifest, module gates and notice and
 rejects any added feature, including compression and `full`.
 
+Registry `openssl-src 300.6.1+3.6.3` includes a separate CC0 reference notice in
+`openssl/crypto/siphash/siphash.c`. Its exact archive, Configure script and module
+gates are recorded in the same guard. Linux builds use the repository's Python
+Configure wrapper to append `no-siphash` and `no-quic`. The second option is
+required because OpenSSL's internal QUIC implementation still uses SipHash when
+only `no-siphash` is selected. Puffinbox's native TLS clients do not use QUIC.
+
+The binary check requires a full symbol table and identifiable bundled OpenSSL,
+then rejects retained SipHash symbols. The GNU experiment also checks link
+objects and captured native compilation inputs. The previous static binary and
+the first single-option build fail this check. Fresh combined-option builds pass
+without changing registry source or the allowlist. These are exclusion checks;
+they do not assign a new license to the upstream file.
+
+When adopting or changing this wrapper in an existing Cargo build directory,
+rebuild the native dependency with `cargo clean -p openssl-sys` before building.
+The upstream build does not track changes to the wrapper file or
+`OPENSSL_SRC_PERL`. Docker and CI use fresh build inputs, and the post-build check
+rejects a stale executable that still retains SipHash. Linux source builds
+require Python 3, Perl and Make; native Windows source builds are unvalidated.
+
 No registry files were modified or copied into the repository. These checks
 cover known exceptions, not complete dependency or linked runtime license
 clearance.

@@ -36,6 +36,12 @@ For a dynamic Linux FFmpeg distribution, `Dockerfile.ffmpeg-runtime` and `docker
 
 The server requires a PostgreSQL database, a Rust toolchain, and access to the `web/` directory. The Compose setup is the supported local database path. For a direct development run, set `DATABASE_URL`, `PUFFINBOX_WEB_ROOT`, and `PUFFINBOX_DATA_DIR` for your local environment, then run the project binary. `PUFFINBOX_BIND` is optional and defaults to `127.0.0.1:8096`; set it explicitly only when you intend to listen on another interface. Do not use an existing personal media root for acceptance work.
 
+Linux source builds also require Python 3, Perl and Make for the constrained
+vendored OpenSSL configuration. When adopting this configuration in an existing
+Cargo build directory, rebuild `openssl-sys` first; see [the dependency build
+note](vendor/README.md). Windows development currently uses WSL or Compose;
+native Windows source builds are unvalidated.
+
 The [GitHub workflows](https://github.com/peppermintish/puffinbox/actions) run source,
 dependency, container, and isolated media checks. Release packaging also requires
 the documented [release gates](docs/release-gates.json) to pass. Local and
