@@ -388,6 +388,46 @@ class NativeCompilerTraceTests(unittest.TestCase):
             self.assertEqual((output / snapshot["nativeSourceByteFiles"][record["sourceFiles"][str(header)]]).stat().st_mode & 0o777,
                              0o444)
 
+    @unittest.skipUnless(sys.platform == "linux" and shutil.which("cc"), "Requires the disposable Linux C compiler")
+    def test_inherited_user_only_dependencies_still_capture_system_headers(self):
+        for option in ("-MMD", "--write-user-dependencies", "preprocessor"):
+            with self.subTest(option=option), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                system = root / "system"
+                system.mkdir()
+                header = system / "system-value.h"
+                header.write_bytes(b"#define SYSTEM_VALUE 19\n")
+                source = root / "source.c"
+                source.write_text('#include <system-value.h>\n#ifndef CPP_VALUE\n#define CPP_VALUE 0\n#endif\n'
+                                  'int example(void) { return SYSTEM_VALUE + CPP_VALUE; }\n')
+                dependency_option = "-Wp,-MMD," + str(root / "original.d") + ",-DCPP_VALUE=3" if option == "preprocessor" else option
+                arguments = [dependency_option, "-MF", str(root / "original.d"), "-isystem", str(system),
+                             "-c", str(source)]
+                baseline = subprocess.run(["cc", *arguments, "-o", str(root / "baseline.o")],
+                                          cwd=root, capture_output=True, timeout=30)
+                self.assertEqual(baseline.returncode, 0, baseline.stderr)
+                self.assertNotIn(str(header), (root / "original.d").read_text())
+                output = root / "output"
+                output.mkdir()
+                result = subprocess.run([sys.executable, str(WRAPPER_PATH), *arguments,
+                                         "-o", str(root / "captured.o")], cwd=root,
+                                        env={**os.environ, "PUFFINBOX_RUNTIME_PROBE_OUTPUT": str(output)},
+                                        capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((root / "baseline.o").read_bytes(), (root / "captured.o").read_bytes())
+                records = list((output / "native-compiler-traces").glob("*.json"))
+                self.assertEqual(len(records), 1)
+                record = json.loads(records[0].read_text())
+                self.assertIn(dependency_option, record["arguments"])
+                digest = hashlib.sha256(header.read_bytes()).hexdigest()
+                self.assertEqual(record["sourceFiles"][str(header)], digest)
+                source.unlink()
+                header.unlink()
+                snapshot = capture_native(output / "native-compiler-traces", require_source_bytes=True)
+                self.assertEqual((output / snapshot["nativeSourceByteFiles"][digest]).read_bytes(),
+                                 b"#define SYSTEM_VALUE 19\n")
+                self.assertGreaterEqual(verify_native_source_bytes(snapshot, output / "native-source-bytes")["verifiedFiles"], 2)
+
     @unittest.skipUnless(sys.platform == "linux" and shutil.which("cc"), "Requires the disposable Linux assembler")
     def test_plain_and_preprocessed_assembly_preserve_includes_and_binary_constants(self):
         for suffix in (".s", ".S"):

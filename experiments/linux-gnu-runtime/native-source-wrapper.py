@@ -123,8 +123,32 @@ def main() -> int:
     dependencies = traces / (identifier + ".d")
     assembler_dependencies = traces / (identifier + ".assembler.d")
     compiler = Path("/usr/bin/cc")
-    command = [str(compiler), *arguments]
     preprocessed = compile_source and sources[0].suffix != ".s"
+    compiler_arguments = []
+    for argument in arguments:
+        # GCC retains the user-only dependency mode when both -MMD and -MD
+        # are passed. Select all headers explicitly before adding our rule.
+        if preprocessed and argument in {"-MMD", "--write-user-dependencies"}:
+            compiler_arguments.append("-MD")
+        elif preprocessed and argument.startswith("-Wp,"):
+            parts = argument.split(",")[1:]
+            retained = []
+            index = 0
+            while index < len(parts):
+                if parts[index] in {"-MMD", "-MD"}:
+                    # A direct preprocessor output path overrides the
+                    # driver's -MF. Our complete rule owns its output path.
+                    if index + 1 >= len(parts) or not parts[index + 1]:
+                        raise ValueError("Preprocessor dependency option requires an output path.")
+                    index += 2
+                else:
+                    retained.append(parts[index])
+                    index += 1
+            if retained:
+                compiler_arguments.append("-Wp," + ",".join(retained))
+        else:
+            compiler_arguments.append(argument)
+    command = [str(compiler), *compiler_arguments]
     if preprocessed:
         # Feeding the assembler through stdin avoids recording a compiler
         # temporary that is deleted before the driver returns.

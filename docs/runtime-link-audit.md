@@ -199,3 +199,57 @@ Keep the compiler's notices and the exact link inputs with the results. Changes 
 A separate byte comparison matched all 1,194 mapped package paths of GNU server `10efeb22` against verified registry archives or its recorded project revision. A diagnostic found notice hints in 89 files; that search does not classify every file license or clear unmapped content. The exact futures-channel `src/mpsc/queue.rs` has a two-clause BSD-style notice with no stated MIT/Apache alternative, despite its allowed package expression. Its hash and preserved notice are under `.local/gnu-mapped-package-preflight-20261003/queue-notice.json`. The [licensing inventory](licensing.md) records the original queue replacement and mandatory selected-source guard. Earlier graph checks and mapped hash coverage did not clear this exception. Whole-runtime license clearance remains false.
 
 A fresh external-TLS GNU replay produced server `2df83ea9a7fcf3ac7806d2b78687b56d0f12f6bbfebcebe1c7e8352124775c5e`. The selected local queue source hash is `398f3d9f79982b8f0c1458a4c4def36a58119521fdb2f18c5e2976f91f66e478`; it differs from the excluded upstream file and matches the mandatory replacement review. The capture and five mapped channel paths identify the local package, with no mapped registry futures-channel inputs. Build, startup, numerical, outbound TLS, source inventory and compiler-notice checks passed. The candidate also passed all 31 container and 29 HTTPS checks on separate test infrastructure. The records are `.local/channel-gnu-runtime-20261003/channel-source.json`, `.local/channel-gnu-container-20261003` and `.local/channel-gnu-https-20261003`. It has no official native-player result. These observations repair the known queue exception and validate this candidate's exercised paths; other file exceptions, inlined or unmapped content, the external standard library and distribution remain open.
+
+## System headers in dependency rules
+
+A follow-up found that OpenSSL supplies `-MMD` to its compiler calls.
+Appending `-MD` did not recover system headers in the recorded GCC driver.
+The [GCC dependency options](https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html)
+distinguish user-only rules from complete rules. A real compilation of an
+original `stdint.h` fixture reproduced the omission: the old wrapper
+preserved one input, while the corrected wrapper preserved twenty, with
+byte-identical object output. That isolated record is under
+`.local/native-mmd-header-probe-20261004`.
+
+The wrapper now replaces inherited user-only driver options and removes
+explicit preprocessor dependency destinations before selecting its complete
+rule. Other preprocessor options remain intact, and the record retains both
+original and actual arguments. All 101 Python tests passed, including real
+compiler regressions for `-MMD`, its long alias and direct preprocessor
+options, source cleanup, system-header byte preservation and unchanged
+object output. An initial direct-preprocessor attempt still redirected the
+rule to the caller's destination; the regression exposed the missing audit
+rule, and the final repair covers that case.
+
+The corrected full build, from the dirty tree at `efcaf03`, produced server
+SHA-256 `d1275bc2181ba126d1b834c3d43bea5082bddc3dc620b4395db287737173dc28`.
+Its 318 tracked source fingerprints remained unchanged during the build.
+Startup, numerical, TLS, OpenSSL exclusion, source inventory and compiler
+notice checks passed. Host verification checked 1,872 distinct preserved
+files totaling 25,071,775 bytes, covering 1,873 native paths from 1,101
+successful compilations without conflicting hashes. These include 252
+system paths. All 927 mapped native bodies match the preceding candidate's
+exact hashes, retaining the earlier locked-archive and generator evidence.
+The full mapped inventory contains 246 standard-library, 1,204 package and
+927 native paths.
+
+A conservative dependency review joined successful compilations reporting
+any mapped native input. It covers all 927 mapped bodies and 1,841 total
+inputs, including 248 system paths. Shared mapped headers can include unused
+compilation units in this union; it is not an exact retained-header count.
+No mapped system-header instruction or known non-allowlisted standard-library
+path was reported. Header macros, constants and other unmapped content still
+need review. Earlier captures do not establish complete system-include
+coverage, even though their mapped bodies remain available.
+
+This exact candidate passed 35 isolated container checks, the playlist
+catalog supplement and 29 HTTPS checks. The fixture mounted the binary and
+external standard library on separate operator infrastructure; the owned
+containers were removed. Evidence and the joined hashes are under
+`.local/native-system-headers-20261004`, with separate container and HTTPS
+directories. Its external standard-library hash remains
+`5a3f35a0e2e734369effc845ebad8b182912c600ad2114ce400ee3d2502b1ea0`.
+There is no installed-player result for this GNU candidate. Production
+remains the static image. Non-allowlisted runtime components, include
+inputs, unmapped content and distribution review continue to block release;
+all records retain `licenseClearance: false`.
