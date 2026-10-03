@@ -28,7 +28,12 @@ is served with its detected MIME type.
 
 For file items, local NFO and poster sidecars are read relative to the
 registered library directory. Movie and episode sidecars use the media stem
-(`Name.nfo` and `Name-poster.jpg`, `.png`, or `.webp`). Series, album, and
+(`Name.nfo` and `Name-poster.jpg`, `.png`, or `.webp`). Movies also accept
+`movie.nfo` in the media file's directory, ahead of the basename NFO. The
+basename is used only when `movie.nfo` is absent. A malformed, unsafe, or
+unavailable selected NFO does not trigger fallback; rejected documents
+clear the previous parental label.
+Series, album, and
 artist folders use `tvshow.nfo`, `album.nfo`, or `artist.nfo`, and standard
 folder/poster image names. A poster can be imported without an NFO document.
 If a poster is unreadable but its NFO is valid, the metadata and policy label

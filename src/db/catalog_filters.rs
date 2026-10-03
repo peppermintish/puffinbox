@@ -105,6 +105,17 @@ pub(super) fn push_selections(
     filters: &ItemFacetFilters,
 ) {
     let genres = catalog_sql::genres("i.id");
+    if !filters.studio_ids.is_empty() {
+        builder
+            .push(format!(
+                " AND EXISTS (SELECT 1 FROM {} studio_names WHERE ",
+                catalog_sql::studio_names("i.id")
+            ))
+            .push(catalog_sql::STUDIO_ID_SQL)
+            .push(" = ANY(")
+            .push_bind(filters.studio_ids.clone())
+            .push("::uuid[])) ");
+    }
     if !filters.genres.is_empty() || !filters.genre_ids.is_empty() {
         builder.push(format!(
             " AND EXISTS (SELECT 1 FROM (SELECT btrim(g.value #>> '{{}}') AS value \

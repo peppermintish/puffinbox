@@ -156,6 +156,7 @@ fn values(raw: Option<&str>, separator: char, name: &str) -> Result<Vec<String>,
 pub(crate) fn selections(
     genres: Option<&str>,
     ids: Option<&str>,
+    studio_ids: Option<&str>,
     tags: Option<&str>,
     ratings: Option<&str>,
     years: Option<&str>,
@@ -170,6 +171,13 @@ pub(crate) fn selections(
             })
             .collect::<Result<_, _>>()?,
         tags: values(tags, '|', "Tags")?,
+        studio_ids: values(studio_ids, '|', "StudioIds")?
+            .into_iter()
+            .map(|value| {
+                Uuid::parse_str(&value)
+                    .map_err(|_| ApiError::BadRequest("StudioIds must contain UUIDs".to_owned()))
+            })
+            .collect::<Result<_, _>>()?,
         official_ratings: values(ratings, '|', "OfficialRatings")?,
         years: values(years, ',', "Years")?
             .into_iter()

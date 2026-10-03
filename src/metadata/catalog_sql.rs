@@ -17,6 +17,28 @@ pub(crate) fn genres(item: &str) -> String {
     preferred(item, "m.genres", "jsonb_array_length(m.genres)>0")
 }
 
+pub(crate) const STUDIO_ID_SQL: &str = "md5('puffinbox/studio/v1:' || value)::uuid";
+
+// Studio credits currently come from bounded local NFO metadata. Keep display,
+// selection and named-item enumeration on the same exact trimmed names.
+pub(crate) fn studios(item: &str) -> String {
+    format!(
+        "COALESCE((SELECT CASE WHEN jsonb_typeof(m.metadata_json->'studios')='array' \
+         THEN m.metadata_json->'studios' ELSE '[]'::jsonb END FROM item_metadata m \
+         WHERE m.item_id={item} AND m.provider_key='local-nfo'), '[]'::jsonb)"
+    )
+}
+
+pub(crate) fn studio_names(item: &str) -> String {
+    format!(
+        "(SELECT DISTINCT btrim(studio #>> '{{}}') AS value FROM \
+         jsonb_array_elements({}) studio WHERE jsonb_typeof(studio)='string' \
+         AND octet_length(btrim(studio #>> '{{}}')) BETWEEN 1 AND 512 \
+         AND (studio #>> '{{}}') !~ '[[:cntrl:]]')",
+        studios(item)
+    )
+}
+
 pub(crate) fn tags(item: &str) -> String {
     format!(
         "COALESCE((SELECT CASE WHEN jsonb_typeof(m.metadata_json->'tags')='array' \

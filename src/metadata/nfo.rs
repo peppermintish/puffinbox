@@ -27,6 +27,7 @@ pub(super) struct LocalNfo {
     pub album_artists: Vec<String>,
     pub genres: Vec<String>,
     pub tags: Vec<String>,
+    pub studios: Vec<String>,
     pub content_rating: Option<String>,
     pub policy_rating_value: Option<i16>,
     /// An explicit TVMaze series choice supplied by the library operator.
@@ -244,6 +245,7 @@ fn is_supported_field(name: &str) -> bool {
             | "mpaa"
             | "genre"
             | "tag"
+            | "studio"
             | "tvmazeid"
     )
 }
@@ -280,19 +282,26 @@ fn apply_field(fields: &mut LocalNfo, name: &str, raw: &str) -> Result<(), &'sta
         "disc" | "discnumber" => {
             fields.disc_number = value.parse::<i32>().ok().filter(|number| *number > 0);
         }
-        "artist" | "albumartist" => {
-            let names = if name == "artist" {
-                &mut fields.artists
-            } else {
-                &mut fields.album_artists
+        "artist" | "albumartist" | "studio" => {
+            let names = match name {
+                "artist" => &mut fields.artists,
+                "studio" => &mut fields.studios,
+                _ => &mut fields.album_artists,
             };
             let value = bound(value, 512)?;
+            if name == "studio" && value.chars().any(char::is_control) {
+                return Err("nfo-invalid-studio");
+            }
             if !names
                 .iter()
                 .any(|existing| existing.eq_ignore_ascii_case(&value))
             {
                 if names.len() >= 32 {
-                    return Err("nfo-too-many-artists");
+                    return Err(if name == "studio" {
+                        "nfo-too-many-studios"
+                    } else {
+                        "nfo-too-many-artists"
+                    });
                 }
                 names.push(value);
             }
@@ -366,6 +375,24 @@ pub(super) fn parse_us_mpaa_v1(raw: &str) -> Option<i16> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn studio_credits_are_trimmed_deduplicated_and_bounded() {
+        let parsed = super::parse(b"<movie><studio> Alpha &amp; Co </studio><studio>alpha &amp; co</studio><studio>Beta</studio></movie>").unwrap();
+        assert_eq!(parsed.studios, vec!["Alpha & Co", "Beta"]);
+        assert_eq!(
+            super::parse(b"<movie><studio>Bad&#10;Studio</studio></movie>"),
+            Err("nfo-invalid-studio")
+        );
+        let many = format!(
+            "<movie>{}</movie>",
+            (0..33)
+                .map(|n| format!("<studio>Studio {n}</studio>"))
+                .collect::<String>()
+        );
+        assert_eq!(super::parse(many.as_bytes()), Err("nfo-too-many-studios"));
+        let long = format!("<movie><studio>{}</studio></movie>", "x".repeat(513));
+        assert!(super::parse(long.as_bytes()).is_err());
+    }
     use super::{LocalNfo, parse, parse_us_mpaa_v1};
 
     #[test]

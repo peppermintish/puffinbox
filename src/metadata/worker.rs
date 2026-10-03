@@ -331,16 +331,27 @@ async fn prepare_item(state: &AppState, provider: &str, item: &WorkItem) -> Prep
 
 async fn prepare_local_nfo(state: &AppState, item: &WorkItem) -> PreparedOutcome {
     let filename = nfo_filename(item);
-    let parsed = match filename.as_deref() {
-        Some(filename) => match read_item_asset(state, item, filename, nfo::MAX_NFO_BYTES).await {
-            Ok(AdjacentFileRead::Missing) => None,
+    let standard_movie_nfo = (item.item_type == "Movie").then_some("movie.nfo");
+    let has_nfo_sidecar = filename.is_some() || standard_movie_nfo.is_some();
+    let candidates = standard_movie_nfo.into_iter().chain(
+        filename
+            .as_deref()
+            .filter(|candidate| Some(*candidate) != standard_movie_nfo),
+    );
+    let mut parsed = None;
+    for candidate in candidates {
+        match read_item_asset(state, item, candidate, nfo::MAX_NFO_BYTES).await {
+            Ok(AdjacentFileRead::Missing) => continue,
             Ok(AdjacentFileRead::Unsafe) => {
                 return PreparedOutcome::ClearLocalPolicy {
                     code: "nfo-sidecar-unsafe",
                 };
             }
             Ok(AdjacentFileRead::Content(bytes)) => match nfo::parse(&bytes) {
-                Ok(parsed) => Some(parsed),
+                Ok(document) => {
+                    parsed = Some(document);
+                    break;
+                }
                 Err(error) => {
                     tracing::warn!(item_id = %item.id, code = error, "local metadata sidecar was rejected");
                     return PreparedOutcome::ClearLocalPolicy {
@@ -349,15 +360,14 @@ async fn prepare_local_nfo(state: &AppState, item: &WorkItem) -> PreparedOutcome
                 }
             },
             Err(error) => return map_read_error(error),
-        },
-        None => None,
-    };
+        }
+    }
 
     // NFO and artwork are independent inputs. In particular, a poster-only
     // folder must still produce a metadata row, and an unavailable/unsafe
     // image must not prevent a valid content classification from being saved.
     let artwork_read = read_artwork(state, item).await;
-    local_nfo_outcome(parsed, artwork_read, filename.is_some())
+    local_nfo_outcome(parsed, artwork_read, has_nfo_sidecar)
 }
 
 fn local_nfo_outcome(
@@ -399,6 +409,7 @@ fn local_nfo_outcome(
     }
     if let Some(parsed) = parsed.as_ref() {
         metadata.insert("tags".to_owned(), json!(parsed.tags));
+        metadata.insert("studios".to_owned(), json!(parsed.studios));
         if !parsed.artists.is_empty() {
             metadata.insert("artists".to_owned(), json!(parsed.artists));
         }

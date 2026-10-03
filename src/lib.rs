@@ -9,6 +9,7 @@ pub mod error;
 pub mod library;
 pub(crate) mod music_mix;
 pub mod state;
+pub(crate) mod studios;
 pub mod user_settings;
 pub(crate) mod websocket;
 

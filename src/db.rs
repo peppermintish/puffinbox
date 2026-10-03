@@ -15,8 +15,10 @@ mod catalog_relations;
 pub(crate) use catalog_relations::similar_items;
 mod music_credits;
 mod music_mix;
+mod studios;
 pub(crate) use music_credits::MusicArtistCredit;
 pub(crate) use music_mix::{MusicMixSeed, instant_mix, visible_music_genre};
+pub(crate) use studios::{StudioRecord, StudioSelection, set_studio_favorite, studio_page};
 
 use crate::{
     auth::UserRecord,
@@ -2558,6 +2560,7 @@ async fn run_item_page(
             }
             // Only internal expressions enter SQL; request text is never interpolated.
             let column = match field.trim().to_ascii_lowercase().as_str() {
+                "isfolder" => format!("(i.item_type IN {FOLDER_ITEM_TYPES_SQL})"),
                 "datecreated" | "dateadded" => "i.date_added".to_owned(),
                 "datemodified" => "i.date_modified".to_owned(),
                 "dateplayed" if query.is_resumable => "resume_data.last_played_at".to_owned(),

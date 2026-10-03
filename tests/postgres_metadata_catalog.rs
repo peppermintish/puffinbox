@@ -448,6 +448,137 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     .await;
     assert_eq!(unrated_status, StatusCode::NOT_FOUND, "{unrated_body}");
 
+    // Standard movie.nfo precedes the basename sidecar, as observed through
+    // the opaque reference API. A rejected selected file cannot borrow a rating.
+    let standard_dir = root_dir.join("Standard movie");
+    fs::create_dir(&standard_dir).unwrap();
+    let standard_path = standard_dir.join("Feature.mkv");
+    let basename_nfo = standard_dir.join("Feature.nfo");
+    let standard_nfo = standard_dir.join("movie.nfo");
+    fs::write(&standard_path, b"movie fixture").unwrap();
+    fs::write(
+        &standard_nfo,
+        b"<movie><title>Standard Movie Title</title><mpaa>G</mpaa><studio>Alpha Film Studio</studio><studio>Beta Film Studio</studio></movie>",
+    )
+    .unwrap();
+    let standard_item_id = Uuid::new_v4();
+    insert_item(&pool, standard_item_id, library_id, &standard_path).await;
+    let job = enqueue_local_refresh(&router, &token, standard_item_id).await;
+    wait_for_completed_job(&pool, job).await;
+    let (status, standard_body) = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{standard_item_id}"),
+        &policy_token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{standard_body}");
+    assert_eq!(standard_body["Name"], "Standard Movie Title");
+    assert_eq!(standard_body["OfficialRating"], "G");
+    let studios = standard_body["Studios"].as_array().unwrap();
+    assert_eq!(studios.len(), 2);
+    assert_eq!(studios[0]["Name"], "Alpha Film Studio");
+    assert_eq!(studios[1]["Name"], "Beta Film Studio");
+    let studio_id = studios[0]["Id"].as_str().unwrap();
+    let (status, selected) = call_json(
+        &router,
+        "GET",
+        &format!("/Items?Recursive=true&IncludeItemTypes=Movie&StudioIds={studio_id}"),
+        &policy_token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{selected}");
+    assert_eq!(selected["TotalRecordCount"], 1);
+    assert_eq!(selected["Items"][0]["Id"], standard_item_id.to_string());
+
+    fs::write(
+        &basename_nfo,
+        b"<movie><title>Preferred Basename Title</title><mpaa>PG-13</mpaa><studio>Preferred Studio</studio></movie>",
+    )
+    .unwrap();
+    let job = enqueue_local_refresh(&router, &token, standard_item_id).await;
+    wait_for_completed_job(&pool, job).await;
+    let (status, preferred) = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{standard_item_id}"),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(preferred["Name"], "Standard Movie Title");
+    assert_eq!(preferred["OfficialRating"], "G");
+    assert_eq!(preferred["Studios"][0]["Name"], "Alpha Film Studio");
+
+    fs::remove_file(&standard_nfo).unwrap();
+    let job = enqueue_local_refresh(&router, &token, standard_item_id).await;
+    wait_for_completed_job(&pool, job).await;
+    let (status, basename_only) = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{standard_item_id}"),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(basename_only["Name"], "Preferred Basename Title");
+    assert_eq!(basename_only["OfficialRating"], "PG-13");
+    assert_eq!(basename_only["Studios"][0]["Name"], "Preferred Studio");
+
+    fs::write(&standard_nfo, b"<movie><title>Invalid").unwrap();
+    let job = enqueue_local_refresh(&router, &token, standard_item_id).await;
+    wait_for_job(&pool, job, Some("nfo-invalid-document")).await;
+    let (status, denied) = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{standard_item_id}"),
+        &policy_token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{denied}");
+
+    fs::remove_file(&standard_nfo).unwrap();
+    let job = enqueue_local_refresh(&router, &token, standard_item_id).await;
+    wait_for_completed_job(&pool, job).await;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&basename_nfo, &standard_nfo).unwrap();
+        let job = enqueue_local_refresh(&router, &token, standard_item_id).await;
+        wait_for_job(&pool, job, Some("nfo-sidecar-unsafe")).await;
+        let (status, denied) = call_json(
+            &router,
+            "GET",
+            &format!("/Items/{standard_item_id}"),
+            &policy_token,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{denied}");
+        fs::remove_file(&standard_nfo).unwrap();
+    }
+    fs::remove_file(&basename_nfo).unwrap();
+    let job = enqueue_local_refresh(&router, &token, standard_item_id).await;
+    wait_for_completed_job(&pool, job).await;
+    let remaining_metadata: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'",
+    )
+    .bind(standard_item_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(remaining_metadata, 0);
+
     state
         .shutdown_requested
         .store(true, std::sync::atomic::Ordering::Release);
@@ -503,6 +634,10 @@ async fn enqueue_local_refresh(router: &axum::Router, token: &str, item_id: Uuid
 }
 
 async fn wait_for_completed_job(pool: &sqlx::PgPool, id: Uuid) {
+    wait_for_job(pool, id, None).await;
+}
+
+async fn wait_for_job(pool: &sqlx::PgPool, id: Uuid, expected_error: Option<&str>) {
     for _ in 0..200 {
         let row = sqlx::query("SELECT status,items_succeeded,items_errors,last_error_code FROM metadata_refresh_runs WHERE id=$1")
             .bind(id)
@@ -517,8 +652,18 @@ async fn wait_for_completed_job(pool: &sqlx::PgPool, id: Uuid) {
             let succeeded: i64 = row.try_get("items_succeeded").unwrap();
             let errors: i64 = row.try_get("items_errors").unwrap();
             let error: Option<String> = row.try_get("last_error_code").unwrap();
-            assert_eq!(status, "completed", "metadata job error {error:?}");
-            assert_eq!((succeeded, errors), (1, 0), "metadata job error {error:?}");
+            let (expected_status, expected_counts) = if expected_error.is_some() {
+                ("completed_with_errors", (0, 1))
+            } else {
+                ("completed", (1, 0))
+            };
+            assert_eq!(status, expected_status, "metadata job error {error:?}");
+            assert_eq!(
+                (succeeded, errors),
+                expected_counts,
+                "metadata job error {error:?}"
+            );
+            assert_eq!(error.as_deref(), expected_error);
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

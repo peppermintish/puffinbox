@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
@@ -21,6 +21,7 @@ pub struct DisplayMetadata {
     pub premiere_date: Option<NaiveDate>,
     pub genres: Vec<String>,
     pub tags: Vec<String>,
+    pub studios: Vec<NamedItem>,
     pub production_year: Option<i32>,
     pub track_number: Option<i32>,
     pub disc_number: Option<i32>,
@@ -31,6 +32,13 @@ pub struct DisplayMetadata {
     pub artwork_url: Option<String>,
     /// Digest used by Jellyfin-style `ImageTags.Primary` cache validation.
     pub primary_image_tag: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct NamedItem {
+    pub name: String,
+    pub id: Uuid,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -65,10 +73,15 @@ pub async fn load_display_metadata(
     }
     let mut result = HashMap::with_capacity(item_ids.len());
     for chunk in item_ids.chunks(DISPLAY_CHUNK) {
+        let studios = format!(
+            "(SELECT COALESCE(jsonb_agg(jsonb_build_object('Name',value,'Id',{}) ORDER BY value COLLATE \"C\"),'[]'::jsonb) FROM {} names)",
+            catalog_sql::STUDIO_ID_SQL,
+            catalog_sql::studio_names("requested.item_id")
+        );
         let projection = format!(
             "SELECT requested.item_id, {} AS title, {} AS overview, {} AS premiere_date, \
              {} AS genres, {} AS official_rating, {} AS tags, {} AS production_year, \
-             {} AS track_number, {} AS disc_number, \
+             {} AS track_number, {} AS disc_number, {studios} AS studios, \
              (SELECT m.metadata_json->>'communityScore' FROM item_metadata m \
               WHERE m.item_id=requested.item_id AND m.provider_key='tvmaze') AS community_score, \
              {} AS primary_image_tag FROM unnest($1::uuid[]) AS requested(item_id)",
@@ -102,6 +115,8 @@ pub async fn load_display_metadata(
                 production_year: row.try_get("production_year")?,
                 track_number: row.try_get("track_number")?,
                 disc_number: row.try_get("disc_number")?,
+                studios: serde_json::from_value(row.try_get("studios")?)
+                    .map_err(|_| ApiError::Unavailable)?,
                 ..DisplayMetadata::default()
             };
             let genres: Option<Value> = row.try_get("genres")?;

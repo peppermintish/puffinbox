@@ -144,6 +144,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::catalog_navigation::router(state.clone()))
         .merge(crate::music_mix::router(state.clone()))
         .merge(crate::catalog_filters::router(state.clone()))
+        .merge(crate::studios::router(state.clone()))
         .merge(crate::client_connection::router(state.clone()))
         .merge(crate::user_settings::router(state.clone()))
         .merge(crate::playlists::router(state.clone()))
@@ -209,6 +210,8 @@ async fn add_response_security_headers(
             .is_some_and(|(id, route)| id.parse::<Uuid>().is_ok() && route == "Images/Primary")
     });
     let is_private_catalog = path == "/Items"
+        || path == "/Studios"
+        || path.starts_with("/Studios/")
         || path == "/Playlists"
         || path.starts_with("/Playlists/")
         || path.strip_prefix("/Items/").is_some_and(|tail| {
@@ -2435,6 +2438,8 @@ pub(crate) struct ItemsQueryParams {
     genres: Option<String>,
     #[serde(default, rename = "GenreIds", alias = "genreIds")]
     genre_ids: Option<String>,
+    #[serde(default, rename = "StudioIds", alias = "studioIds")]
+    studio_ids: Option<String>,
     #[serde(default, rename = "Tags", alias = "tags")]
     tags: Option<String>,
     #[serde(default, rename = "OfficialRatings", alias = "officialRatings")]
@@ -2500,6 +2505,7 @@ pub(crate) struct BaseItemDto {
     overview: Option<String>,
     genres: Vec<String>,
     tags: Vec<String>,
+    studios: Vec<crate::metadata::NamedItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     production_year: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2634,6 +2640,9 @@ fn item_dto(
             .unwrap_or_default(),
         tags: metadata
             .map(|metadata| metadata.tags.clone())
+            .unwrap_or_default(),
+        studios: metadata
+            .map(|metadata| metadata.studios.clone())
             .unwrap_or_default(),
         production_year: metadata.and_then(|metadata| metadata.production_year),
         official_rating: metadata.and_then(|metadata| metadata.official_rating.clone()),
@@ -2821,6 +2830,7 @@ pub(crate) fn item_query(
         facets: crate::catalog_filters::selections(
             params.genres.as_deref(),
             params.genre_ids.as_deref(),
+            params.studio_ids.as_deref(),
             params.tags.as_deref(),
             params.official_ratings.as_deref(),
             params.years.as_deref(),
@@ -2845,6 +2855,7 @@ fn catalog_sort(fields: Option<&str>, orders: Option<&str>) -> Result<(String, S
         }
         let field = [
             "Default",
+            "IsFolder",
             "SortName",
             "Name",
             "DateCreated",
@@ -3152,6 +3163,13 @@ fn empty_user_data(item_id: Uuid) -> UserDataDto {
     UserDataDto {
         item_id: Some(item_id),
         ..UserDataDto::default()
+    }
+}
+
+pub(crate) fn studio_user_data(item_id: Uuid, favorite: bool) -> UserDataDto {
+    UserDataDto {
+        is_favorite: favorite,
+        ..empty_user_data(item_id)
     }
 }
 
@@ -3875,6 +3893,9 @@ async fn catalog_item_response(
         return Ok(Json(library_view_dto(&library, state.server_id)).into_response());
     }
     let Some(item) = db::get_item(&state.db, item_id).await? else {
+        if let Some(response) = crate::studios::item_response(state, user, item_id).await? {
+            return Ok(response);
+        }
         return crate::playlists::catalog_item_response(state, current, user, item_id)
             .await?
             .ok_or(ApiError::NotFound);
@@ -4069,9 +4090,12 @@ async fn get_user_item_data(
     Query(params): Query<UserDataQuery>,
 ) -> Result<Json<UserDataDto>, ApiError> {
     let user = selected_user(&state, &current, params.user_id).await?;
-    let item = db::get_item(&state.db, item_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let Some(item) = db::get_item(&state.db, item_id).await? else {
+        return crate::studios::user_data(&state, &user, item_id)
+            .await?
+            .map(Json)
+            .ok_or(ApiError::NotFound);
+    };
     if !db::item_visible_to_user(&state.db, &user, &item).await? {
         return Err(ApiError::NotFound);
     }
@@ -4229,9 +4253,11 @@ async fn update_item_favorite(
     favorite: bool,
 ) -> Result<Json<UserDataDto>, ApiError> {
     let user = selected_user(state, current, params.user_id).await?;
-    let item = db::get_item(&state.db, item_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let Some(item) = db::get_item(&state.db, item_id).await? else {
+        return Ok(Json(
+            crate::studios::favorite(state, &user, item_id, favorite).await?,
+        ));
+    };
     if !db::item_visible_to_user(&state.db, &user, &item).await? {
         return Err(ApiError::NotFound);
     }
@@ -4263,7 +4289,7 @@ pub(crate) async fn socket_user_data(
     item_id: Uuid,
 ) -> Result<Option<UserDataDto>, ApiError> {
     let Some(item) = db::get_item(&state.db, item_id).await? else {
-        return Ok(None);
+        return crate::studios::user_data(state, user, item_id).await;
     };
     if !db::item_visible_to_user(&state.db, user, &item).await? {
         return Ok(None);
@@ -4356,6 +4382,7 @@ mod item_dto_tests {
             overview: None,
             genres: Vec::new(),
             tags: Vec::new(),
+            studios: Vec::new(),
             production_year: None,
             official_rating: None,
             community_rating: None,
@@ -4482,6 +4509,7 @@ mod item_dto_tests {
             premiere_date: Some(chrono::NaiveDate::from_ymd_opt(2022, 3, 4).unwrap()),
             genres: vec!["Drama".to_owned()],
             tags: vec!["Family night".to_owned()],
+            studios: Vec::new(),
             production_year: Some(2022),
             track_number: None,
             disc_number: None,

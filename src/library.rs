@@ -83,6 +83,7 @@ pub struct ItemQuery {
 pub struct ItemFacetFilters {
     pub genres: Vec<String>,
     pub genre_ids: Vec<Uuid>,
+    pub studio_ids: Vec<Uuid>,
     pub tags: Vec<String>,
     pub official_ratings: Vec<String>,
     pub years: Vec<i32>,
