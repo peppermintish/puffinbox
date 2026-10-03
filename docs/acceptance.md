@@ -2,14 +2,18 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-03. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
-At checkpoint `39a1f4b`, all four GitHub jobs passed: [main validation](https://github.com/peppermintish/puffinbox/actions/runs/37102079631) covered the source/static build and isolated PostgreSQL/container acceptance, and [GNU runtime validation](https://github.com/peppermintish/puffinbox/actions/runs/37102079578) covered external and vendored TLS. GNU candidate `e02164b6` also passed 31 container and 29 local HTTPS checks on separately owned infrastructure. The GNU binary and runtime paths were bound into that fixture without replacing the production image's server. Evidence is under `.local/openssl-exclusion-gnu-container-20261003` and `.local/openssl-exclusion-gnu-https-20261003`. These checks do not clear linked runtime licensing or release gates.
+At checkpoint `fc2763e`, all four GitHub jobs passed: [main validation](https://github.com/peppermintish/puffinbox/actions/runs/37109614994) covered the source/static build and isolated PostgreSQL/container acceptance, and [GNU runtime validation](https://github.com/peppermintish/puffinbox/actions/runs/37109615006) covered external and vendored TLS. This includes the embedded-audio importer and its acceptance checks. Job identities, exact source hashes and successful conclusions are recorded under `.local/embedded-audio-cloud-20261003`. These results do not clear linked runtime licensing or release gates.
+
+The preceding checkpoint `39a1f4b` also passed [main validation](https://github.com/peppermintish/puffinbox/actions/runs/37102079631) and [both GNU TLS modes](https://github.com/peppermintish/puffinbox/actions/runs/37102079578). GNU candidate `e02164b6` passed 31 container and 29 local HTTPS checks on separately owned infrastructure. Its binary and runtime paths were bound into that fixture without replacing the production image's server. Evidence is under `.local/openssl-exclusion-gnu-container-20261003` and `.local/openssl-exclusion-gnu-https-20261003`.
+
+The [native source audit](runtime-link-audit.md#preserved-native-source-copies) now preserves actual byte copies after build cleanup. All 100 Python tests and the process-entry check passed. Fresh GNU candidate `d7d42ac4` passed its build, numerical, TLS, source and compiler-notice checks, with all 927 mapped native bodies verified after their originals were removed. It also passed 33 container and 29 local HTTPS checks on separate operator infrastructure. Evidence is under `.local/native-source-bytes-20261003c` and the corresponding container/HTTPS directories. Its 107 mapped generated or changed files without byte-identical package candidates still need provenance review. These audit changes leave the current static images and their client observations below unchanged; no release gate is cleared.
 
 | Check | Result |
 | --- | --- |
 | Rust formatting and strict workspace Clippy | Passed |
 | Standard Rust workspace suite | 251 passed, 0 failed; 25 database cases skipped by default |
 | Disposable PostgreSQL regression suite | 23 integration cases and 2 database-backed unit tests passed |
-| Python acceptance, route-report, and runtime-inventory tests | 92 passed, including fourteen dependency source guard and six OpenSSL exclusion regressions |
+| Python acceptance, route-report, and runtime-inventory tests | 100 passed, including native byte-copy and assembler-include regressions, fourteen dependency source guards and six OpenSSL exclusion regressions |
 | Experimental GNU process entry | C lifecycle, fork callback order, and Rust lifecycle fixtures passed; production packaging is unchanged |
 | Browser helpers, playlists, Live TV, offline cache, and book reader | Passed; book reader has 8 Node cases |
 | Cargo package audits, known-source guard, and full notices | Passed with MIT and Apache-2.0 as the only allowed licenses; remaining file-level and runtime review blocks release |

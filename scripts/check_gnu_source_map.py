@@ -135,8 +135,11 @@ def main() -> int:
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--source-hashes", required=True, type=Path, help="source hash record from the instrumented builder")
     parser.add_argument("--dependency-sources", type=Path, help="dependency and generated source snapshot from the same build")
+    parser.add_argument("--native-source-bytes", type=Path, help="verify preserved native source files from the same build")
     parser.add_argument("--output", required=True, type=Path, help="new inventory file")
     args = parser.parse_args()
+    if args.native_source_bytes and not args.dependency_sources:
+        parser.error("--native-source-bytes requires --dependency-sources.")
     try:
         import elftools
         from elftools.elf.elffile import ELFFile
@@ -150,9 +153,12 @@ def main() -> int:
         result["sourceHashesSha256"] = hashlib.sha256(args.source_hashes.read_bytes()).hexdigest()
         result["inspectorVersion"] = elftools.__version__
         if args.dependency_sources:
-            from capture_gnu_sources import mapped_dependencies
+            from capture_gnu_sources import mapped_dependencies, verify_native_source_bytes
+            dependencies = json.loads(args.dependency_sources.read_text())
+            if args.native_source_bytes:
+                result["nativeSourceByteVerification"] = verify_native_source_bytes(dependencies, args.native_source_bytes)
             result["mappedDependencySourceFiles"] = mapped_dependencies(
-                result, json.loads(args.dependency_sources.read_text()))
+                result, dependencies)
             result["dependencySourceHashesSha256"] = hashlib.sha256(args.dependency_sources.read_bytes()).hexdigest()
         with args.output.open("x") as output:
             json.dump(result, output, indent=2)

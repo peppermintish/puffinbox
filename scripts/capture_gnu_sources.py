@@ -69,31 +69,93 @@ def verify_archive(package: dict, root: Path, package_files: dict[str, str], che
     return {"registryArchiveVerified": True, "registryArchivePath": str(archive), "registryArchiveSha256": expected}
 
 
-def capture_native(traces: Path | None, *, require_compilations: bool = True) -> dict:
+def validate_native_byte_directory(store: Path) -> None:
+    if not store.is_absolute() or not store.is_dir() or store.resolve() != store:
+        raise ValueError("Native source byte directory is missing or linked.")
+
+
+def verified_native_blob(store: Path, value: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError("Invalid native source byte hash.")
+    validate_native_byte_directory(store)
+    path = store / value
+    if not path.is_file() or path.resolve() != path or digest(path) != value:
+        raise ValueError("Native source byte copy is missing, linked or altered: " + value)
+    return path
+
+
+def verify_native_source_bytes(record: dict, store: Path) -> dict:
+    """Verify relocated audit copies without trusting their original builder path."""
+    if record.get("nativeSourceBytesVerifiedAtCapture") is not True:
+        raise ValueError("Native source snapshot has no complete byte-copy verification.")
+    files = record["nativeSourceByteFiles"]
+    expected = set(record["nativeSourceFiles"].values())
+    expected.update(value for values in record["ambiguousNativeSourceFiles"].values() for value in values)
+    if set(files) != expected:
+        raise ValueError("Native source byte index does not cover its exact source hashes.")
+    for value, relative in files.items():
+        if relative != "native-source-bytes/" + value:
+            raise ValueError("Unsafe native source byte-copy path.")
+        verified_native_blob(store, value)
+    # An external-TLS build may have only compiler probes and no native sources.
+    validate_native_byte_directory(store)
+    return {"verifiedFiles": len(files), "verifiedBytes": sum((store / value).stat().st_size for value in files),
+            "licenseClearance": False}
+
+
+def capture_native(traces: Path | None, *, require_compilations: bool = True,
+                   require_source_bytes: bool = False) -> dict:
     hashes = {}
     inputs = {}
     invocations = 0
+    byte_files = {}
+    legacy = False
+    if require_source_bytes and traces is None:
+        raise ValueError("Native compiler traces are required to verify byte copies.")
     if traces is not None:
+        if not traces.is_absolute() or not traces.is_dir() or traces.resolve() != traces:
+            raise ValueError("Native compiler trace directory is missing or linked.")
         for path in sorted(traces.glob("*.json")):
+            if path.resolve() != path:
+                raise ValueError("Native compiler trace cannot follow a symlink.")
             record = json.loads(path.read_text())
             if record.get("licenseClearance") is not False:
                 raise ValueError("Unsupported native compiler trace.")
+            version = record.get("schemaVersion", 1)
+            if version not in (1, 2):
+                raise ValueError("Unsupported native compiler trace version.")
+            preserved = version == 2
+            if preserved and record.get("sourceByteDirectory") != "native-source-bytes":
+                raise ValueError("Unsafe native source byte directory.")
+            if preserved:
+                validate_native_byte_directory(traces.parent / "native-source-bytes")
+            if not preserved:
+                legacy = True
+                if require_source_bytes:
+                    raise ValueError("Legacy native compiler trace contains hashes without byte copies.")
             hashes[str(path)] = digest(path)
+            for source, value in record["sourceFiles"].items():
+                if not Path(source).is_absolute() or ".." in Path(source).parts or not re.fullmatch(r"[0-9a-f]{64}", value):
+                    raise ValueError("Unsafe native compiler source path or hash.")
+                if preserved:
+                    verified_native_blob(traces.parent / "native-source-bytes", value)
             if record["exitCode"] == 0 and record["compileSource"]:
                 invocations += 1
                 for source, value in record["sourceFiles"].items():
-                    if not Path(source).is_absolute() or ".." in Path(source).parts or not re.fullmatch(r"[0-9a-f]{64}", value):
-                        raise ValueError("Unsafe native compiler source path or hash.")
                     inputs.setdefault(source, set()).add(value)
+                    if preserved:
+                        byte_files[value] = "native-source-bytes/" + value
         if not hashes or (require_compilations and not invocations):
             raise ValueError("Native compiler source traces are missing or contain no successful compilation.")
     return {"nativeCompilerTraceHashes": hashes, "nativeCompileInvocations": invocations,
+            "nativeSourceByteFiles": byte_files,
+            "nativeSourceBytesVerifiedAtCapture": traces is not None and not legacy,
             "nativeSourceFiles": {path: next(iter(values)) for path, values in inputs.items() if len(values) == 1},
             "ambiguousNativeSourceFiles": {path: sorted(values) for path, values in inputs.items() if len(values) != 1}}
 
 
 def capture(metadata: dict, generated: Path, lockfile: Path, native_traces: Path | None = None,
-            *, require_native_compilations: bool = True) -> dict:
+            *, require_native_compilations: bool = True, require_native_source_bytes: bool = False) -> dict:
     locked = tomllib.loads(lockfile.read_text())
     checksums = {}
     for package in locked["package"]:
@@ -146,7 +208,8 @@ def capture(metadata: dict, generated: Path, lockfile: Path, native_traces: Path
     return {"schemaVersion": 1, "packages": packages, "sourceFiles": sources,
             "generatedSourceRoot": str(generated), "generatedSourceFiles": generated_sources,
             "lockfileSha256": digest(lockfile),
-            **capture_native(native_traces, require_compilations=require_native_compilations), "licenseClearance": False,
+            **capture_native(native_traces, require_compilations=require_native_compilations,
+                             require_source_bytes=require_native_source_bytes), "licenseClearance": False,
             "scope": "Source bytes available after the disposable build, package declarations, and exact notice hashes. "
                      "Archive and file verification binds registry bytes to the lockfile's package checksums. This snapshot does "
                      "not prove which headers, constants, or generated inputs were retained, or clear file exceptions."}

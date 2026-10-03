@@ -67,7 +67,8 @@ def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, s
         ["cargo", "metadata", "--locked", "--offline", "--format-version", "1",
          "--filter-platform", "x86_64-unknown-linux-gnu"], cwd=root, env=environment, text=True))
     dependencies = capture(metadata, output / "target/x86_64-unknown-linux-gnu/release/build", root / "Cargo.lock",
-                           output / "native-compiler-traces", require_native_compilations=not external_openssl)
+                           output / "native-compiler-traces", require_native_compilations=not external_openssl,
+                           require_native_source_bytes=True)
     with (output / "dependency-source-hashes.json").open("x") as ledger:
         json.dump(dependencies, ledger, indent=2)
         ledger.write("\n")
@@ -76,6 +77,8 @@ def capture_source_mapping(output: Path, sysroot: Path, environment: dict[str, s
             "dependencyPackages": len(dependencies["packages"]),
             "dependencySourceFiles": len(dependencies["sourceFiles"]),
             "generatedSourceFiles": len(dependencies["generatedSourceFiles"]),
+            "preservedNativeSourceFiles": len(dependencies["nativeSourceByteFiles"]),
+            "nativeSourceBytesVerifiedAtCapture": dependencies["nativeSourceBytesVerifiedAtCapture"],
             "dependencySourceHashesSha256": digest(output / "dependency-source-hashes.json"),
             "sourceHashesSha256": digest(output / "standard-library-source-hashes.json"), "licenseClearance": False}
 

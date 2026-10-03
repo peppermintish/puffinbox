@@ -53,6 +53,7 @@ python3 scripts/check_gnu_source_map.py \
   --binary /probe/output/server \
   --source-hashes /probe/output/standard-library-source-hashes.json \
   --dependency-sources /probe/output/dependency-source-hashes.json \
+  --native-source-bytes /probe/output/native-source-bytes \
   --output /probe/output/source-line-inventory.json
 ```
 
@@ -60,7 +61,11 @@ The checker resolves DWARF 4 and 5 file indexes, attributes only nonempty interv
 
 The dependency snapshot records the resolved package versions, declared licenses, manifest hashes, and license/notice file hashes. Each downloaded `.crate` archive must match its lockfile checksum, and every extracted registry file must match that archive. Extra source files fail. Cargo's own `.cargo-ok` cache marker is excluded from the archive comparison. These are registry archives; [directory sources](https://doc.rust-lang.org/cargo/reference/source-replacement.html#directory-sources) use a different checksum record.
 
-The native compiler wrapper records successful C and assembly inputs before temporary OpenSSL sources are removed. GCC's documented [dependency options](https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html) supply included headers for preprocessed inputs, including system headers. Plain assembly records its input file. Failed compilations and compiler probes do not establish retained inputs. Multiple hashes for one source path stay ambiguous and fail if that path is mapped into the executable.
+The native compiler wrapper copies C and assembly inputs before temporary OpenSSL sources are removed. GCC's documented [dependency options](https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html) supply included headers for preprocessed inputs, including system headers. The [GNU assembler's dependency rule](https://sourceware.org/binutils/docs/as/MD.html) also supplies `.include` and `.incbin` inputs. Preprocessed inputs reach the assembler through a pipe, avoiding a deleted intermediate file in that rule. Each complete copy is published atomically under its SHA-256 name in `native-source-bytes`; concurrent compiler invocations share identical copies. The enclosing audit directory stays private, with copies readable for host-side review. The wrapper rejects a file that changes while it is being copied. Copies are read after compilation, so they do not prove which bytes the compiler read if an input changed during compilation. Failed compilations and compiler probes do not establish retained inputs. Multiple hashes for one source path stay ambiguous and fail if that path is mapped into the executable.
+
+New builds require these copies and verify their contents before recording the dependency snapshot. The inspector's `--native-source-bytes` option verifies them again, including after the output is moved from the builder. Missing, altered or symlinked copies fail; an incomplete index or escaping path fails as well. Historical hash-only traces remain readable but cannot satisfy a byte-copy requirement. The copies are private audit material that can include non-allowlisted source and system headers. They are excluded from CI uploads and release bundles; CI saves the hash index and verification result only. Inspect the local copies before removing a disposable output directory.
+
+Assembler rules can also contain DWARF filename labels that omit a separate directory. A missing label resolves only to one exact suffix match among the already reported compiler inputs. The trace records that alias; an unknown or ambiguous match fails. Existing assembler paths remain separate captured inputs.
 
 With `--dependency-sources`, every mapped dependency path must have a captured hash. The most specific package root supplies its declaration; native and generated files retain a separate review requirement. Byte-identical package files are candidates for provenance review, not an automatic license assignment. Post-build package snapshots and native compiler traces do not establish every compile-time input or individual-file exception. Included-header hashes also do not establish which header content was retained.
 

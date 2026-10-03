@@ -107,6 +107,7 @@ jobs:
             --binary "$RUNNER_TEMP/gnu-probe/output/server" \
             --source-hashes "$RUNNER_TEMP/gnu-probe/output/standard-library-source-hashes.json" \
             --dependency-sources "$RUNNER_TEMP/gnu-probe/output/dependency-source-hashes.json" \
+            --native-source-bytes "$RUNNER_TEMP/gnu-probe/output/native-source-bytes" \
             --output "$RUNNER_TEMP/source-line-inventory.json"
 
       - name: Classify exact mapped standard-library paths against compiler notices
