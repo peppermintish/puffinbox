@@ -253,3 +253,48 @@ There is no installed-player result for this GNU candidate. Production
 remains the static image. Non-allowlisted runtime components, include
 inputs, unmapped content and distribution review continue to block release;
 all records retain `licenseClearance: false`.
+
+## Native preprocessor replay
+
+The preserved `d1275bc2` compiler records were replayed without compiling or
+replacing any object. The replay used the exact captured `/usr/bin/cc` hash,
+all 1,841 conservative dependency inputs, the original working directories
+and compiler flags, and the immutable builder image. Dependency destinations,
+object output and compile-only flags were removed for preprocessing. The
+container had no network, dropped all capabilities and wrote only to its
+owned private output directory and ephemeral source tree.
+
+All 1,034 C and preprocessed-assembly commands completed with both `-E -dD`
+and `-E -dU`. The other 39 plain assembly commands have no preprocessor
+replay. GCC's [preprocessor documentation](https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html)
+describes `-dD` as emitting definitions with preprocessed output, and `-dU`
+as reporting macros expanded or tested for definedness. These observations
+therefore include control macros, not just emitted code. Shared mapped
+headers also select some compilations whose object code may be unused.
+
+An independent host pass verified all 3,102 compressed records and outputs,
+their decompressed hashes and lengths, compiler-trace hashes, parsed
+definitions and exact definition-text joins. The two preprocessor modes
+produced 1,664,294,821 uncompressed text bytes. The joins report 291,225
+system macro use-or-test observations, 948 distinct macro names and 128
+system headers. There are no unmatched definition joins; 34,967 observations
+have multiple possible system origins, all retained in the records.
+
+A physical-line review of the 248 conservative system inputs found 5,771
+macro definitions and four definitions exceeding ten lines. The replay
+reported two of those larger candidates: `__SOCKADDR_ALLTYPES` in 1,032
+commands and `__tobody` in two. Neither pthread cleanup candidate appeared
+in this joined use-or-test set. This is a review queue, not a determination
+of retained executable content or applicable license terms. A whitespace-
+normalized notice search found LGPL-2.1-or-later text in 159 inputs, SPDX
+markers requiring review in 35, GCC exception text in five, and no classified
+notice in 49. Those search categories do not assign licenses to the headers
+or authorize bundling them under the project policy.
+
+Evidence is under `.local/native-macro-replay-20261004d`, with the exact
+compressed outputs in its private WSL directory. Earlier failed mount and
+permission attempts remain separately recorded; the three-command pilot
+also passed before the complete replay. No server, dependency, build flag,
+package allowlist or production image changed. Header contributions,
+constants, inlined and unmapped content, external-runtime distribution and
+whole-binary licensing remain uncleared.
