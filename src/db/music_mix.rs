@@ -38,7 +38,9 @@ pub(crate) async fn instant_mix(
     let mut builder = QueryBuilder::<Postgres>::new("WITH visible_music AS (");
     push_visible_music(&mut builder, user);
     builder
-        .push("), requested_tracks AS (SELECT id,MIN(ordinal) AS ordinal FROM unnest(")
+        .push("), visible_catalog_nodes AS (SELECT * FROM visible_music)")
+        .push(super::music_credits::CREDIT_CTES)
+        .push(", requested_tracks AS (SELECT id,MIN(ordinal) AS ordinal FROM unnest(")
         .push_bind(seed.tracks.to_vec())
         .push("::uuid[]) WITH ORDINALITY AS request(id,ordinal) GROUP BY id), seed_tracks AS (\
                SELECT i.*,request.ordinal FROM visible_music i JOIN requested_tracks request ON request.id=i.id \
@@ -70,18 +72,17 @@ pub(crate) async fn instant_mix(
          SELECT DISTINCT album.id,album.library_id,album.parent_id FROM source_nodes source \
          JOIN visible_music album ON album.id=CASE WHEN source.item_type='MusicAlbum' THEN source.id ELSE source.parent_id END \
          AND album.library_id=source.library_id AND album.item_type='MusicAlbum'), seed_artists AS (\
-         SELECT artist.id FROM seed_albums album JOIN visible_music artist ON artist.id=album.parent_id \
-         AND artist.library_id=album.library_id AND artist.item_type='MusicArtist' \
+         SELECT credit.artist_id AS id FROM source_nodes source JOIN music_credits credit ON credit.item_id=source.id \
          UNION SELECT id FROM source_nodes WHERE item_type='MusicArtist'), seed_genres AS (\
          SELECT DISTINCT lower(btrim(g.value #>> '{}')) AS genre FROM source_nodes \
          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(genres,'[]'::jsonb)) g(value) \
          WHERE jsonb_typeof(g.value)='string' AND octet_length(btrim(g.value #>> '{}')) BETWEEN 1 AND 128), scored AS (\
          SELECT i.*,seed.ordinal,affinity.genre_count*4 \
          + CASE WHEN album.id IN (SELECT id FROM seed_albums) THEN 6 ELSE 0 END \
-         + CASE WHEN artist.id IN (SELECT id FROM seed_artists) THEN 8 ELSE 0 END AS score \
+         + CASE WHEN EXISTS (SELECT 1 FROM music_credits credit WHERE credit.item_id=i.id \
+             AND credit.artist_id IN (SELECT id FROM seed_artists)) THEN 8 ELSE 0 END AS score \
          FROM visible_music i LEFT JOIN seed_tracks seed ON seed.id=i.id \
          LEFT JOIN visible_music album ON album.id=i.parent_id AND album.library_id=i.library_id AND album.item_type='MusicAlbum' \
-         LEFT JOIN visible_music artist ON artist.id=album.parent_id AND artist.library_id=i.library_id AND artist.item_type='MusicArtist' \
          CROSS JOIN LATERAL (SELECT COUNT(DISTINCT genre) AS genre_count FROM seed_genres \
          JOIN jsonb_array_elements(COALESCE(i.genres,'[]'::jsonb)) g(value) ON genre=lower(btrim(g.value #>> '{}')) \
          WHERE jsonb_typeof(g.value)='string') affinity WHERE i.item_type='Audio'), candidates AS (SELECT * FROM scored WHERE ",

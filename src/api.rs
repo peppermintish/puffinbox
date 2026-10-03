@@ -3087,6 +3087,18 @@ async fn item_query_result(
 ) -> Result<ItemsResultDto, ApiError> {
     let start_index = query.start_index;
     let (items, total_record_count) = db::browse_items(&state.db, user, query).await?;
+    Ok(ItemsResultDto {
+        items: item_dtos_for_user(state, user, &items).await?,
+        total_record_count,
+        start_index,
+    })
+}
+
+pub(crate) async fn item_dtos_for_user(
+    state: &AppState,
+    user: &UserRecord,
+    items: &[ItemRecord],
+) -> Result<Vec<BaseItemDto>, ApiError> {
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
     let user_data = db::item_user_data(&state.db, user.id, &item_ids).await?;
     let navigation = db::item_navigation_links(&state.db, user, &item_ids).await?;
@@ -3108,11 +3120,7 @@ async fn item_query_result(
             )
         })
         .collect();
-    Ok(ItemsResultDto {
-        items,
-        total_record_count,
-        start_index,
-    })
+    Ok(items)
 }
 
 fn user_data_dto(

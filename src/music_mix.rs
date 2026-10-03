@@ -138,14 +138,12 @@ async fn response(
     )
     .await?;
     let mut result = MixResult {
-        items: Vec::with_capacity(items.len()),
+        items: api::item_dtos_for_user(state, user, &items).await?,
         total_record_count: total,
         start_index: 0,
     };
-    for item in items {
-        let mut dto = api::item_dto_for_user(state, user, &item).await?;
+    for dto in &mut result.items {
         dto.include_images_and_user_data(images, user_data);
-        result.items.push(dto);
     }
     Ok(Json(result))
 }
@@ -180,7 +178,12 @@ async fn from_item(
             &state.db,
             &user,
             ItemQuery {
-                parent_id: Some(item.id),
+                parent_id: (item.item_type == "MusicAlbum").then_some(item.id),
+                artist_ids: if item.item_type == "MusicArtist" {
+                    vec![item.id]
+                } else {
+                    Vec::new()
+                },
                 recursive: true,
                 include_item_types: vec!["Audio".to_owned()],
                 limit: 32,

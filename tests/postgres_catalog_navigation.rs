@@ -1415,6 +1415,74 @@ async fn verify_music_credit_queries(
     assert_eq!(details["Artists"], json!(["Reference Guest Artist"]));
     assert_eq!(details["AlbumArtists"][0]["Id"], lead.to_string());
     assert_eq!(details["ArtistItems"].as_array().unwrap().len(), 1);
+    for path in [
+        format!("/Items/{guest}/InstantMix"),
+        format!("/Artists/{guest}/InstantMix"),
+        format!("/Items/{guest_track}/Similar"),
+    ] {
+        assert_eq!(
+            call(router, &path, Some(denied_token)).await.status(),
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+    // Puffinbox's recommendation rule must consume the same visible credits
+    // as browsing. The guest contribution must not disappear from its seeds.
+    for route in ["Items", "Artists"] {
+        let mix = body_json(
+            call(
+                router,
+                &format!("/{route}/{guest}/InstantMix?Limit=100"),
+                Some(token),
+            )
+            .await,
+        )
+        .await;
+        let ids = mix["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["Id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 3, "{route}: {mix}");
+        assert_eq!(ids[..2], [guest_track.to_string(), solo_track.to_string()]);
+        assert_eq!(ids[2], lead_track.to_string());
+    }
+    for (source, related, excluded) in [
+        (solo_track, guest_track, vec![]),
+        (guest_track, solo_track, vec![guest]),
+        (solo, shared, vec![guest]),
+    ] {
+        let path = format!("/Items/{source}/Similar?Limit=100");
+        let similar = body_json(call(router, &path, Some(token)).await).await;
+        assert!(
+            similar["Items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["Id"] == related.to_string()),
+            "{path}: {similar}"
+        );
+        for artist in excluded {
+            let filtered = body_json(
+                call(
+                    router,
+                    &format!("{path}&ExcludeArtistIds={artist}"),
+                    Some(token),
+                )
+                .await,
+            )
+            .await;
+            assert!(
+                filtered["Items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|item| item["Id"] != related.to_string()),
+                "{path}: {filtered}"
+            );
+        }
+    }
     for (artist, songs, albums) in [(lead, 2, 1), (guest, 2, 2)] {
         let details = body_json(
             call(
@@ -1498,6 +1566,15 @@ async fn verify_music_credit_queries(
     assert_eq!(details["AlbumArtists"][0]["Id"], lead.to_string());
     let album = body_json(call(router, &format!("/Items/{shared}"), Some(token)).await).await;
     assert!(!album.to_string().contains("Reference Guest Artist"));
+    let similar =
+        body_json(call(router, &format!("/Items/{solo_track}/Similar"), Some(token)).await).await;
+    assert_eq!(similar["TotalRecordCount"], 0, "{similar}");
+    assert_eq!(
+        call(router, &format!("/Artists/{guest}/InstantMix"), Some(token))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
     sqlx::query("UPDATE items SET path='/credits/guest' WHERE id=$1")
         .bind(guest)
         .execute(pool)
@@ -1528,6 +1605,10 @@ async fn verify_music_credit_queries(
     assert_eq!(details["SongCount"], 1);
     assert_eq!(details["AlbumCount"], 1);
     assert_eq!(details["RunTimeTicks"], 50000000);
+    let mix =
+        body_json(call(router, &format!("/Artists/{guest}/InstantMix"), Some(token)).await).await;
+    assert_eq!(mix["TotalRecordCount"], 1);
+    assert_eq!(mix["Items"][0]["Id"], solo_track.to_string());
     let hidden = body_json(
         call(
             router,

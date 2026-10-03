@@ -137,11 +137,7 @@ async fn similar_items(
         let (items, total) =
             db::similar_items(&state.db, &user, item.id, limit, &excluded_artists).await?;
         result.total_record_count = total;
-        for item in items {
-            result
-                .items
-                .push(api::item_dto_for_user(&state, &user, &item).await?);
-        }
+        result.items = api::item_dtos_for_user(&state, &user, &items).await?;
     }
     Ok(Json(result))
 }
