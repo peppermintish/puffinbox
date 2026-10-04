@@ -2,6 +2,47 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
+The audio-field build passed all thirteen source checks: formatting, strict
+Clippy, 258 Rust cases, all 29 enabled database cases, 130 Python cases, TLS,
+both package audits, selected-source guards and full notices. The standard Rust
+run ignored the 29 database cases; the separate database run passed all 26
+integration and three unit cases. Four compiled Python controls were skipped
+in the default run. The preceding GNU audit separately passed all 80 regressions
+with its C and Rust controls enabled.
+
+Core `6c44dc12`, separate operator runtime `efda02b2` and server `164d3d54` passed
+35 container checks and 29 local HTTPS checks. Thirteen audio details and four
+album lists match the unchanged Jellyfin 12 public reference, including field
+presence. Current embedded metadata without an album name no longer supplies
+the physical folder name as Audio Album; AlbumId remains available. Ordinary
+item lists return SortName when requested through Fields. Database coverage
+checks both list routes, detail routes, stable sorting and paging. Legacy and
+stale metadata fallbacks and the wider Fields contract remain qualified.
+
+Both official web and Qt 6 Desktop completed the original four-track FLAC album
+in the reference queue order. Each returned fifteen successful playback reports
+and added one play per track. Desktop WASAPI audio EOF and advancing web audio
+were observed. Independent reads matched all 50 saved rows to those plays;
+identity, grants, mounts, playlists, studio favorites and media hashes were
+retained without a reset. Desktop used Remember Me off, closed normally and
+kept its settings hash. Joined evidence binds 402 source fingerprints under
+`.local/audio-album-field-client-20261004`. Audible quality, general native video,
+wider formats and final-position reliability remain unvalidated. The complete
+runtime license boundary and all five release gates remain open. Packaged
+documentation predates this entry.
+
+Two album-queue projections match IDs, names, Album, SortName and numeric fields.
+Disabled-total counts remain different and are excluded from those passes.
+Twelve further public reads of the same four-track reference album return a
+total of four with counting enabled or disabled, including an empty final page.
+This observation has not yet been implemented or established for wider queries.
+See [the field contract](jellyfin12-embedded-audio.md#audio-album-and-requested-sort-name).
+
+At `22112d1`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37182996468)
+and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37182996505)
+completed successfully. These results cover the bounded string inspector and
+precede this audio-field patch. Current-patch cloud validation is pending.
+
 The album-name build passed all thirteen source checks: 258 Rust tests with
 zero failures and 29 ignored database cases, all 29 database cases when enabled,
 119 Python tests with three compiler-dependent cases skipped, formatting,

@@ -2410,6 +2410,8 @@ pub(crate) struct ItemsQueryParams {
     include_item_types: Option<String>,
     #[serde(default, rename = "MediaTypes", alias = "mediaTypes")]
     media_types: Option<String>,
+    #[serde(default, rename = "Fields", alias = "fields")]
+    fields: Option<String>,
     #[serde(
         default,
         rename = "Recursive",
@@ -2759,7 +2761,15 @@ fn item_dto(
         album: (item.item_type == "Audio")
             .then(|| metadata.and_then(|metadata| metadata.album.clone()))
             .flatten()
-            .or_else(|| navigation.and_then(|links| links.album.clone())),
+            .or_else(|| {
+                if item.item_type == "Audio"
+                    && metadata.is_some_and(|metadata| metadata.has_current_audio_source)
+                {
+                    None
+                } else {
+                    navigation.and_then(|links| links.album.clone())
+                }
+            }),
         album_id: navigation.and_then(|links| links.album_id),
         artist_items,
         artists,
@@ -3102,6 +3112,11 @@ async fn browse_items(
     Query(params): Query<ItemsQueryParams>,
 ) -> Result<Response, ApiError> {
     let selected = selected_user(&state, &current, params.user_id).await?;
+    let include_sort_name = params.fields.as_deref().is_some_and(|fields| {
+        fields
+            .split(',')
+            .any(|field| field.trim().eq_ignore_ascii_case("SortName"))
+    });
     let multiple_sorts = params
         .sort_by
         .as_deref()
@@ -3142,7 +3157,13 @@ async fn browse_items(
         return crate::playlists::catalog_children_result(&state, &current, parent_id, query).await;
     }
     ensure_parent_visible(&state, &selected, query.parent_id).await?;
-    Ok(Json(item_query_result(&state, &selected, query).await?).into_response())
+    let mut result = item_query_result(&state, &selected, query).await?;
+    if !include_sort_name {
+        for item in &mut result.items {
+            item.sort_name = None;
+        }
+    }
+    Ok(Json(result).into_response())
 }
 
 async fn browse_user_items(

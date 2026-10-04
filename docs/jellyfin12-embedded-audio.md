@@ -161,14 +161,14 @@ the folder name and its stored sort name. This conservative ambiguity policy
 has database coverage; it is not established as Jellyfin's ambiguity behavior.
 The same name supplies DTOs, exact-name selection, album search and ordering
 before paging. Audio Album sorting can use its own visible parent's name.
-The plain track's returned Album field still falls back to its physical folder
-name and differs from the reference null. Both detail and Play queues now start
+On preceding core `aa0e55dc`, the plain track's returned Album fell back to its
+physical folder name and differed from the reference null. Both detail and Play queues now start
 with the plain track, followed by Beta, Alpha and Conflicting. Two queue reads
 match ordered IDs, names and numeric fields. Unrequested SortName presence and
 disabled-total semantics remain qualified; their broader failed comparison is
 preserved.
 
-On the current image, both album details, all 24 order/page queries and all ten
+On preceding core `aa0e55dc`, both album details, all 24 order/page queries and all ten
 artist-scoped searches match the projected reference fields and ordered IDs. Both
 official clients display Embedded Album and complete its four-track FLAC queue.
 Each client adds one play per track; all 50 saved rows, grants, IDs and fixture
@@ -176,3 +176,38 @@ hashes remain intact. Records are under `.local/album-tag-name-client-20261004`.
 Tag-named album creation, merged folders, conflicting tags, album-only artist
 registration, parent DTO naming, artwork, wider formats and full music behavior
 remain incomplete or unvalidated.
+
+## Audio Album and requested sort name
+
+Fresh public reads on 2026-10-04 used the unchanged reference container and its
+thirteen original FLAC files. Audio details include SortName. The plain track
+omits Album while retaining AlbumId. Four ordinary album-child lists select no
+Fields, SortName alone, Genres/Overview, or a larger set containing SortName.
+SortName appears only in the two lists requesting it. The original media hashes,
+reference grants and metadata are unchanged. Exact reads are under
+`.local/audio-album-field-contract-20261004`.
+
+Puffinbox's current permitted embedded audio metadata supplies Album only when
+it contains a valid album name. AlbumId still comes from permitted navigation.
+The existing physical-folder fallback remains for legacy and stale metadata;
+that fallback is not established as reference behavior. Ordinary GET /Items
+and GET /Users/{userId}/Items select SortName through Fields without changing
+their database sort or paging keys. Detail endpoints retain SortName. Playlist
+branches and specialized latest, similar and artist endpoints retain their
+preceding behavior; other ItemFields are not implemented by this change.
+
+Core `6c44dc12` matches all seventeen detail/list field observations. Its two
+original album-queue projections match ordered IDs, Name, Album, SortName and
+numeric fields. Disabled-total semantics are excluded: the reference returns
+four while this build omits the count. Twelve additional reference queries on
+both ordinary list routes use enabled/disabled counts and two-item pages at
+offsets zero, two and four. Each returns a total of four, including the empty
+page. This bounded observation remains open for implementation and wider tests.
+Exact records are under `.local/album-queue-count-contract-20261004`.
+
+Both official web and Qt 6 Desktop completed the four-track FLAC queue on the
+new image with fifteen successful playback reports each. Fresh reads matched
+all 50 saved rows to one added play per track per client; grants, identity and
+fixture bytes were retained without a reset. Joined records are under
+`.local/audio-album-field-client-20261004`. Wider field selection, count semantics,
+legacy metadata behavior and complete music compatibility remain partial.

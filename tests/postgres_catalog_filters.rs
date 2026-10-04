@@ -1728,12 +1728,52 @@ async fn verify_embedded_audio_metadata(
     .fetch_one(pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE item_metadata SET metadata_json=metadata_json || '{\"artists\":[],\"albumArtists\":[]}'::jsonb WHERE item_id=$1 AND provider_key='embedded-audio'")
+    sqlx::query("UPDATE item_metadata SET metadata_json=(metadata_json - 'album') || '{\"artists\":[],\"albumArtists\":[]}'::jsonb WHERE item_id=$1 AND provider_key='embedded-audio'")
         .bind(second).execute(pool).await.unwrap();
     let empty = json_body(call(router, &format!("/Items/{second}"), Some(token)).await).await;
     assert_eq!(empty["Artists"], json!([]));
     assert_eq!(empty["ArtistItems"], json!([]));
     assert_eq!(empty["AlbumArtists"], json!([]));
+    assert!(empty.get("Album").is_none());
+    assert_eq!(empty["AlbumId"], album.to_string());
+    assert!(empty.get("SortName").is_some());
+    let user_detail = json_body(
+        call(
+            router,
+            &format!("/Users/{owner}/Items/{second}"),
+            Some(token),
+        )
+        .await,
+    )
+    .await;
+    assert!(user_detail.get("Album").is_none());
+    assert_eq!(user_detail["AlbumId"], album.to_string());
+    for page_prefix in [
+        prefix.clone(),
+        format!("/Items?ParentId={album}&IncludeItemTypes=Audio&UserId={owner}"),
+    ] {
+        for (fields, requested) in [
+            ("", false),
+            ("&Fields=Genres,Overview", false),
+            ("&Fields=SortName", true),
+            ("&fields=SortName,Genres", true),
+        ] {
+            let page = json_body(
+                call(
+                    router,
+                    &format!("{page_prefix}&SortBy=SortName&StartIndex=1&Limit=1{fields}"),
+                    Some(token),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(item_ids(&page), [second]);
+            assert_eq!(page["TotalRecordCount"], 2);
+            assert!(page["Items"][0].get("Album").is_none());
+            assert_eq!(page["Items"][0]["AlbumId"], album.to_string());
+            assert_eq!(page["Items"][0].get("SortName").is_some(), requested);
+        }
+    }
     for selector in ["ArtistIds", "AlbumArtistIds"] {
         let selected = json_body(
             call(

@@ -212,10 +212,17 @@ gap, without clearing every source file, retained constant or runtime input.
 
 ## Album-name image notice check
 
-The current static server `523c195b` still defines 41 generated Rust Unicode
+The preceding album-name server `523c195b` still defines 41 generated Rust Unicode
 namespace symbols. Its retained image contains the exact supplemental timestamp
 MIT notice (`e239ef69`), verified against the reviewed source bytes. Source guards,
 package audits and full notice generation pass without exceptions. This image
 check does not clear standard-library, native, startup, compiler-builtins,
 anonymous or inlined inputs. Exact records are under
 `.local/album-tag-name-client-20261004`; all release gates remain open.
+
+The audio-field image's exact static server `164d3d54` also defines 41 generated
+Rust Unicode namespace symbols. The retained image has the reviewed timestamp
+MIT notice with unchanged SHA-256 `e239ef69`; package audits, source guards and
+full notice generation pass without exceptions. Exact records are under
+`.local/audio-album-field-client-20261004`. Standard-library, native, startup,
+compiler-builtins, anonymous and inlined input review remains open.
