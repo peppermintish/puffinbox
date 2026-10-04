@@ -639,6 +639,42 @@ replay, exact tool hashes and initial control failures are under
 `.local/postgres-scram-gnu-20261004`. Complete executable/data licensing,
 production adoption and all five release gates remain open.
 
+## Bounded string references
+
+A later checker replay on the same `3bbe84d4` binary follows the observed Rust
+`&str` layout inside source-associated, bounded read-only variables. It accepts
+constant structure-member offsets and validates pointer, unsigned length and
+byte-element types. A nonempty PIE reference must have one local
+`R_X86_64_RELATIVE` relocation. Its addend supplies the link-image address;
+the [AMD64 ABI draft 0.99.6, table 4.10](https://refspecs.linuxfoundation.org/elf/x86_64-abi-0.99.pdf)
+documents the relocation and the write widths used for overlap checks. External,
+duplicate or overlapping pointer relocations are rejected. Payloads must fit
+wholly within one loaded read-only section, contain valid UTF-8, have no
+relocations and stay within the one-MiB inspection bound. Empty strings are
+recorded without dereferencing their pointer.
+
+The replay records 443 fields: 441 nonempty references and two empty strings,
+with no rejected fields in this narrow scope. The nonempty references match the
+exploratory ranges and hashes exactly. Their 210 distinct payload ranges cover
+13,795 `.rodata` bytes. Combined variable and string coverage is 36,435 of
+993,372 bytes; 956,937 remain outside it. The earlier variable rows, source
+associations and coverage are unchanged. Aliases and overlaps are measured by
+range union rather than addition.
+
+All 80 GNU audit regressions passed, including 22 data controls. A compiled Rust
+PIE fixture checks nested fields, shared payloads, empty strings and array
+exclusion against real DWARF and relocations. Negative controls cover malformed
+types, cycles, bounds, invalid UTF-8, unsupported machines and relocations. CI
+requires both C and Rust controls. Exact binary and later checker hashes are
+under `.local/gnu-pointed-data-20261004`; the first replay's conservative refusal
+of an unrelated TLS relocation remains preserved.
+
+A root declaration is an association, not proof of a literal's source origin.
+Arrays, variant parts, arbitrary pointer graphs, anonymous roots and the
+remaining read-only bytes are still outside this inspection. This replay is an
+audit of the earlier GNU binary, not a build of the current album-name source.
+It does not change runtime packaging, the allowlist or `licenseClearance: false`.
+
 ## Selected package inputs and timestamp notice
 
 The 103 packages with named retained sections in GNU `3bbe84d4` join to 103

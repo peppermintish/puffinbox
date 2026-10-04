@@ -114,7 +114,7 @@ jobs:
             --native-source-bytes "$RUNNER_TEMP/gnu-probe/output/native-source-bytes" \
             --output "$RUNNER_TEMP/source-line-inventory.json"
 
-      - name: Inspect read-only variable data and run compiled controls
+      - name: Inspect read-only variables and strings with compiled C and Rust controls
         run: |
           PYTHONPATH="$RUNNER_TEMP/gnu-inspector" python3 scripts/test_gnu_data.py --require-controls -v
           PYTHONPATH="$RUNNER_TEMP/gnu-inspector" python3 scripts/check_gnu_data.py \

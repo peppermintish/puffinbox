@@ -46,6 +46,21 @@ read-only variable-data audit and timestamp notice; they precede album naming.
 Exact job identities and conclusions are under
 `.local/native-source-bytes-cloud-20261003`.
 
+At album-name checkpoint `6e000d3`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37181436318)
+and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37181436376)
+completed successfully. These cover the album-name source and database changes,
+static packaging, isolated media acceptance and the preceding GNU audit tooling.
+The later pointed-string inspection was not part of those runs.
+
+The [bounded string audit](runtime-link-audit.md#bounded-string-references)
+passed all 80 GNU regressions, including 22 data controls. A later replay on the
+earlier GNU `3bbe84d4` binary matches 441 nonempty references and records two
+empty strings. Combined variable and string coverage reaches 36,435 of 993,372
+`.rodata` bytes. Root declarations remain associations; anonymous and other
+uncovered data are not cleared. Exact binary, checker and comparison hashes
+are under `.local/gnu-pointed-data-20261004`. This audit-only change has no new
+runtime or installed-client result and leaves all five release gates closed.
+
 The PostgreSQL SCRAM build passed all thirteen source checks: 258 Rust cases with
 zero failures and 28 ignored database cases, all 28 database cases when enabled,
 107 Python cases, formatting, strict Clippy, TLS, both strict package audits,

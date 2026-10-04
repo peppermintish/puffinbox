@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left
 from collections import Counter
 import hashlib
 import json
@@ -86,6 +87,142 @@ def covered_bytes(intervals):
     return total
 
 
+def unwrapped(die):
+    seen = set()
+    while die.tag in ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type"):
+        if die.offset in seen or "DW_AT_type" not in die.attributes:
+            return None
+        seen.add(die.offset)
+        die = die.get_DIE_from_attribute("DW_AT_type")
+    return die
+
+
+def string_fields(die, offset=0, path=(), seen=None):
+    """Recognize the observed Rust &str layout; never follow arbitrary pointers."""
+    seen = set() if seen is None else set(seen)
+    die = unwrapped(die)
+    if die is None or die.offset in seen or len(path) > 8 or die.tag != "DW_TAG_structure_type":
+        return
+    seen.add(die.offset)
+    members = [child for child in die.iter_children() if child.tag == "DW_TAG_member"]
+    name = die.attributes.get("DW_AT_name")
+    if name and text(name.value) == "&str":
+        names = {text(child.attributes["DW_AT_name"].value): child for child in members
+                 if "DW_AT_name" in child.attributes}
+        if byte_size(die) != 16 or len(members) != 2 or set(names) != {"data_ptr", "length"}:
+            return
+        types = []
+        for field, position in ((names["data_ptr"], 0), (names["length"], 8)):
+            location = field.attributes.get("DW_AT_data_member_location")
+            owner = inherited(field, "DW_AT_type")
+            if location is None or location.value != position or owner is None:
+                return
+            types.append(unwrapped(owner.get_DIE_from_attribute("DW_AT_type")))
+        pointer, length = types
+        if (pointer is None or pointer.tag != "DW_TAG_pointer_type" or byte_size(pointer) != 8
+                or "DW_AT_type" not in pointer.attributes):
+            return
+        element = unwrapped(pointer.get_DIE_from_attribute("DW_AT_type"))
+        for scalar, width in ((element, 1), (length, 8)):
+            encoding = scalar.attributes.get("DW_AT_encoding") if scalar else None
+            if (scalar is None or scalar.tag != "DW_TAG_base_type" or byte_size(scalar) != width
+                    or encoding is None or encoding.value != 7):
+                return
+        yield offset, path
+        return
+    total = byte_size(die)
+    if total is None:
+        return
+    for child in members:
+        location = child.attributes.get("DW_AT_data_member_location")
+        owner = inherited(child, "DW_AT_type")
+        if location is None or not isinstance(location.value, int) or owner is None:
+            continue
+        field = owner.get_DIE_from_attribute("DW_AT_type")
+        size = byte_size(field)
+        if size is None or location.value < 0 or location.value + size > total:
+            continue
+        name = child.attributes.get("DW_AT_name")
+        yield from string_fields(field, offset + location.value, path + (text(name.value) if name else None,), seen)
+
+
+class StringReader:
+    """Bounded ELF64 x86-64 file inspection, without loading or executing the ELF."""
+    def __init__(self, elf, stream, sections):
+        self.stream, self.sections = stream, sections
+        self.executable = elf["e_type"] == "ET_EXEC"
+        self.supported = elf.elfclass == 64 and elf.little_endian and elf["e_machine"] == "EM_X86_64"
+        self.relocations = {}
+        for section in elf.iter_sections():
+            if not section["sh_flags"] & 2:
+                continue
+            if section["sh_type"] in ("SHT_REL", "SHT_RELR"):
+                # Packed and implicit-addend relocations need their own decoder.
+                self.supported = False
+            if section["sh_type"] == "SHT_RELA":
+                for entry in section.iter_relocations():
+                    address = entry["r_offset"]
+                    if entry["r_info_type"] not in (1, 6, 7, 8, 16, 17, 18, 37):
+                        # COPY, TLSDESC and other write widths are not modeled.
+                        self.supported = False
+                    self.relocations.setdefault(address, []).append(
+                        (entry["r_info_type"], entry["r_info_sym"], entry["r_addend"]))
+        self.addresses = sorted(self.relocations)
+
+    def overlapping(self, address, size):
+        # These supported x86-64 relocation forms each write one eight-byte word.
+        begin = bisect_left(self.addresses, address - 7)
+        end = bisect_left(self.addresses, address + size)
+        return self.addresses[begin:end]
+
+    def read(self, address, size):
+        matches = [(start, section) for start, stop, section, _ in self.sections
+                   if start <= address < stop and 0 <= size <= stop - address]
+        if len(matches) != 1:
+            raise ValueError("String bytes are not wholly inside one loaded read-only section.")
+        start, section = matches[0]
+        self.stream.seek(section["sh_offset"] + address - start)
+        data = self.stream.read(size)
+        if len(data) != size:
+            raise ValueError("Truncated string bytes.")
+        return data, section.name
+
+    def inspect(self, address, root_size, offset):
+        if not self.supported:
+            raise ValueError("String inspection requires ELF64 little-endian x86-64 and explicit-addend relocations.")
+        if offset < 0 or offset + 16 > root_size:
+            raise ValueError("String field exceeds its bounded root variable.")
+        field = address + offset
+        raw, _ = self.read(field, 16)
+        pointer, length = int.from_bytes(raw[:8], "little"), int.from_bytes(raw[8:], "little")
+        if self.overlapping(field + 8, 8):
+            raise ValueError("String length overlaps a relocation.")
+        if length == 0:
+            return {"fieldAddress": hex(field), "length": 0, "binding": "empty-no-dereference"}, None
+        if length > 1024 * 1024:
+            raise ValueError("String payload exceeds the one-MiB inspection bound.")
+        writes = self.overlapping(field, 8)
+        if writes:
+            if writes != [field] or self.relocations[field] != [(8, 0, self.relocations[field][0][2])]:
+                raise ValueError("String pointer has an unsupported or overlapping relocation.")
+            pointer = self.relocations[field][0][2]
+            binding = "R_X86_64_RELATIVE"
+        elif self.executable:
+            binding = "absolute"
+        else:
+            raise ValueError("Nonempty PIE string pointer lacks a supported relocation.")
+        data, section = self.read(pointer, length)
+        if self.overlapping(pointer, length):
+            raise ValueError("String payload overlaps a relocation.")
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("String payload is not valid UTF-8.") from error
+        return {"fieldAddress": hex(field), "binding": binding, "dataAddress": hex(pointer),
+                "length": length, "section": section, "storedBytesSha256": hashlib.sha256(data).hexdigest(),
+                "utf8Validated": True}, (pointer, pointer + length)
+
+
 def inventory(elf, stream):
     from elftools.dwarf.dwarf_expr import DWARFExprParser
 
@@ -109,6 +246,8 @@ def inventory(elf, stream):
             raise ValueError("Duplicate loaded read-only section name.")
         sections.append((start, stop, section, after_relocation))
     rows, sources, spans, counts = [], {}, {}, Counter()
+    strings, rejected_strings, string_spans = [], [], {}
+    reader = StringReader(elf, stream, sections)
     for cu in dwarf.iter_CUs():
         counts["compilationUnits"] += 1
         parser = DWARFExprParser(cu.structs)
@@ -171,6 +310,24 @@ def inventory(elf, stream):
                          "declLine": declaration.attributes["DW_AT_decl_line"].value
                          if declaration and "DW_AT_decl_line" in declaration.attributes else None,
                          "byteSize": size, "storedBytesSha256": digest, "sourceLessVtableName": vtable_name})
+            owner = inherited(die, "DW_AT_type")
+            language = cu.get_top_DIE().attributes.get("DW_AT_language")
+            if source and digest and owner and language and language.value == 0x1C:
+                for offset, path in string_fields(owner.get_DIE_from_attribute("DW_AT_type")):
+                    counts["typedStringFields"] += 1
+                    association = {"rootAddress": hex(address), "rootName": name,
+                                   "rootSourceAssociation": source, "memberPath": path}
+                    try:
+                        observation, span = reader.inspect(address, size, offset)
+                        strings.append({**association, **observation})
+                        if span is None:
+                            counts["emptyStringFields"] += 1
+                        else:
+                            counts["readOnlyStringReferences"] += 1
+                            string_spans.setdefault(observation["section"], []).append(span)
+                    except ValueError as error:
+                        counts["unsupportedStringFields"] += 1
+                        rejected_strings.append({**association, "reason": str(error)})
         # pyelftools 0.33 retains all parsed DIEs. Bound memory to one completed CU.
         # Later references can be parsed again from their original byte offsets.
         cu._dielist.clear()
@@ -180,17 +337,25 @@ def inventory(elf, stream):
     coverage = []
     for start, stop, section, after_relocation in sections:
         covered = covered_bytes(spans.get(section.name, []))
+        payloads = string_spans.get(section.name, [])
+        combined = covered_bytes(spans.get(section.name, []) + payloads)
         coverage.append({"section": section.name, "bytes": stop - start,
                          "variableBytes": covered, "remainingBytes": stop - start - covered,
+                         "stringPayloadBytes": covered_bytes(payloads), "variableAndStringBytes": combined,
+                         "remainingAfterStringInspection": stop - start - combined,
                          "readOnlyAfterRelocation": after_relocation})
     return {"counts": dict(counts), "rows": rows, "sourceFiles": sources, "sectionCoverage": coverage,
+            "stringReferences": strings, "unsupportedStringFields": rejected_strings,
             "knownNonAllowlistedSourceFiles": [name for name in sources if known_non_allowlisted_path(name)],
             "unreviewedSystemHeaderFiles": [name for name in sources if name.startswith("/usr/include/")],
             "licenseClearance": False,
             "scope": "Direct DW_OP_addr/addrx variables in loaded non-executable read-only and GNU RELRO sections. "
                      "Hashes describe ELF file bytes before relocation. Source-less vtable names are counted, not "
-                     "attributed or cleared. Location lists, indirect expressions, anonymous constants, pointed-to "
-                     "data, code and linker-generated material are outside variable coverage. Remaining bytes "
+                     "attributed or cleared. String references cover bounded UTF-8 payloads reached through observed "
+                     "Rust &str structures within source-associated variables, using supported x86-64 relocations. "
+                     "Root declarations are associations, not proof of literal origin. Arrays, variant parts, arbitrary "
+                     "pointer graphs, location lists, indirect expressions, anonymous roots, code and linker-generated "
+                     "material remain outside string coverage. Remaining bytes "
                      "include padding and other structures; no exhaustive data or license clearance is claimed."}
 
 
