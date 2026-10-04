@@ -786,6 +786,51 @@ and remaining data still need review. This historical-binary tooling replay
 changes no production runtime, dependency, allowlist or exception. All release
 gates and whole-runtime license clearance remain open.
 
+## Loaded data input associations
+
+The separate [data-map checker](../scripts/check_gnu_data_map.py) joins LLD input
+rows only within ELF-verified loaded read-only output sections. Output-section
+bounds must match the executable. Map column indentation distinguishes output
+sections from local symbols; debug offsets are excluded even when their numeric
+addresses coincide with loaded data. The [pinned LLD map writer](https://raw.githubusercontent.com/rust-lang/llvm-project/52ed14fcd56afc30f9cccd8ca8ce237c2eef7e04/lld/ELF/MapFile.cpp)
+defines these separate output, input and symbol columns. Missing or inconsistent
+headers, unsupported empty maps and escaping input ranges fail the check. Range
+unions preserve aliases, overlaps and gaps.
+
+All 107 GNU regressions passed, including seven new map controls and the 42
+preceding data controls. A C fixture links with Rust's bundled x86-64 LLD and
+checks its actual map against loaded ELF sections. Negative controls cover
+debug-address coincidences, local symbols, malformed headers and bounds.
+All 161 Python cases passed on Linux with the external inspector and required
+compilers; none were skipped. CI now requires the map control and saves the
+report for both GNU TLS modes. [The reproduction instructions](../experiments/linux-gnu-runtime/README.md#read-only-input-map-associations)
+keep the inspector external.
+
+Replay on retained GNU `3bbe84d4`, using exact map SHA-256
+`c8c171c4a23db96f3ee46da33bb0fb665c89252224cf5ceab4abb84e7768ae5e`,
+records 46,489 loaded input rows. All 46,469 named rows join to 391 previously
+identified input objects. In `.rodata`, named inputs account for 887,398 bytes,
+linker-internal contributions for 105,328 bytes, and 646 bytes lie outside
+parsed input rows. All 396,224 `.data.rel.ro` bytes have named input associations.
+These associations do not assign sources or licenses to the contents. The
+entire preceding DWARF variable/string inventory remains unchanged.
+
+The first private exploration failed to track output-section context and
+included coincident debug offsets. Its invalid coverage record is preserved
+under `.local/gnu-data-owner-20261004`, alongside the corrected exploration.
+The required controls, full replay, exact hashes and independent joins are
+under `.local/gnu-data-map-20261004`. Named-object associations, merged data,
+inlined material, literal origins and whole-runtime licensing still need
+review. No production runtime, allowlist, exception or release gate changed.
+
+The subsequent merged-input exploration inspected 375 still-available selected
+objects. Sixteen temporary server objects had been removed after linking.
+Available inputs contain byte candidates for 103,563 of the 105,328 merged
+bytes; 1,765 have no candidate in those inputs. Unused pieces and duplicate
+bytes can match, so this is not unique-origin proof. Discovery, object hashes
+and candidate records are under `.local/gnu-merge-data-20261004`. Missing object
+bytes and literal origins remain open.
+
 ## Selected package inputs and timestamp notice
 
 The 103 packages with named retained sections in GNU `3bbe84d4` join to 103

@@ -411,12 +411,8 @@ class StringReader:
         return {"fieldAddress": hex(field), "variant": "Some", "discriminantBinding": binding}, observation, span
 
 
-def inventory(elf, stream):
-    from elftools.dwarf.dwarf_expr import DWARFExprParser
-
-    if not elf.has_dwarf_info(strict=True):
-        raise ValueError("The executable has no DWARF variable data.")
-    dwarf = elf.get_dwarf_info(follow_links=False)
+def read_only_sections(elf):
+    """File-backed loaded data, including complete read-only-after-relocation sections."""
     segments = list(elf.iter_segments())
     loaded = [(s["p_vaddr"], s["p_vaddr"] + s["p_memsz"]) for s in segments if s["p_type"] == "PT_LOAD"]
     relro = [(s["p_vaddr"], s["p_vaddr"] + s["p_memsz"]) for s in segments if s["p_type"] == "PT_GNU_RELRO"]
@@ -433,6 +429,16 @@ def inventory(elf, stream):
         if any(existing[2].name == section.name for existing in sections):
             raise ValueError("Duplicate loaded read-only section name.")
         sections.append((start, stop, section, after_relocation))
+    return sections
+
+
+def inventory(elf, stream):
+    from elftools.dwarf.dwarf_expr import DWARFExprParser
+
+    if not elf.has_dwarf_info(strict=True):
+        raise ValueError("The executable has no DWARF variable data.")
+    dwarf = elf.get_dwarf_info(follow_links=False)
+    sections = read_only_sections(elf)
     rows, sources, spans, counts = [], {}, {}, Counter()
     strings, rejected_strings, string_spans = [], [], {}
     slices, rejected_slices, slice_spans = [], [], {}

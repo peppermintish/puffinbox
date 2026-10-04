@@ -106,7 +106,7 @@ python3 scripts/check_gnu_data.py \
   --output /probe/output/data-variable-inventory.json
 ```
 
-The compiled controls require a C compiler. The checker requires pyelftools
+The compiled controls require C and Rust compilers. The checker requires pyelftools
 0.33 and debug information in the executable itself; unwind metadata and an
 external debug link are insufficient. It records direct-address variables in
 loaded non-executable read-only sections and GNU RELRO sections, hashes their
@@ -115,9 +115,34 @@ It measures the union of variable ranges, so aliases cannot inflate coverage.
 Zero-sized entries and unresolved bounds remain distinct.
 
 The report counts source-less vtable names without attributing their origins.
-Location lists, indirect expressions, pointed-to data and anonymous constants
+It also follows bounded verified Rust string layouts, fixed dense arrays,
+string slices and the observed optional-string variant. Other pointer graphs,
+variant layouts, location lists, indirect expressions and anonymous constants
 are outside its coverage. Uncovered section bytes include padding and other
 structures; they remain unreviewed. Known source exceptions and system-header
 declarations fail the check. A successful inventory still has
 `licenseClearance: false`. CI records the inventory for both TLS modes and
 excludes binaries, external libraries and source-byte copies from uploads.
+
+## Read-only input-map associations
+
+Inspect loaded data against its exact LLD link map separately from DWARF:
+
+```sh
+python3 scripts/test_gnu_data_map.py --require-controls -v
+python3 scripts/check_gnu_data_map.py \
+  --binary /probe/output/server \
+  --map /probe/output/server-link.map \
+  --output /probe/output/data-map-inventory.json
+```
+
+The compiled control requires C, Rust's bundled x86-64 GNU LLD and external
+pyelftools. The checker verifies loaded read-only output-section bounds against
+the ELF, preserves map column indentation and excludes debug offsets and symbol
+rows. It measures named and linker-internal input ranges by union, retaining
+aliases and gaps. The report hashes both the executable and map. This records
+object associations rather than assigning literal origins or clearing retained
+and inlined source licensing. Merged contributions and gaps need separate review;
+`licenseClearance` remains false. CI runs the required control and saves this
+inventory for both TLS modes without adding binaries or source-byte copies to
+the uploaded records.

@@ -2,6 +2,23 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
+The later [loaded-data map audit](runtime-link-audit.md#loaded-data-input-associations)
+passed 107 GNU regressions, including seven map controls and 42 data controls.
+All 161 Python cases passed on Linux with the external inspector and required
+compilers; none were skipped. The C control uses a real LLD map. Replay on
+retained GNU `3bbe84d4` joins all 46,469 named loaded-input rows to 391 earlier
+object associations, while preserving the entire preceding DWARF inventory.
+Named `.rodata` ranges cover 887,398 bytes; 105,328 linker-internal bytes and
+646 bytes outside parsed input rows remain separate. These associations do
+not establish literal origins or license clearance. The first exploration's
+debug-offset error remains recorded under `.local/gnu-data-owner-20261004`;
+accepted evidence is under `.local/gnu-data-map-20261004`. This tooling patch
+has no new Rust, container or client run. Its cloud validation is pending,
+and all five release gates remain open.
+
+All four cloud jobs at `adf9023` passed: [source and media acceptance](https://github.com/peppermintish/puffinbox/actions/runs/37198028376)
+and [both GNU runtime configurations](https://github.com/peppermintish/puffinbox/actions/runs/37198028368).
+
 The later [optional-string audit](runtime-link-audit.md#optional-string-variant-inspection)
 passed 100 GNU regressions, including 42 data controls. All 154 Python cases
 passed on Linux with both compilers and the external inspector; none were

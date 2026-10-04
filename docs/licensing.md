@@ -113,6 +113,15 @@ ten absent. It preserves the preceding records and adds 2,694 `.rodata` bytes;
 the verified compiler layout is selected. Other variants, anonymous data,
 literal origins and whole-runtime licensing remain open.
 
+The [loaded-data map inspection](runtime-link-audit.md#loaded-data-input-associations)
+passed 107 GNU regressions, including a real LLD control. On the retained
+historical binary, 46,469 named input rows join to 391 previously identified
+objects. Named `.rodata` associations cover 887,398 bytes; 105,328 bytes belong
+to linker-internal contributions and 646 lie outside parsed input rows.
+All `.data.rel.ro` bytes have named input associations. These are object
+associations rather than literal-source or licensing determinations. The
+complete preceding DWARF inventory and whole-runtime blocker remain unchanged.
+
 The GNU audit now preserves exact native source bodies instead of hashes alone. Fresh candidate `d7d42ac4` has all 927 mapped native files available after build cleanup and passes its source/notice checks, 33 container checks and 29 local HTTPS checks. A separate replay regenerated all 107 bodies without byte-identical package candidates from the verified locked OpenSSL archive, matching every preserved output hash. Selected generator/template hashes and their notice contexts are recorded; file-level license review remains open. Copies and non-allowlisted external runtime files stay outside CI uploads and release bundles. This improves reviewability without clearing the boundary; see [runtime-link-audit.md](runtime-link-audit.md#preserved-native-source-copies).
 
 A corrected GNU capture now includes inherited system-header dependencies. Candidate `d1275bc2` passed source/notice checks, 35 container checks and 29 local HTTPS checks, with 1,872 verified byte copies and 252 system input paths. All 927 mapped native body hashes match the earlier candidate. Earlier traces omitted system headers when OpenSSL supplied user-only dependency options; their mapped-body records do not establish complete include coverage. The additional headers and unmapped content remain under review. See [the capture correction](runtime-link-audit.md#system-headers-in-dependency-rules).

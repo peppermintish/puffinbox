@@ -15,6 +15,8 @@ on:
       - 'scripts/check_gnu_source_map.py'
       - 'scripts/check_gnu_data.py'
       - 'scripts/test_gnu_data.py'
+      - 'scripts/check_gnu_data_map.py'
+      - 'scripts/test_gnu_data_map.py'
       - 'scripts/check_gnu_notices.py'
       - 'scripts/check_gnu_shared_tls.py'
       - 'scripts/test_gnu_shared_tls.py'
@@ -44,6 +46,8 @@ on:
       - 'scripts/check_gnu_source_map.py'
       - 'scripts/check_gnu_data.py'
       - 'scripts/test_gnu_data.py'
+      - 'scripts/check_gnu_data_map.py'
+      - 'scripts/test_gnu_data_map.py'
       - 'scripts/check_gnu_notices.py'
       - 'scripts/check_gnu_shared_tls.py'
       - 'scripts/test_gnu_shared_tls.py'
@@ -123,6 +127,14 @@ jobs:
             --dependency-sources "$RUNNER_TEMP/gnu-probe/output/dependency-source-hashes.json" \
             --output "$RUNNER_TEMP/data-variable-inventory.json"
 
+      - name: Inspect loaded data input associations with a compiled LLD control
+        run: |
+          PYTHONPATH="$RUNNER_TEMP/gnu-inspector" python3 scripts/test_gnu_data_map.py --require-controls -v
+          PYTHONPATH="$RUNNER_TEMP/gnu-inspector" python3 scripts/check_gnu_data_map.py \
+            --binary "$RUNNER_TEMP/gnu-probe/output/server" \
+            --map "$RUNNER_TEMP/gnu-probe/output/server-link.map" \
+            --output "$RUNNER_TEMP/data-map-inventory.json"
+
       - name: Classify exact mapped standard-library paths against compiler notices
         run: |
           python3 scripts/check_gnu_notices.py \
@@ -152,5 +164,6 @@ jobs:
             ${{ runner.temp }}/gnu-probe/output/COPYRIGHT-library.html
             ${{ runner.temp }}/source-line-inventory.json
             ${{ runner.temp }}/data-variable-inventory.json
+            ${{ runner.temp }}/data-map-inventory.json
             ${{ runner.temp }}/compiler-notice-classification.json
           if-no-files-found: warn
