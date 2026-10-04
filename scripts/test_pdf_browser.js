@@ -300,4 +300,11 @@ async function main() {
   }
 }
 
-main().catch(error => { console.error(error.stack || error); process.exitCode = 1; });
+main().catch(error => {
+  console.error(error.stack || error);
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const message = String(error.stack || error).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+    console.error(`::error title=PDF browser check::${message}`);
+  }
+  process.exitCode = 1;
+});
