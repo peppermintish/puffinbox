@@ -17,3 +17,9 @@ region, and end-of-page segment. The segment layout follows
 [ITU-T T.88](https://www.itu.int/rec/T-REC-T.88-200002-I/en), sections 7.4.6 and
 7.4.8; MMR is enabled and reserved flags are zero. No encoder is needed to run
 the checks.
+
+The Linux browser checks require a Japanese system font for the unembedded-font
+fixture. CI installs Ubuntu's `fonts-noto-cjk` package; the fonts are covered by
+the [SIL Open Font License](https://github.com/notofonts/noto-cjk/blob/main/Serif/LICENSE).
+This is a browser test prerequisite, outside the Puffinbox image and release
+bundle. Keep the text and rendered-pixel assertions enabled.

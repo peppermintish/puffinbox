@@ -41,7 +41,7 @@ jobs:
       - name: Install Linux build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools binutils
+          sudo apt-get install -y --no-install-recommends musl-tools binutils fonts-noto-cjk
       - name: Select the locked release toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --target x86_64-unknown-linux-musl

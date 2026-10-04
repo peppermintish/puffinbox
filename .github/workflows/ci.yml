@@ -47,7 +47,7 @@ jobs:
       - name: Install Linux build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools binutils
+          sudo apt-get install -y --no-install-recommends musl-tools binutils fonts-noto-cjk
 
       - name: Select the locked release toolchain
         run: |
