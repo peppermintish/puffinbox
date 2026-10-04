@@ -132,6 +132,7 @@ async fn staged_plugin_trust_enable_refresh_and_disable_are_hash_bound() {
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse::<IpNet>().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

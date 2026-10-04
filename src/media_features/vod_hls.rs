@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use super::{
     hls::{self, MediaKind},
-    process_limits::{MediaChildSandbox, apply_child_limits, stop_child},
+    process_limits::{MediaChildSandbox, apply_child_limits, media_command, stop_child},
     secure_path::{self, ResolvedMedia},
 };
 use crate::ApiError;
@@ -370,7 +370,7 @@ async fn prepare_command(
     )
     .await?;
     let input_fd = sandbox.input_fd().to_string();
-    let mut command = Command::new(sandbox.executable());
+    let mut command = media_command(sandbox.executable());
     apply_child_limits(
         &mut command,
         BATCH_TIMEOUT.as_secs(),

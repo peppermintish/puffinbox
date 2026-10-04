@@ -2,10 +2,7 @@ use std::{
     ffi::CString,
     fs::File,
     io::Read,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::ffi::OsStrExt,
-    },
+    os::unix::ffi::OsStrExt,
     path::Path,
     sync::{Arc, OnceLock},
     time::Duration,
@@ -393,57 +390,47 @@ fn sha256_hex(input: &[u8]) -> String {
 fn open_directory(path: &Path) -> std::io::Result<File> {
     let path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    // SAFETY: the CString remains alive for the call; the returned descriptor
-    // is immediately converted to an owned File.
-    let fd = unsafe {
-        libc::open(
-            path.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-        )
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `fd` was returned as a new owned descriptor by `open`.
-    Ok(unsafe { File::from_raw_fd(fd) })
+    let fd = rustix::fs::open(
+        path.as_c_str(),
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )?;
+    Ok(File::from(fd))
 }
 
 #[cfg(target_os = "linux")]
 fn open_child_directory(parent: &File, name: &str) -> std::io::Result<File> {
     let name =
         CString::new(name).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    // SAFETY: the parent is an owned directory fd and the name contains no NUL.
-    let fd = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-        )
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `fd` was returned as a new owned descriptor by `openat`.
-    Ok(unsafe { File::from_raw_fd(fd) })
+    let fd = rustix::fs::openat(
+        parent,
+        name.as_c_str(),
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )?;
+    Ok(File::from(fd))
 }
 
 #[cfg(target_os = "linux")]
 fn read_child_bounded(parent: &File, name: &str, limit: usize) -> std::io::Result<Vec<u8>> {
     let name =
         CString::new(name).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    // SAFETY: the parent is an owned directory fd and the name contains no NUL.
-    let fd = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-        )
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `fd` was returned as a new owned descriptor by `openat`.
-    let file = unsafe { File::from_raw_fd(fd) };
+    let fd = rustix::fs::openat(
+        parent,
+        name.as_c_str(),
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )?;
+    let file = File::from(fd);
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > limit as u64 {
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));

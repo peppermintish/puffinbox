@@ -2,6 +2,13 @@ use ipnet::IpNet;
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr};
 use url::Url;
 
+#[derive(Clone, Debug, Default)]
+pub struct DlnaConfig {
+    pub enabled: String,
+    pub interface_address: Option<String>,
+    pub advertised_origin: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub bind: SocketAddr,
@@ -18,6 +25,7 @@ pub struct Config {
     pub cors_origins: Vec<String>,
     pub trusted_proxies: Vec<IpNet>,
     pub local_networks: Vec<IpNet>,
+    pub dlna: DlnaConfig,
     pub setup_token: Option<String>,
     pub bootstrap_admin_username: Option<String>,
     pub bootstrap_admin_password: Option<String>,
@@ -100,6 +108,11 @@ impl Config {
             cors_origins,
             trusted_proxies,
             local_networks,
+            dlna: DlnaConfig {
+                enabled: env::var("PUFFINBOX_DLNA_ENABLED").unwrap_or_default(),
+                interface_address: env::var("PUFFINBOX_DLNA_INTERFACE_ADDRESS").ok(),
+                advertised_origin: env::var("PUFFINBOX_DLNA_ADVERTISED_ORIGIN").ok(),
+            },
             setup_token: env::var("PUFFINBOX_SETUP_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),

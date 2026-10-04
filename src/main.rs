@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::{
     error::Error,
     fs::OpenOptions,
@@ -15,6 +17,16 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 fn main() {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "--media-worker")
+    {
+        if let Err(error) = puffinbox::media_features::run_media_worker() {
+            eprintln!("media worker failed: {error}");
+            std::process::exit(127);
+        }
+        return;
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

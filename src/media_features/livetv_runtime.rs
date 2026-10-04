@@ -26,7 +26,7 @@ use axum::{
 use serde::Deserialize;
 use tokio::{
     fs as tokio_fs,
-    process::{Child, Command},
+    process::Child,
     sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore, oneshot, watch},
     time::{sleep, timeout},
 };
@@ -44,7 +44,7 @@ use super::{
         open_live_input,
     },
     playback::{PlaybackInfoRequest, PlaybackInfoResponse},
-    process_limits::{MediaChildSandbox, apply_child_limits, stop_child},
+    process_limits::{MediaChildSandbox, apply_child_limits, media_command, stop_child},
 };
 
 // Hard local limit; concurrent sessions beyond this return 429 until an
@@ -439,7 +439,7 @@ async fn setup_live_job(job: LiveSetupJob) -> Result<(), ApiError> {
     let audio_channels = options.max_audio_channels.unwrap_or(2).min(2);
     let manifest = directory.join("live.m3u8");
     let segment_pattern = directory.join("segment%05d.ts");
-    let mut command = Command::new(sandbox.executable());
+    let mut command = media_command(sandbox.executable());
     apply_child_limits(
         &mut command,
         MAX_LIVE_INPUT_SECONDS.as_secs().saturating_add(60),

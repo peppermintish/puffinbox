@@ -180,6 +180,7 @@ async fn studio_browse_counts_selectors_and_favorites_follow_current_visibility(
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

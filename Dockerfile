@@ -1,24 +1,20 @@
 FROM rust:1.98.1-bookworm AS build
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends musl-tools python3 binutils perl make \
+    && apt-get install -y --no-install-recommends musl-tools python3 binutils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install --locked --version 0.20.2 cargo-deny \
-    && cargo install --locked --features cli --version 0.9.2 cargo-about \
+RUN CARGO_BUILD_JOBS=2 cargo install --locked --version 0.20.2 cargo-deny \
+    && CARGO_BUILD_JOBS=2 cargo install --locked --features cli --version 0.9.2 cargo-about \
     && rustup target add x86_64-unknown-linux-musl
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
 COPY vendor ./vendor
 COPY src ./src
 COPY migrations ./migrations
-COPY .cargo ./.cargo
-COPY scripts/openssl-configure.py scripts/check_openssl_exclusions.py ./scripts/
 
-RUN CARGO_BUILD_JOBS=2 cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server \
-    && python3 scripts/check_openssl_exclusions.py --binary target/x86_64-unknown-linux-musl/release/puffinbox-server
+RUN CARGO_BUILD_JOBS=2 cargo build --locked --release --target x86_64-unknown-linux-musl --bin puffinbox-server
 
 COPY web ./web
 COPY docs ./docs
@@ -26,7 +22,8 @@ COPY scripts ./scripts
 COPY LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md ./
 COPY about.toml deny.toml third-party.hbs ./
 
-RUN python3 scripts/build_license_bundle.py \
+RUN python3 scripts/check_source_policy.py \
+    && python3 scripts/build_license_bundle.py \
     && mkdir -p /out/data /out/tmp \
     && chown 10001:10001 /out/data /out/tmp \
     && install -m 0555 target/x86_64-unknown-linux-musl/release/puffinbox-server /out/puffinbox-server \

@@ -702,6 +702,7 @@ async fn offline_http_copy_ranges_policy_and_cancel_follow_the_real_workflow() {
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse::<IpNet>().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

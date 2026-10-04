@@ -250,6 +250,7 @@ async fn navigation_and_theme_media_keep_library_rating_and_user_boundaries() {
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

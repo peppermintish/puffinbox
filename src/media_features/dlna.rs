@@ -9,9 +9,7 @@
 
 use std::{
     collections::HashMap,
-    env,
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket},
-    os::fd::AsRawFd,
     str::FromStr,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
@@ -241,7 +239,7 @@ pub(super) fn router(state: AppState) -> Router<()> {
 /// A configured interface and a matching HTTP origin are required so a
 /// renderer cannot receive a description URL for an unrelated address.
 pub(super) async fn start(state: AppState) -> Result<(), String> {
-    let Some(settings) = settings_from_env(&state)? else {
+    let Some(settings) = settings_from_config(&state)? else {
         tracing::info!("DLNA discovery is disabled");
         return Ok(());
     };
@@ -304,8 +302,8 @@ pub(super) async fn shutdown() -> bool {
     stopped
 }
 
-fn settings_from_env(state: &AppState) -> Result<Option<DlnaSettings>, String> {
-    let enabled = env::var("PUFFINBOX_DLNA_ENABLED").unwrap_or_else(|_| "false".to_owned());
+fn settings_from_config(state: &AppState) -> Result<Option<DlnaSettings>, String> {
+    let enabled = &state.config.dlna.enabled;
     let enabled = match enabled.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" => true,
         "false" | "0" | "no" | "" => false,
@@ -314,13 +312,21 @@ fn settings_from_env(state: &AppState) -> Result<Option<DlnaSettings>, String> {
     if !enabled {
         return Ok(None);
     }
-    let interface = env::var("PUFFINBOX_DLNA_INTERFACE_ADDRESS")
-        .map_err(|_| "PUFFINBOX_DLNA_INTERFACE_ADDRESS is required when DLNA is enabled")?
+    let interface = state
+        .config
+        .dlna
+        .interface_address
+        .as_deref()
+        .ok_or("PUFFINBOX_DLNA_INTERFACE_ADDRESS is required when DLNA is enabled")?
         .parse::<Ipv4Addr>()
         .map_err(|_| "PUFFINBOX_DLNA_INTERFACE_ADDRESS must be an IPv4 address")?;
-    let origin_raw = env::var("PUFFINBOX_DLNA_ADVERTISED_ORIGIN")
-        .map_err(|_| "PUFFINBOX_DLNA_ADVERTISED_ORIGIN is required when DLNA is enabled")?;
-    let origin = Url::parse(&origin_raw)
+    let origin_raw = state
+        .config
+        .dlna
+        .advertised_origin
+        .as_deref()
+        .ok_or("PUFFINBOX_DLNA_ADVERTISED_ORIGIN is required when DLNA is enabled")?;
+    let origin = Url::parse(origin_raw)
         .map_err(|_| "PUFFINBOX_DLNA_ADVERTISED_ORIGIN must be a valid HTTP origin")?;
     let origin_ip = origin.host().and_then(|host| match host {
         url::Host::Ipv4(address) => Some(address),
@@ -353,25 +359,7 @@ fn settings_from_env(state: &AppState) -> Result<Option<DlnaSettings>, String> {
 }
 
 fn set_multicast_interface(socket: &StdUdpSocket, interface: Ipv4Addr) -> std::io::Result<()> {
-    let interface = libc::in_addr {
-        s_addr: u32::from_ne_bytes(interface.octets()),
-    };
-    // SAFETY: `interface` points to a valid `in_addr` for the duration of the
-    // call, and the size matches that value's representation.
-    let result = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::IPPROTO_IP,
-            libc::IP_MULTICAST_IF,
-            (&interface as *const libc::in_addr).cast(),
-            std::mem::size_of::<libc::in_addr>() as libc::socklen_t,
-        )
-    };
-    if result == -1 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    socket2::SockRef::from(socket).set_multicast_if_v4(&interface)
 }
 
 async fn pair_device(
@@ -385,7 +373,7 @@ async fn pair_device(
         return Err(ApiError::Forbidden);
     }
     let peer = normalized_ipv4(peer.ip()).ok_or(ApiError::Forbidden)?;
-    let Some(settings) = settings_from_env(&app).map_err(|_| ApiError::Unavailable)? else {
+    let Some(settings) = settings_from_config(&app).map_err(|_| ApiError::Unavailable)? else {
         return Err(ApiError::NotFound);
     };
     if !is_local_address(&app.config.local_networks, IpAddr::V4(peer))
@@ -414,7 +402,7 @@ async fn list_pairings(
     CurrentUser(user): CurrentUser,
 ) -> Result<Json<Vec<PairingDto>>, ApiError> {
     ensure_dlna_enabled(&app)?;
-    let settings = settings_from_env(&app)
+    let settings = settings_from_config(&app)
         .map_err(|_| ApiError::Unavailable)?
         .ok_or(ApiError::NotFound)?;
     let rows = sqlx::query(
@@ -551,7 +539,7 @@ async fn device_description(
 ) -> Result<Response, ApiError> {
     ensure_dlna_enabled(&app)?;
     let (pairing, user) = authorize_pairing(&app, pairing_id, peer.ip()).await?;
-    let settings = settings_from_env(&app)
+    let settings = settings_from_config(&app)
         .map_err(|_| ApiError::Unavailable)?
         .ok_or(ApiError::NotFound)?;
     let xml = device_description_xml(
@@ -577,7 +565,7 @@ async fn discovered_device_description(
         .await?
         .ok_or(ApiError::NotFound)?;
     let (pairing, _) = authorize_pairing(&app, pairing.id, IpAddr::V4(peer)).await?;
-    let settings = settings_from_env(&app)
+    let settings = settings_from_config(&app)
         .map_err(|_| ApiError::Unavailable)?
         .ok_or(ApiError::NotFound)?;
     let xml = device_description_xml(
@@ -1036,7 +1024,7 @@ async fn content_directory_control(
 ) -> Result<Response, ApiError> {
     ensure_dlna_enabled(&app)?;
     let (_pairing, user) = authorize_pairing(&app, pairing_id, peer.ip()).await?;
-    let settings = settings_from_env(&app)
+    let settings = settings_from_config(&app)
         .map_err(|_| ApiError::Unavailable)?
         .ok_or(ApiError::NotFound)?;
     let action = parse_content_action(&headers)?;
@@ -1335,7 +1323,7 @@ fn is_network_boundary(address: Ipv4Addr, networks: &[ipnet::IpNet]) -> bool {
 }
 
 fn ensure_dlna_enabled(app: &AppState) -> Result<(), ApiError> {
-    match settings_from_env(app) {
+    match settings_from_config(app) {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(ApiError::NotFound),
         Err(_) => Err(ApiError::Unavailable),

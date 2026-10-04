@@ -982,6 +982,7 @@ mod tests {
             cors_origins: Vec::new(),
             trusted_proxies,
             local_networks: Vec::new(),
+            dlna: Default::default(),
             setup_token: None,
             bootstrap_admin_username: None,
             bootstrap_admin_password: None,

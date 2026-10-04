@@ -1420,6 +1420,7 @@ mod tests {
             cors_origins: vec![],
             trusted_proxies: vec![],
             local_networks: vec![],
+            dlna: Default::default(),
             setup_token: None,
             bootstrap_admin_username: None,
             bootstrap_admin_password: None,

@@ -300,6 +300,7 @@ async fn facets_and_selections_share_metadata_and_current_user_boundaries() {
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

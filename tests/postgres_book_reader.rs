@@ -149,6 +149,7 @@ async fn book_reader_serves_pdf_epub_and_enforces_user_library_parental_and_down
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse::<IpNet>().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

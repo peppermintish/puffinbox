@@ -87,6 +87,7 @@ async fn sockets_publish_committed_own_user_data_and_enforce_live_authorization(
         cors_origins: vec!["https://allowed.example".to_owned()],
         trusted_proxies: vec!["127.0.0.1/32".parse().unwrap()],
         local_networks: vec!["10.0.0.0/8".parse().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

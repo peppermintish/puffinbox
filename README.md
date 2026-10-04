@@ -15,12 +15,7 @@ The standalone server listener defaults to `127.0.0.1:8096`. Compose explicitly 
 
 For an isolated local acceptance stack, use the generated ignored configuration described in [Acceptance setup](docs/acceptance.md). It creates synthetic media under `.local/` and uses separate database and web ports; it does not point at a personal media library.
 
-Outbound HTTPS uses certificate verification through OpenSSL. The project image
-contains no CA bundle. To use HTTPS metadata or IPTV feeds, supply your trust roots
-with `TLS_CA_BUNDLE` and add `-f docker-compose.tls.yml` to the Compose command.
-For a source process, set `SSL_CERT_FILE` to the operator's PEM bundle. Domain names
-in configured URLs must be ASCII; Unicode media names and subtitle text work
-normally. Use an ASCII hostname or an explicitly encoded Punycode hostname.
+Outbound HTTPS uses rustls with certificate verification. The project image contains no CA bundle. Supply trust roots with `TLS_CA_BUNDLE` and add `-f docker-compose.tls.yml` to Compose. For a source process, set `SSL_CERT_FILE` to the operator's PEM bundle. Unicode hostnames use standard IDNA encoding.
 
 For a bounded scanner throughput and stale-row cleanup measurement, see [the scanner scale benchmark](docs/scanner-scale.md). It creates a fresh temporary media tree and a separately labeled disposable PostgreSQL container; it does not use the acceptance stack.
 
@@ -36,11 +31,7 @@ For a dynamic Linux FFmpeg distribution, `Dockerfile.ffmpeg-runtime` and `docker
 
 The server requires a PostgreSQL database, a Rust toolchain, and access to the `web/` directory. The Compose setup is the supported local database path. For a direct development run, set `DATABASE_URL`, `PUFFINBOX_WEB_ROOT`, and `PUFFINBOX_DATA_DIR` for your local environment, then run the project binary. `PUFFINBOX_BIND` is optional and defaults to `127.0.0.1:8096`; set it explicitly only when you intend to listen on another interface. Do not use an existing personal media root for acceptance work.
 
-Linux source builds also require Python 3, Perl and Make for the constrained
-vendored OpenSSL configuration. When adopting this configuration in an existing
-Cargo build directory, rebuild `openssl-sys` first; see [the dependency build
-note](vendor/README.md). Windows development currently uses WSL or Compose;
-native Windows source builds are unvalidated.
+Linux static builds require musl tools; license generation requires Python 3, cargo-deny and cargo-about. Build `puffinbox-server` before running the Rust tests because media isolation tests re-enter the server's internal worker mode. Project Rust forbids unsafe code across production, tests and examples. Windows development currently uses WSL or Compose; native Windows source builds are unvalidated.
 
 The [GitHub workflows](https://github.com/peppermintish/puffinbox/actions) run source,
 dependency, container, and isolated media checks. Release packaging also requires
@@ -53,6 +44,4 @@ Puffinbox code is offered under either the MIT License or Apache License 2.0; th
 
 The default image includes the Cargo dependency license bundle, Rust standard-library and toolchain notices, musl attribution, and the project notices. PostgreSQL is supplied by a separate Compose image. FFmpeg/ffprobe and any associated codec or runtime components are supplied and licensed separately by the operator.
 
-The strict Cargo audit passes. Linked Rust Unicode tables are outside the allowlist, and the runtime audit is incomplete. These
-prevent a claim that the entire server image meets the MIT/Apache-2.0-only
-boundary. This blocks release packaging; see [the licensing inventory](docs/licensing.md).
+Dependencies use licenses compatible with MIT and Apache-2.0 and retain their own notices. The [licensing inventory](docs/licensing.md) records the accepted terms and distribution boundaries. Release remains gated by current source, container, client, feature, security and scale validation.

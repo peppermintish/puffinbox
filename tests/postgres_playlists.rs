@@ -95,6 +95,7 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse::<IpNet>().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

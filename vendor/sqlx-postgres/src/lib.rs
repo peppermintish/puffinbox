@@ -1,5 +1,7 @@
 //! **PostgreSQL** database driver.
 
+#![forbid(unsafe_code)]
+
 #[macro_use]
 extern crate sqlx_core;
 

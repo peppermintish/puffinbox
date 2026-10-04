@@ -141,6 +141,7 @@ async fn pinned_iptv_refresh_applies_guide_parental_policy_and_timer_filters() {
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse::<IpNet>().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

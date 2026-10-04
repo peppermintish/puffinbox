@@ -3,12 +3,9 @@ use std::{
     ffi::CString,
     fs::OpenOptions,
     io,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::{
-            ffi::OsStrExt,
-            fs::{MetadataExt, OpenOptionsExt},
-        },
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
     },
     path::Component,
     path::{Path, PathBuf},
@@ -234,11 +231,16 @@ fn open_scan_root(path: &Path) -> io::Result<(CapDir, u64, u64, Option<std::time
         // Each component is opened relative to the previously verified
         // directory descriptor, so a replaced parent symlink cannot redirect
         // the configured root outside its stored location.
-        let descriptor = unsafe { libc::openat(file.as_raw_fd(), name.as_ptr(), flags) };
-        if descriptor < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        file = unsafe { std::fs::File::from_raw_fd(descriptor) };
+        let descriptor = rustix::fs::openat(
+            &file,
+            name.as_c_str(),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )?;
+        file = std::fs::File::from(descriptor);
     }
     let metadata = file.metadata()?;
     if !metadata.is_dir() {
@@ -1197,8 +1199,14 @@ mod scanner_tests {
         symlink(&outside, root.join("linked")).unwrap();
         symlink(&root, base.join("root-alias")).unwrap();
         let fifo = root.join("pipe");
-        let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
         assert!(open_scan_root(&base.join("root-alias")).is_err());
 
         let (root_dir, _, _, _) = open_scan_root(&root).unwrap();

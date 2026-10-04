@@ -1,3 +1,0 @@
-[env]
-# The vendored native TLS build must exclude the separately noticed SipHash code.
-OPENSSL_SRC_PERL = { value = "scripts/openssl-configure.py", relative = true, force = true }

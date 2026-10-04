@@ -63,8 +63,9 @@ fn mac_verification_retains_the_rfc_4231_result_and_rejects_bad_tags() {
 }
 
 #[test]
-fn url_backend_rejects_unicode_hosts_and_preserves_unicode_paths() {
-    assert!(url::Url::parse("https://例.example/feed").is_err());
+fn url_backend_encodes_unicode_hosts_and_preserves_unicode_paths() {
+    let unicode_host = url::Url::parse("https://例.example/feed").unwrap();
+    assert_eq!(unicode_host.host_str(), Some("xn--fsq.example"));
     let url = url::Url::parse("https://media.example/café?q=字幕").unwrap();
     assert_eq!(url.host_str(), Some("media.example"));
     assert_eq!(url.path(), "/caf%C3%A9");

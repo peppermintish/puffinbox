@@ -14,6 +14,8 @@ mod livetv_runtime;
 mod playback;
 mod probe;
 mod process_limits;
+#[doc(hidden)]
+pub use process_limits::run_media_worker;
 pub mod range;
 mod secure_path;
 mod subtitles;

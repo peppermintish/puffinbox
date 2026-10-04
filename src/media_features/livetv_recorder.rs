@@ -11,10 +11,7 @@ use std::{
     fs::{File, OpenOptions},
     future::Future,
     io::{Read, Seek, SeekFrom},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::{MetadataExt, OpenOptionsExt},
-    },
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::OnceLock,
@@ -1026,18 +1023,17 @@ fn create_partial(root: File, root_path: PathBuf, id: Uuid) -> std::io::Result<O
     let final_name = final_name(id);
     let partial = CString::new(partial_name.as_bytes())
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid name"))?;
-    let descriptor = unsafe {
-        libc::openat(
-            root.as_raw_fd(),
-            partial.as_ptr(),
-            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if descriptor < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let file = unsafe { File::from_raw_fd(descriptor) };
+    let descriptor = rustix::fs::openat(
+        &root,
+        partial.as_c_str(),
+        rustix::fs::OFlags::RDWR
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0o600),
+    )?;
+    let file = File::from(descriptor);
     Ok(OutputFile {
         root,
         file: TokioFile::from_std(file),
@@ -1263,18 +1259,15 @@ async fn publish_file(prepared: PreparedRecording) -> Result<(), ApiError> {
             CString::new(prepared.partial_name.as_bytes()).map_err(|_| ApiError::Unavailable)?;
         let final_name =
             CString::new(prepared.final_name.as_bytes()).map_err(|_| ApiError::Unavailable)?;
-        let result = unsafe {
-            libc::linkat(
-                prepared.root.as_raw_fd(),
-                partial.as_ptr(),
-                prepared.root.as_raw_fd(),
-                final_name.as_ptr(),
-                0,
-            )
-        };
-        if result != 0 {
-            let link_error = std::io::Error::last_os_error();
-            if link_error.raw_os_error() == Some(libc::EEXIST)
+        let result = rustix::fs::linkat(
+            &prepared.root,
+            partial.as_c_str(),
+            &prepared.root,
+            final_name.as_c_str(),
+            rustix::fs::AtFlags::empty(),
+        );
+        if let Err(link_error) = result {
+            if link_error == rustix::io::Errno::EXIST
                 && final_file_matches(
                     &prepared.root,
                     &prepared.final_name,
@@ -1282,18 +1275,22 @@ async fn publish_file(prepared: PreparedRecording) -> Result<(), ApiError> {
                     &prepared.sha256,
                 )
             {
-                unsafe {
-                    libc::unlinkat(prepared.root.as_raw_fd(), partial.as_ptr(), 0);
-                    libc::fsync(prepared.root.as_raw_fd());
-                }
+                let _ = rustix::fs::unlinkat(
+                    &prepared.root,
+                    partial.as_c_str(),
+                    rustix::fs::AtFlags::empty(),
+                );
+                let _ = rustix::fs::fsync(&prepared.root);
                 return Ok(());
             }
             return Err(ApiError::Unavailable);
         }
-        unsafe {
-            libc::unlinkat(prepared.root.as_raw_fd(), partial.as_ptr(), 0);
-            libc::fsync(prepared.root.as_raw_fd());
-        }
+        let _ = rustix::fs::unlinkat(
+            &prepared.root,
+            partial.as_c_str(),
+            rustix::fs::AtFlags::empty(),
+        );
+        let _ = rustix::fs::fsync(&prepared.root);
         Ok(())
     })
     .await
@@ -1660,14 +1657,13 @@ async fn cleanup_output_names(
             }
             for name in names {
                 let name = CString::new(name).map_err(|_| ApiError::Unavailable)?;
-                let result = unsafe { libc::unlinkat(root.as_raw_fd(), name.as_ptr(), 0) };
-                if result != 0
-                    && std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOENT)
+                if rustix::fs::unlinkat(&root, name.as_c_str(), rustix::fs::AtFlags::empty())
+                    .is_err_and(|error| error != rustix::io::Errno::NOENT)
                 {
                     return Err(ApiError::Unavailable);
                 }
             }
-            if unsafe { libc::fsync(root.as_raw_fd()) } != 0 {
+            if rustix::fs::fsync(&root).is_err() {
                 return Err(ApiError::Unavailable);
             }
         }
@@ -1725,20 +1721,19 @@ async fn inspect_existing(
         for (root_path, root) in opened_roots {
             for (name, is_partial) in [(final_file.clone(), false), (partial.clone(), true)] {
                 let c_name = CString::new(name.as_bytes()).map_err(|_| ApiError::Unavailable)?;
-                let fd = unsafe {
-                    libc::openat(
-                        root.as_raw_fd(),
-                        c_name.as_ptr(),
-                        libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    )
+                let fd = match rustix::fs::openat(
+                    &root,
+                    c_name.as_c_str(),
+                    rustix::fs::OFlags::RDWR
+                        | rustix::fs::OFlags::NOFOLLOW
+                        | rustix::fs::OFlags::CLOEXEC,
+                    rustix::fs::Mode::empty(),
+                ) {
+                    Ok(fd) => fd,
+                    Err(rustix::io::Errno::NOENT) => continue,
+                    Err(_) => return Err(ApiError::Unavailable),
                 };
-                if fd < 0 {
-                    if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
-                        continue;
-                    }
-                    return Err(ApiError::Unavailable);
-                }
-                let mut file = unsafe { File::from_raw_fd(fd) };
+                let mut file = File::from(fd);
                 let metadata = file.metadata().map_err(|_| ApiError::Unavailable)?;
                 if !metadata.is_file() || metadata.len() != expected_size as u64 {
                     continue;
@@ -1848,17 +1843,15 @@ fn final_file_matches(root: &File, name: &str, expected_size: i64, expected_hash
     let Ok(name) = CString::new(name) else {
         return false;
     };
-    let descriptor = unsafe {
-        libc::openat(
-            root.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if descriptor < 0 {
+    let Ok(descriptor) = rustix::fs::openat(
+        root,
+        name.as_c_str(),
+        rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) else {
         return false;
-    }
-    let mut file = unsafe { File::from_raw_fd(descriptor) };
+    };
+    let mut file = File::from(descriptor);
     file.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected_size as u64)
         && validate_and_hash(&mut file)
@@ -2085,6 +2078,7 @@ mod tests {
             cors_origins: Vec::new(),
             trusted_proxies: Vec::new(),
             local_networks: Vec::new(),
+            dlna: Default::default(),
             setup_token: None,
             bootstrap_admin_username: None,
             bootstrap_admin_password: None,

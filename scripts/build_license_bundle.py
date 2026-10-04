@@ -6,7 +6,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import os
-import sys
 import tempfile
 from pathlib import Path
 
@@ -62,15 +61,14 @@ def main() -> int:
     backup = None
     try:
         run(["cargo", "fetch", "--locked"], root)
-        run([sys.executable, "scripts/check_dependency_replacements.py"], root)
         run(["cargo", "deny", "--locked", "check"], root)
         run(["cargo", "about", "generate", "--locked", "--output-file", str(staging / "RUST_DEPENDENCY_LICENSES.md"), "third-party.hbs"], root)
 
         copy_required(root / "LICENSE-MIT", staging / "LICENSE-MIT")
         copy_required(root / "LICENSE-APACHE", staging / "LICENSE-APACHE")
         copy_required(root / "THIRD_PARTY_NOTICES.md", staging / "PROJECT_THIRD_PARTY_NOTICES.md")
-        copy_required(root / "vendor" / "mime_guess" / "LICENSE-MIMETYPEMAP", staging / "MIMETYPEMAP-LICENSE.txt")
-        copy_required(root / "vendor" / "mime_guess" / "LICENSE-MIME-DB", staging / "MIME-DB-LICENSE.txt")
+        copy_required(root / "vendor" / "notices" / "MIMETYPEMAP-MIT.txt", staging / "MIMETYPEMAP-LICENSE.txt")
+        copy_required(root / "vendor" / "notices" / "MIME-DB-MIT.txt", staging / "MIME-DB-LICENSE.txt")
         copy_required(root / "vendor" / "notices" / "tracing-subscriber-datetime-MIT.txt", staging / "TRACING-DATETIME-MIT.txt")
         copy_required(root / "web" / "vendor" / "hls.js-LICENSE.txt", staging / "HLS-JS-LICENSE.txt")
         copy_required(root / "web" / "vendor" / "README.md", staging / "HLS-JS-PROVENANCE.md")

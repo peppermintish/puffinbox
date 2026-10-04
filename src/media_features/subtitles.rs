@@ -16,17 +16,14 @@ use axum::{
     },
     response::Response,
 };
-use tokio::{
-    process::Command,
-    sync::{OwnedSemaphorePermit, Semaphore, oneshot},
-};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use uuid::Uuid;
 
 use crate::{ApiError, auth::MediaUser, state::AppState};
 
 use super::{
     authorized_media, is_video_type, probe,
-    process_limits::{MediaChildSandbox, apply_child_limits},
+    process_limits::{MediaChildSandbox, apply_child_limits, media_command},
     secure_path::ResolvedMedia,
 };
 
@@ -373,7 +370,7 @@ pub(super) async fn extract_embedded(
         OutputFormat::WebVtt => "subtitle.vtt",
         OutputFormat::SubRip => "subtitle.srt",
     });
-    let mut command = Command::new(sandbox.executable());
+    let mut command = media_command(sandbox.executable());
     apply_child_limits(
         &mut command,
         45,

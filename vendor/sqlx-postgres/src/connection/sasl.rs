@@ -5,6 +5,7 @@ use crate::PgConnectOptions;
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use sha2::{Digest, Sha256};
+use stringprep::saslprep;
 
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 
@@ -50,9 +51,9 @@ pub(crate) async fn authenticate(
     let mut channel_binding = format!("{CHANNEL_ATTR}=");
     BASE64_STANDARD.encode_string(GS2_HEADER, &mut channel_binding);
 
-    // PostgreSQL selects the startup role and ignores the SCRAM username.
-    // https://www.postgresql.org/docs/18/sasl-authentication.html
-    let username = format!("{USERNAME_ATTR}=");
+    // PostgreSQL selects the role from the unchanged startup message and
+    // ignores this SCRAM field. Avoid SASLprep rejecting valid database roles.
+    let username = format!("{}=", USERNAME_ATTR);
 
     // nonce = "r=" c-nonce [s-nonce] ;; Second part provided by server.
     let nonce = gen_nonce();
@@ -183,6 +184,9 @@ fn gen_nonce() -> String {
 
 // Hi(str, salt, i):
 fn hi<'a>(s: &'a str, salt: &'a [u8], iter_count: u32) -> Result<[u8; 32], Error> {
+    // PostgreSQL normalizes valid UTF-8 passwords with SASLprep and keeps the
+    // original bytes when preparation rejects a character.
+    let s = saslprep(s).unwrap_or(std::borrow::Cow::Borrowed(s));
     let mut mac = Hmac::<Sha256>::new_from_slice(s.as_bytes()).map_err(Error::protocol)?;
 
     mac.update(salt);

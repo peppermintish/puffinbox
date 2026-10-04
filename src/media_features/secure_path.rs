@@ -561,9 +561,7 @@ mod tests {
     use crate::{ApiError, library::ItemRecord};
     use chrono::Utc;
     use std::{
-        ffi::CString,
         fs,
-        os::unix::ffi::OsStrExt,
         os::unix::fs::MetadataExt,
         path::{Path, PathBuf},
         time::Duration,
@@ -607,9 +605,14 @@ mod tests {
         ));
 
         let fifo = root.join("blocking.mp4");
-        let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        // SAFETY: path is a valid NUL-terminated pathname and mode is valid.
-        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
         let fifo_result = tokio::time::timeout(
             Duration::from_secs(1),
             tokio::task::spawn_blocking(move || resolve_test(item_for(&fifo), &root)),

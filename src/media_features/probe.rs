@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{ApiError, db, state::AppState};
 
-use super::process_limits::{MediaChildSandbox, apply_child_limits};
+use super::process_limits::{MediaChildSandbox, apply_child_limits, media_command};
 use super::secure_path::{self, ResolvedMedia};
 
 const MAX_PROBE_OUTPUT: usize = 1024 * 1024;
@@ -254,7 +254,7 @@ async fn run_ffprobe(
         MediaChildSandbox::prepare_bounded(program, file, None, secure_path::filesystem_permit()?)
             .await?;
     let input_fd = sandbox.input_fd().to_string();
-    let mut command = Command::new(sandbox.executable());
+    let mut command = media_command(sandbox.executable());
     apply_child_limits(&mut command, 12, 512 * 1024 * 1024, 0, Some(sandbox));
     command
         .env_clear()
@@ -566,7 +566,7 @@ fn duration_to_ticks(seconds: f64) -> Option<i64> {
 mod tests {
     use super::{
         MediaChildSandbox, Semaphore, allowed_demuxer, apply_child_limits, launch_probe_child,
-        launch_probe_child_with_start_gate, parse_output, run_ffprobe,
+        launch_probe_child_with_start_gate, media_command, parse_output, run_ffprobe,
     };
     use std::{fs, os::fd::AsRawFd, path::Path, process::Stdio, time::Duration};
 
@@ -789,7 +789,7 @@ mod tests {
         let marker = base.join("started");
         let permits = std::sync::Arc::new(Semaphore::new(1));
         let permit = permits.clone().try_acquire_owned().unwrap();
-        let mut command = Command::new(std::env::current_exe().unwrap());
+        let mut command = media_command(std::env::current_exe().unwrap());
         crate::media_features::process_limits::apply_child_limits(
             &mut command,
             10,
@@ -836,10 +836,9 @@ mod tests {
                 .expect("probe worker should complete")
                 .is_none()
         );
-        assert_eq!(unsafe { libc::kill(child_pid, 0) }, -1);
         assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(child_pid), None),
+            Err(nix::errno::Errno::ESRCH)
         );
         let permit = permits
             .try_acquire_owned()
@@ -864,7 +863,7 @@ mod tests {
             MediaChildSandbox::prepare(&std::env::current_exe().unwrap(), input, None).unwrap();
         let permits = std::sync::Arc::new(Semaphore::new(1));
         let permit = permits.clone().try_acquire_owned().unwrap();
-        let mut command = Command::new(sandbox.executable());
+        let mut command = media_command(sandbox.executable());
         apply_child_limits(&mut command, 10, 4 * 1024 * 1024 * 1024, 0, Some(sandbox));
         command
             .env_clear()

@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     io,
-    os::fd::{AsRawFd, RawFd},
+    os::fd::RawFd,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
@@ -12,7 +12,6 @@ use tokio::sync::OwnedSemaphorePermit;
 
 use crate::ApiError;
 
-const LANDLOCK_ABI_REQUIRED: i64 = 3;
 const CHILD_INPUT_FD: RawFd = 3;
 const CHILD_DESCRIPTOR_LIMIT: u64 = 64;
 
@@ -24,10 +23,11 @@ pub(super) async fn stop_child(child: &mut Child) -> io::Result<std::process::Ex
     }
     if let Some(pid) = child.id() {
         let pid = i32::try_from(pid).map_err(|_| io::Error::other("invalid media child PID"))?;
-        // SAFETY: this positive PID belongs to the unreaped child owned by the
-        // caller. It cannot be reused until this owner waits for the child.
-        let signaled = unsafe { libc::kill(pid, libc::SIGTERM) };
-        if signaled != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+        let signaled = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGTERM,
+        );
+        if signaled.is_err_and(|error| error != nix::errno::Errno::ESRCH) {
             child.kill().await?;
             return child.wait().await;
         }
@@ -51,36 +51,10 @@ const LANDLOCK_FS_EXECUTE: u64 = 1 << 0;
 const LANDLOCK_FS_WRITE_FILE: u64 = 1 << 1;
 const LANDLOCK_FS_READ_FILE: u64 = 1 << 2;
 const LANDLOCK_FS_READ_DIR: u64 = 1 << 3;
-const LANDLOCK_FS_REMOVE_DIR: u64 = 1 << 4;
 const LANDLOCK_FS_REMOVE_FILE: u64 = 1 << 5;
-const LANDLOCK_FS_MAKE_CHAR: u64 = 1 << 6;
-const LANDLOCK_FS_MAKE_DIR: u64 = 1 << 7;
 const LANDLOCK_FS_MAKE_REG: u64 = 1 << 8;
-const LANDLOCK_FS_MAKE_SOCK: u64 = 1 << 9;
-const LANDLOCK_FS_MAKE_FIFO: u64 = 1 << 10;
-const LANDLOCK_FS_MAKE_BLOCK: u64 = 1 << 11;
-const LANDLOCK_FS_MAKE_SYM: u64 = 1 << 12;
 const LANDLOCK_FS_REFER: u64 = 1 << 13;
 const LANDLOCK_FS_TRUNCATE: u64 = 1 << 14;
-const LANDLOCK_ACCESS_FS_SUPPORTED_ABI_3: u64 = LANDLOCK_FS_EXECUTE
-    | LANDLOCK_FS_WRITE_FILE
-    | LANDLOCK_FS_READ_FILE
-    | LANDLOCK_FS_READ_DIR
-    | LANDLOCK_FS_REMOVE_DIR
-    | LANDLOCK_FS_REMOVE_FILE
-    | LANDLOCK_FS_MAKE_CHAR
-    | LANDLOCK_FS_MAKE_DIR
-    | LANDLOCK_FS_MAKE_REG
-    | LANDLOCK_FS_MAKE_SOCK
-    | LANDLOCK_FS_MAKE_FIFO
-    | LANDLOCK_FS_MAKE_BLOCK
-    | LANDLOCK_FS_MAKE_SYM
-    | LANDLOCK_FS_REFER
-    | LANDLOCK_FS_TRUNCATE;
-const LANDLOCK_CREATE_RULESET_VERSION: libc::c_uint = 1;
-const LANDLOCK_RULE_PATH_BENEATH: libc::c_int = 1;
-const LANDLOCK_CREATE_RULESET_HANDLED_ACCESS_FLAGS: libc::c_uint = 0;
-
 const RUNTIME_READ_ACCESS: u64 = LANDLOCK_FS_EXECUTE | LANDLOCK_FS_READ_FILE | LANDLOCK_FS_READ_DIR;
 const SCRATCH_ACCESS: u64 = LANDLOCK_FS_READ_FILE
     | LANDLOCK_FS_WRITE_FILE
@@ -90,19 +64,7 @@ const SCRATCH_ACCESS: u64 = LANDLOCK_FS_READ_FILE
     | LANDLOCK_FS_REFER
     | LANDLOCK_FS_TRUNCATE;
 
-#[repr(C)]
-struct LandlockRulesetAttr {
-    handled_access_fs: u64,
-}
-
-#[repr(C)]
-struct LandlockPathBeneathAttr {
-    allowed_access: u64,
-    parent_fd: libc::c_int,
-}
-
 struct LandlockRule {
-    path_fd: RawFd,
     allowed_access: u64,
 }
 
@@ -111,7 +73,6 @@ struct LandlockRule {
 /// made visible to the decoder.
 pub(super) struct MediaChildSandbox {
     executable: PathBuf,
-    input_fd: Option<RawFd>,
     rules: Vec<LandlockRule>,
     _path_handles: Vec<File>,
     // Keep the exact validated input descriptor alive until the command has
@@ -166,13 +127,7 @@ impl MediaChildSandbox {
         input: Option<File>,
         scratch: Option<&Path>,
     ) -> io::Result<Self> {
-        let abi = landlock_abi_version()?;
-        if abi < LANDLOCK_ABI_REQUIRED {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Landlock ABI 3 or newer is required for media processes",
-            ));
-        }
+        require_landlock()?;
         if let Some(file) = &input
             && !file.metadata()?.is_file()
         {
@@ -181,7 +136,6 @@ impl MediaChildSandbox {
                 "media input descriptor is not a regular file",
             ));
         }
-        let input_fd = input.as_ref().map(AsRawFd::as_raw_fd);
 
         let executable = resolve_executable(executable)?;
         let mut rules = Vec::new();
@@ -232,7 +186,6 @@ impl MediaChildSandbox {
 
         Ok(Self {
             executable,
-            input_fd,
             rules,
             _path_handles: path_handles,
             _input: input,
@@ -254,10 +207,7 @@ fn push_rule(
     handle: File,
     allowed_access: u64,
 ) {
-    rules.push(LandlockRule {
-        path_fd: handle.as_raw_fd(),
-        allowed_access,
-    });
+    rules.push(LandlockRule { allowed_access });
     handles.push(handle);
 }
 
@@ -287,28 +237,58 @@ fn resolve_executable(path: &Path) -> io::Result<PathBuf> {
     ))
 }
 
-fn landlock_abi_version() -> io::Result<i64> {
-    // SAFETY: this uses the documented version-query form with a null ruleset
-    // attribute and size zero; the kernel reads no pointer data in this mode.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            std::ptr::null::<LandlockRulesetAttr>(),
-            0_usize,
-            LANDLOCK_CREATE_RULESET_VERSION,
-        )
-    };
-    if result < 0 {
-        Err(io::Error::last_os_error())
+fn require_landlock() -> io::Result<landlock::RulesetCreated> {
+    use landlock::{ABI, Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr};
+    Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::from_all(ABI::V3))
+        .and_then(|rules| rules.create())
+        .map_err(io::Error::other)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InheritedRule {
+    descriptor: RawFd,
+    allowed_access: u64,
+    device: u64,
+    inode: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WorkerLimits {
+    cpu_seconds: u64,
+    address_space_bytes: u64,
+    file_size_bytes: u64,
+    rules: Option<Vec<InheritedRule>>,
+    valid: bool,
+}
+
+fn worker_executable() -> io::Result<PathBuf> {
+    let current = std::env::current_exe()?;
+    let parent = current
+        .parent()
+        .ok_or_else(|| io::Error::other("missing executable directory"))?;
+    if parent.file_name().is_some_and(|name| name == "deps") {
+        Ok(parent
+            .parent()
+            .ok_or_else(|| io::Error::other("missing build directory"))?
+            .join("puffinbox-server"))
     } else {
-        Ok(result)
+        Ok(current)
     }
 }
 
-/// Install child resource limits, a fail-closed Landlock filesystem policy,
-/// and a seccomp policy before an external decoder or encoder starts. Media
-/// children can read one inherited source descriptor, execute only the chosen
-/// binary, read runtime libraries, and use the private scratch directory.
+/// Re-enter the server's single-threaded worker mode before launching a tool.
+pub(super) fn media_command(executable: impl AsRef<std::ffi::OsStr>) -> Command {
+    let worker = worker_executable()
+        .unwrap_or_else(|_| PathBuf::from("/puffinbox-unavailable-media-worker"));
+    let mut command = Command::new(worker);
+    command.arg("--media-worker").arg(executable);
+    command
+}
+
+/// Pass owned file handles and policy to a worker, without a project pre_exec hook.
+/// Call immediately after media_command, before adding tool arguments.
 pub(super) fn apply_child_limits(
     command: &mut Command,
     cpu_seconds: u64,
@@ -316,145 +296,132 @@ pub(super) fn apply_child_limits(
     file_size_bytes: u64,
     sandbox: Option<MediaChildSandbox>,
 ) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        #[cfg(target_os = "linux")]
-        let child_filter = media_child_filter();
-        unsafe {
-            command.as_std_mut().pre_exec(move || {
-                set_limit(libc::RLIMIT_CPU, cpu_seconds)?;
-                set_limit(libc::RLIMIT_AS, address_space_bytes)?;
-                set_limit(libc::RLIMIT_FSIZE, file_size_bytes)?;
-                set_limit(libc::RLIMIT_CORE, 0)?;
-                #[cfg(target_os = "linux")]
-                if let Some(sandbox) = sandbox.as_ref() {
-                    install_landlock_sandbox(sandbox)?;
-                    if sandbox.input_fd.is_some() {
-                        remap_input_descriptor(sandbox)?;
-                    }
-                }
-                set_limit(libc::RLIMIT_NOFILE, CHILD_DESCRIPTOR_LIMIT)?;
-                #[cfg(target_os = "linux")]
-                install_media_child_filter(child_filter.as_deref().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "media child filter is unavailable for this Linux architecture",
-                    )
-                })?)?;
-                Ok(())
+    use command_fds::{CommandFdExt, FdMapping};
+    use std::os::unix::fs::MetadataExt;
+    let mut mappings = Vec::new();
+    let mut limits = WorkerLimits {
+        cpu_seconds,
+        address_space_bytes,
+        file_size_bytes,
+        rules: None,
+        valid: true,
+    };
+    if let Some(sandbox) = sandbox {
+        let mut rules = Vec::new();
+        if sandbox.rules.len() != sandbox._path_handles.len() || sandbox.rules.len() > 32 {
+            limits.valid = false;
+        }
+        for (index, (rule, handle)) in sandbox
+            .rules
+            .into_iter()
+            .zip(sandbox._path_handles)
+            .enumerate()
+        {
+            let descriptor = 4 + index as RawFd;
+            match handle.metadata() {
+                Ok(metadata) => rules.push(InheritedRule {
+                    descriptor,
+                    allowed_access: rule.allowed_access,
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                }),
+                Err(_) => limits.valid = false,
+            }
+            mappings.push(FdMapping {
+                parent_fd: handle.into(),
+                child_fd: descriptor,
             });
         }
+        if let Some(input) = sandbox._input {
+            mappings.push(FdMapping {
+                parent_fd: input.into(),
+                child_fd: CHILD_INPUT_FD,
+            });
+        }
+        limits.rules = Some(rules);
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (
-            command,
-            cpu_seconds,
-            address_space_bytes,
-            file_size_bytes,
-            sandbox,
-        );
+    if command.as_std_mut().fd_mappings(mappings).is_err() {
+        limits.valid = false;
     }
+    command
+        .arg(serde_json::to_string(&limits).unwrap_or_default())
+        .arg("--");
 }
 
-#[cfg(target_os = "linux")]
-fn install_landlock_sandbox(sandbox: &MediaChildSandbox) -> io::Result<()> {
-    const PR_SET_NO_NEW_PRIVS: libc::c_int = 38;
-    let abi = landlock_abi_version()?;
-    if abi < LANDLOCK_ABI_REQUIRED {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Landlock ABI 3 or newer is required for media processes",
-        ));
+/// Internal worker entry. This runs before the server creates threads or loads credentials.
+#[doc(hidden)]
+pub fn run_media_worker() -> io::Result<()> {
+    use landlock::{AccessFs, BitFlags, PathBeneath, RulesetCreatedAttr, RulesetStatus};
+    use nix::sys::resource::Resource;
+    use std::os::unix::{fs::MetadataExt, process::CommandExt};
+    let mut arguments = std::env::args_os().skip(2);
+    let executable = arguments
+        .next()
+        .ok_or_else(|| io::Error::other("missing media executable"))?;
+    let payload = arguments
+        .next()
+        .ok_or_else(|| io::Error::other("missing media limits"))?;
+    let payload = payload
+        .to_str()
+        .filter(|text| text.len() <= 16 * 1024)
+        .ok_or_else(|| io::Error::other("invalid media limits"))?;
+    let limits: WorkerLimits = serde_json::from_str(payload).map_err(io::Error::other)?;
+    if !limits.valid || arguments.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
+        return Err(io::Error::other("invalid media worker configuration"));
     }
-    let ruleset_attr = LandlockRulesetAttr {
-        handled_access_fs: LANDLOCK_ACCESS_FS_SUPPORTED_ABI_3,
-    };
-    // SAFETY: the ABI-3 ruleset structure is initialized and matches the
-    // documented kernel ABI; its address remains valid for the syscall.
-    let ruleset_fd = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            &ruleset_attr as *const LandlockRulesetAttr,
-            std::mem::size_of::<LandlockRulesetAttr>(),
-            LANDLOCK_CREATE_RULESET_HANDLED_ACCESS_FLAGS,
-        )
-    };
-    if ruleset_fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let ruleset_fd = ruleset_fd as RawFd;
-    for rule in &sandbox.rules {
-        let path_attr = LandlockPathBeneathAttr {
-            allowed_access: rule.allowed_access,
-            parent_fd: rule.path_fd,
-        };
-        // SAFETY: the path-beneath structure is initialized and remains valid
-        // until the kernel finishes adding this rule.
-        if unsafe {
-            libc::syscall(
-                libc::SYS_landlock_add_rule,
-                ruleset_fd,
-                LANDLOCK_RULE_PATH_BENEATH,
-                &path_attr as *const LandlockPathBeneathAttr,
-                0_u32,
-            )
-        } < 0
-        {
-            let error = io::Error::last_os_error();
-            unsafe { libc::close(ruleset_fd) };
-            return Err(error);
+    set_limit(Resource::RLIMIT_CPU, limits.cpu_seconds)?;
+    set_limit(Resource::RLIMIT_AS, limits.address_space_bytes)?;
+    set_limit(Resource::RLIMIT_FSIZE, limits.file_size_bytes)?;
+    set_limit(Resource::RLIMIT_CORE, 0)?;
+    if let Some(rules) = limits.rules {
+        if rules.is_empty() || rules.len() > 32 {
+            return Err(io::Error::other("invalid media rule count"));
+        }
+        let mut ruleset = require_landlock()?;
+        for (index, rule) in rules.into_iter().enumerate() {
+            if rule.descriptor != 4 + index as RawFd {
+                return Err(io::Error::other("invalid inherited rule descriptor"));
+            }
+            // Reopen only the worker's explicitly mapped O_PATH capability. Do not
+            // canonicalize it: renamed or unlinked paths retain the same inode.
+            let handle = File::from(rustix::fs::open(
+                format!("/proc/self/fd/{}", rule.descriptor),
+                rustix::fs::OFlags::PATH | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )?);
+            let metadata = handle.metadata()?;
+            if metadata.dev() != rule.device || metadata.ino() != rule.inode {
+                return Err(io::Error::other("inherited media rule identity changed"));
+            }
+            nix::unistd::close(rule.descriptor).map_err(io::Error::from)?;
+            let access = BitFlags::<AccessFs>::from_bits(rule.allowed_access)
+                .map_err(|_| io::Error::other("invalid media access rights"))?;
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(handle, access))
+                .map_err(io::Error::other)?;
+        }
+        let status = ruleset.restrict_self().map_err(io::Error::other)?;
+        if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
+            return Err(io::Error::other(
+                "media filesystem sandbox was not fully enforced",
+            ));
         }
     }
-
-    if unsafe { libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-        let error = io::Error::last_os_error();
-        unsafe { libc::close(ruleset_fd) };
-        return Err(error);
-    }
-    // SAFETY: the descriptor is a ruleset created above; flags are zero.
-    if unsafe { libc::syscall(libc::SYS_landlock_restrict_self, ruleset_fd, 0_u32) } < 0 {
-        let error = io::Error::last_os_error();
-        unsafe { libc::close(ruleset_fd) };
-        return Err(error);
-    }
-    unsafe { libc::close(ruleset_fd) };
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn remap_input_descriptor(sandbox: &MediaChildSandbox) -> io::Result<()> {
-    let Some(input_fd) = sandbox.input_fd else {
-        return Ok(());
-    };
-    if input_fd == CHILD_INPUT_FD {
-        let flags = unsafe { libc::fcntl(CHILD_INPUT_FD, libc::F_GETFD) };
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if unsafe { libc::fcntl(CHILD_INPUT_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        return Ok(());
-    }
-    // The child stdio setup reserves descriptors 0–2. Descriptor 3 is a fixed
-    // input slot and may replace a temporary Landlock path handle after the
-    // rules have already been installed.
-    if unsafe { libc::dup3(input_fd, CHILD_INPUT_FD, 0) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if unsafe { libc::close(input_fd) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    set_limit(Resource::RLIMIT_NOFILE, CHILD_DESCRIPTOR_LIMIT)?;
+    install_media_child_filter(
+        &media_child_filter()
+            .ok_or_else(|| io::Error::other("unsupported media sandbox architecture"))?,
+    )?;
+    Err(std::process::Command::new(executable)
+        .args(arguments)
+        .exec())
 }
 
 /// Build the x86-64 classic seccomp-BPF policy for network, parent-process and
 /// descendant isolation. Thread creation is allowed only within the supervised
 /// process group.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn media_child_filter() -> Option<Vec<libc::sock_filter>> {
+fn media_child_filter() -> Option<Vec<seccompiler::sock_filter>> {
     const BPF_LD_W_ABS: u16 = 0x20;
     const BPF_JMP_JEQ_K: u16 = 0x15;
     const BPF_JMP_JSET_K: u16 = 0x45;
@@ -466,25 +433,25 @@ fn media_child_filter() -> Option<Vec<libc::sock_filter>> {
     const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
     let mut filter = vec![
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_LD_W_ABS,
             jt: 0,
             jf: 0,
             k: 4,
         },
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_JMP_JEQ_K,
             jt: 1,
             jf: 0,
             k: AUDIT_ARCH,
         },
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_RET_K,
             jt: 0,
             jf: 0,
             k: RET_KILL_PROCESS,
         },
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_LD_W_ABS,
             jt: 0,
             jf: 0,
@@ -493,13 +460,13 @@ fn media_child_filter() -> Option<Vec<libc::sock_filter>> {
     ];
 
     filter.extend([
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_JMP_JSET_K,
             jt: 0,
             jf: 1,
             k: X32_SYSCALL_BIT,
         },
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_RET_K,
             jt: 0,
             jf: 0,
@@ -511,25 +478,25 @@ fn media_child_filter() -> Option<Vec<libc::sock_filter>> {
     // CLONE_THREAD keeps every worker in the supervised process; fork/vfork
     // and clone3 are denied below so descendants cannot outlive the job.
     filter.extend([
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_JMP_JEQ_K,
             jt: 0,
             jf: 3,
             k: libc::SYS_clone as u32,
         },
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_LD_W_ABS,
             jt: 0,
             jf: 0,
             k: 16,
         },
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_JMP_JSET_K,
             jt: 1,
             jf: 0,
             k: libc::CLONE_THREAD as u32,
         },
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_RET_K,
             jt: 0,
             jf: 0,
@@ -540,13 +507,13 @@ fn media_child_filter() -> Option<Vec<libc::sock_filter>> {
     // clone3 cannot be safely filtered by its pointed-to flags in classic
     // BPF. Return ENOSYS so libc can fall back to the constrained clone path.
     filter.extend([
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_JMP_JEQ_K,
             jt: 0,
             jf: 1,
             k: libc::SYS_clone3 as u32,
         },
-        libc::sock_filter {
+        seccompiler::sock_filter {
             code: BPF_RET_K,
             jt: 0,
             jf: 0,
@@ -596,20 +563,20 @@ fn media_child_filter() -> Option<Vec<libc::sock_filter>> {
     ];
     for number in denied {
         let number = u32::try_from(number).ok()?;
-        filter.push(libc::sock_filter {
+        filter.push(seccompiler::sock_filter {
             code: BPF_JMP_JEQ_K,
             jt: 0,
             jf: 1,
             k: number,
         });
-        filter.push(libc::sock_filter {
+        filter.push(seccompiler::sock_filter {
             code: BPF_RET_K,
             jt: 0,
             jf: 0,
             k: RET_ERRNO | libc::EPERM as u32,
         });
     }
-    filter.push(libc::sock_filter {
+    filter.push(seccompiler::sock_filter {
         code: BPF_RET_K,
         jt: 0,
         jf: 0,
@@ -620,80 +587,27 @@ fn media_child_filter() -> Option<Vec<libc::sock_filter>> {
 }
 
 #[cfg(all(target_os = "linux", not(target_arch = "x86_64")))]
-fn media_child_filter() -> Option<Vec<libc::sock_filter>> {
+fn media_child_filter() -> Option<Vec<seccompiler::sock_filter>> {
     None
 }
 
-#[cfg(target_os = "linux")]
-fn install_media_child_filter(filter: &[libc::sock_filter]) -> io::Result<()> {
-    const PR_SET_NO_NEW_PRIVS: libc::c_int = 38;
-    const PR_SET_SECCOMP: libc::c_int = 22;
-    const SECCOMP_MODE_FILTER: libc::c_ulong = 2;
-    if filter.is_empty() || filter.len() > u16::MAX as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "network filter is invalid",
-        ));
-    }
-    let mut program = libc::sock_fprog {
-        len: filter.len() as u16,
-        filter: filter.as_ptr() as *mut libc::sock_filter,
-    };
-    // SAFETY: the filter slice and program remain alive through both syscalls;
-    // the program points only into that initialized slice.
-    if unsafe { libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if unsafe {
-        libc::prctl(
-            PR_SET_SECCOMP,
-            SECCOMP_MODE_FILTER,
-            &mut program as *mut libc::sock_fprog as libc::c_ulong,
-            0,
-            0,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+fn install_media_child_filter(filter: &[seccompiler::sock_filter]) -> io::Result<()> {
+    seccompiler::apply_filter(filter).map_err(io::Error::other)
 }
 
-#[cfg(unix)]
-fn set_limit(resource: Resource, value: u64) -> io::Result<()> {
-    let value = libc::rlim_t::try_from(value).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "process limit is out of range")
-    })?;
-    let limit = libc::rlimit {
-        rlim_cur: value,
-        rlim_max: value,
-    };
-    // SAFETY: `limit` is fully initialized and lives for the duration of this
-    // direct system call in the child process.
-    let result = unsafe { libc::setrlimit(resource, &limit) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+fn set_limit(resource: nix::sys::resource::Resource, value: u64) -> io::Result<()> {
+    nix::sys::resource::setrlimit(resource, value, value).map_err(io::Error::from)
 }
-
-// glibc exposes this alias while musl declares `setrlimit` with `c_int`.
-// Keep the signature portable to the Linux musl release target.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-type Resource = libc::__rlimit_resource_t;
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-type Resource = libc::c_int;
 
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
 mod tests {
     use super::{
         CHILD_DESCRIPTOR_LIMIT, CHILD_INPUT_FD, MediaChildSandbox, apply_child_limits,
-        landlock_abi_version, media_child_filter, stop_child,
+        media_child_filter, media_command, require_landlock, stop_child,
     };
     use std::{
         fs::{self, File},
-        os::fd::{AsRawFd, FromRawFd, RawFd},
+        os::fd::{AsRawFd, RawFd},
         process::Stdio,
         time::Duration,
     };
@@ -750,7 +664,9 @@ mod tests {
     #[tokio::test]
     async fn media_child_cannot_create_network_sockets() {
         const CHILD: &str = "PUFFINBOX_NETWORK_DENY_CHILD";
-        let mut command = Command::new(std::env::current_exe().unwrap());
+        let mut command = media_command(std::env::current_exe().unwrap());
+        // The test harness needs more virtual address space than a decoder.
+        apply_child_limits(&mut command, 10, 4 * 1024 * 1024 * 1024, 0, None);
         command
             .arg("--exact")
             .arg("media_features::process_limits::tests::network_deny_child_probe")
@@ -760,10 +676,6 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        // The test harness itself needs a larger virtual address space than a
-        // decoder, so this child exercises the seccomp filter independently
-        // of production decoder memory limits.
-        apply_child_limits(&mut command, 10, 4 * 1024 * 1024 * 1024, 0, None);
         let child = command.spawn().expect("limited media child should launch");
         let output = timeout(Duration::from_secs(5), child.wait_with_output())
             .await
@@ -780,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn media_child_filesystem_and_parent_process_access_are_confined() {
-        assert!(landlock_abi_version().is_ok_and(|abi| abi >= super::LANDLOCK_ABI_REQUIRED));
+        assert!(require_landlock().is_ok());
         let base =
             std::env::temp_dir().join(format!("puffinbox-landlock-{}", uuid::Uuid::new_v4()));
         let scratch = base.join("scratch");
@@ -795,19 +707,9 @@ mod tests {
         // open descriptors or test-runner allocation order.
         let original_input = File::open(&source_path).unwrap();
         let minimum_input_fd = CHILD_DESCRIPTOR_LIMIT as RawFd;
-        let high_input_fd = unsafe {
-            libc::fcntl(
-                original_input.as_raw_fd(),
-                libc::F_DUPFD_CLOEXEC,
-                minimum_input_fd,
-            )
-        };
-        assert!(
-            high_input_fd >= minimum_input_fd,
-            "fixture input fd must exceed the child descriptor limit: {}",
-            std::io::Error::last_os_error()
-        );
-        let input = unsafe { File::from_raw_fd(high_input_fd) };
+        let input =
+            File::from(rustix::io::fcntl_dupfd_cloexec(&original_input, minimum_input_fd).unwrap());
+        assert!(input.as_raw_fd() >= minimum_input_fd);
         drop(original_input);
         let parent_secret_fd = File::open(&outside_path).unwrap();
         let input_fd = input.as_raw_fd();
@@ -818,7 +720,7 @@ mod tests {
                 .unwrap();
         assert_eq!(sandbox.input_fd(), CHILD_INPUT_FD);
 
-        let mut command = Command::new(sandbox.executable());
+        let mut command = media_command(sandbox.executable());
         apply_child_limits(&mut command, 10, 4 * 1024 * 1024 * 1024, 0, Some(sandbox));
         command
             .env_clear()
@@ -867,8 +769,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(sandbox.input_fd.is_none());
-        let mut command = Command::new(sandbox.executable());
+        assert!(sandbox._input.is_none());
+        let mut command = media_command(sandbox.executable());
         apply_child_limits(
             &mut command,
             10,
@@ -930,19 +832,21 @@ mod tests {
         if std::env::var_os("PUFFINBOX_LANDLOCK_CHILD").is_none() {
             return;
         }
+        // Only the approved input survives exec. Landlock path capabilities
+        // must be closed so the decoder cannot use them as directory handles.
+        for descriptor in 4..36 {
+            assert_eq!(
+                nix::fcntl::fcntl(descriptor, nix::fcntl::FcntlArg::F_GETFD),
+                Err(nix::errno::Errno::EBADF),
+                "unexpected inherited descriptor {descriptor}"
+            );
+        }
         let input_fd = env_fd("PUFFINBOX_LANDLOCK_INPUT_FD");
         let mut input_bytes = [0_u8; 64];
-        let read = unsafe {
-            libc::pread(
-                input_fd,
-                input_bytes.as_mut_ptr() as *mut libc::c_void,
-                input_bytes.len(),
-                0,
-            )
-        };
+        let read = nix::unistd::read(input_fd, &mut input_bytes).unwrap();
         let expected_input = b"only approved input bytes";
-        assert_eq!(read, expected_input.len() as isize);
-        assert_eq!(&input_bytes[..read as usize], expected_input);
+        assert_eq!(read, expected_input.len());
+        assert_eq!(&input_bytes[..read], expected_input);
 
         let outside_path = std::env::var("PUFFINBOX_LANDLOCK_OUTSIDE_PATH").unwrap();
         assert!(fs::read(outside_path).is_err(), "outside file was readable");
@@ -960,77 +864,35 @@ mod tests {
             "parent file descriptor was readable"
         );
 
-        assert_eq!(unsafe { libc::kill(parent_pid, 0) }, -1);
+        let pid = nix::unistd::Pid::from_raw(parent_pid);
         assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EPERM)
+            nix::sys::signal::kill(pid, None),
+            Err(nix::errno::Errno::EPERM)
         );
-        assert_eq!(
-            unsafe { libc::ptrace(libc::PTRACE_ATTACH, parent_pid, 0, 0) },
-            -1
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EPERM)
-        );
+        assert_eq!(nix::sys::ptrace::attach(pid), Err(nix::errno::Errno::EPERM));
         let mut local = [0_u8; 1];
-        let local_iovec = libc::iovec {
-            iov_base: local.as_mut_ptr() as *mut libc::c_void,
-            iov_len: local.len(),
-        };
-        let remote_iovec = libc::iovec {
-            iov_base: std::ptr::null_mut(),
-            iov_len: 1,
-        };
-        let result = unsafe {
-            libc::syscall(
-                libc::SYS_process_vm_readv,
-                parent_pid,
-                &local_iovec as *const libc::iovec,
-                1_usize,
-                &remote_iovec as *const libc::iovec,
-                1_usize,
-                0_usize,
-            )
-        };
-        assert_eq!(result, -1);
         assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EPERM)
+            nix::sys::uio::process_vm_readv(
+                pid,
+                &mut [std::io::IoSliceMut::new(&mut local)],
+                &[nix::sys::uio::RemoteIoVec { base: 0, len: 1 }]
+            ),
+            Err(nix::errno::Errno::EPERM)
         );
 
-        let parent_pid_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, parent_pid, 0_u32) };
-        assert!(
-            parent_pid_fd >= 0,
-            "pidfd_open failed before the denied read"
+        let parent_pid_fd = rustix::process::pidfd_open(
+            rustix::process::Pid::from_raw(parent_pid).unwrap(),
+            rustix::process::PidfdFlags::empty(),
+        )
+        .unwrap();
+        let result = rustix::process::pidfd_getfd(
+            &parent_pid_fd,
+            env_fd("PUFFINBOX_LANDLOCK_INPUT_PARENT_FD"),
+            rustix::process::PidfdGetfdFlags::empty(),
         );
-        let result = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_getfd,
-                parent_pid_fd as libc::c_int,
-                env_fd("PUFFINBOX_LANDLOCK_INPUT_PARENT_FD"),
-                0_u32,
-            )
-        };
-        assert_eq!(result, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EPERM)
-        );
-        unsafe { libc::close(parent_pid_fd as libc::c_int) };
-
-        let socket = unsafe {
-            libc::socket(
-                libc::AF_INET,
-                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
-                libc::IPPROTO_TCP,
-            )
-        };
-        assert_eq!(socket, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EPERM)
-        );
+        assert!(matches!(result, Err(rustix::io::Errno::PERM)));
+        drop(parent_pid_fd);
+        assert_network_denied();
 
         let thread = std::thread::spawn(|| 7);
         assert_eq!(
@@ -1049,19 +911,16 @@ mod tests {
         if std::env::var_os("PUFFINBOX_NETWORK_DENY_CHILD").is_none() {
             return;
         }
-        let mode = unsafe { libc::prctl(21, 0, 0, 0, 0) };
-        let socket = unsafe {
-            libc::socket(
-                libc::AF_INET,
-                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
-                libc::IPPROTO_TCP,
-            )
-        };
-        assert_eq!(socket, -1, "socket succeeded in seccomp mode {mode}");
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EPERM)
+        assert_network_denied();
+    }
+
+    fn assert_network_denied() {
+        let result = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
         );
+        assert!(matches!(result, Err(error) if error.raw_os_error() == Some(libc::EPERM)));
     }
 
     #[test]
@@ -1111,7 +970,7 @@ mod tests {
     }
 
     fn evaluate_filter(
-        filter: &[libc::sock_filter],
+        filter: &[seccompiler::sock_filter],
         arch: u32,
         syscall_number: u32,
         first_argument: u32,

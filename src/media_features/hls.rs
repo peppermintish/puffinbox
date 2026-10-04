@@ -42,7 +42,7 @@ use crate::{
 use super::{
     authorized_media, is_audio_type, is_video_type,
     probe::{self, ProbeInfo},
-    process_limits::{MediaChildSandbox, apply_child_limits, stop_child},
+    process_limits::{MediaChildSandbox, apply_child_limits, media_command, stop_child},
     secure_path::ResolvedMedia,
     subtitles,
 };
@@ -341,7 +341,7 @@ async fn verify_ffmpeg(program: &Path) -> bool {
 
 async fn bounded_output(program: &Path, args: &[&str], limit: Duration) -> Option<Vec<u8>> {
     timeout(limit, async {
-        let mut command = Command::new(program);
+        let mut command = media_command(program);
         apply_child_limits(&mut command, 5, 512 * 1024 * 1024, 0, None);
         command
             .env_clear()
@@ -898,7 +898,7 @@ async fn start_hls(
     } else {
         "segment%06d.ts"
     });
-    let mut command = Command::new(sandbox.executable());
+    let mut command = media_command(sandbox.executable());
     apply_child_limits(
         &mut command,
         MAX_PROCESS_LIFETIME.as_secs(),
@@ -1155,7 +1155,7 @@ async fn extract_subtitle(
     .await?;
     let input_fd = sandbox.input_fd().to_string();
     let raw_output = directory.join("subtitle.unsanitized.vtt");
-    let mut command = Command::new(sandbox.executable());
+    let mut command = media_command(sandbox.executable());
     apply_child_limits(
         &mut command,
         45,
@@ -3279,6 +3279,7 @@ mod tests {
             cors_origins: Vec::new(),
             trusted_proxies: Vec::new(),
             local_networks: Vec::new(),
+            dlna: Default::default(),
             setup_token: None,
             bootstrap_admin_username: None,
             bootstrap_admin_password: None,

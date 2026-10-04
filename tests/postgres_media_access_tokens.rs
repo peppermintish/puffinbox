@@ -119,6 +119,7 @@ async fn media_access_token_restores_cookie_session_media_and_stays_read_only_an
         cors_origins: vec!["https://desktop.example".to_owned()],
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse::<IpNet>().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

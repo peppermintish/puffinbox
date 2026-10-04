@@ -218,6 +218,11 @@ async fn dlna_http_and_ssdp_are_bound_to_the_direct_peer_and_current_user_policy
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse::<IpNet>().unwrap()],
+        dlna: puffinbox::config::DlnaConfig {
+            enabled: "true".to_owned(),
+            interface_address: Some("127.0.0.1".to_owned()),
+            advertised_origin: Some("http://127.0.0.1:8096".to_owned()),
+        },
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,
@@ -236,16 +241,6 @@ async fn dlna_http_and_ssdp_are_bound_to_the_direct_peer_and_current_user_policy
     .unwrap()
     .token;
 
-    let old_enabled = env::var_os("PUFFINBOX_DLNA_ENABLED");
-    let old_interface = env::var_os("PUFFINBOX_DLNA_INTERFACE_ADDRESS");
-    let old_origin = env::var_os("PUFFINBOX_DLNA_ADVERTISED_ORIGIN");
-    // This target has one test that configures the DLNA listener; save and
-    // restore process environment so unrelated test binaries are unaffected.
-    unsafe {
-        env::set_var("PUFFINBOX_DLNA_ENABLED", "true");
-        env::set_var("PUFFINBOX_DLNA_INTERFACE_ADDRESS", "127.0.0.1");
-        env::set_var("PUFFINBOX_DLNA_ADVERTISED_ORIGIN", "http://127.0.0.1:8096");
-    }
     let direct_peer = SocketAddr::from(([127, 0, 0, 1], 54001));
     let spoofed_peer = SocketAddr::from(([127, 0, 0, 2], 54002));
     let router = api::router(state.clone());
@@ -865,9 +860,6 @@ async fn dlna_http_and_ssdp_are_bound_to_the_direct_peer_and_current_user_policy
         .is_err()
     );
 
-    restore_env("PUFFINBOX_DLNA_ENABLED", old_enabled);
-    restore_env("PUFFINBOX_DLNA_INTERFACE_ADDRESS", old_interface);
-    restore_env("PUFFINBOX_DLNA_ADVERTISED_ORIGIN", old_origin);
     drop(router);
     drop(state);
     pool.close().await;
@@ -1003,16 +995,6 @@ fn gena_request_header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
             .eq_ignore_ascii_case(name)
             .then_some(value.trim())
     })
-}
-
-fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
-    unsafe {
-        if let Some(value) = value {
-            env::set_var(name, value);
-        } else {
-            env::remove_var(name);
-        }
-    }
 }
 
 fn sqlstate(error: &sqlx::Error) -> Option<String> {

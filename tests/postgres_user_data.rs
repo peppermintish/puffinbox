@@ -157,6 +157,7 @@ async fn user_data_edits_preserve_omitted_fields_and_follow_user_and_media_permi
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: vec!["127.0.0.0/8".parse().unwrap()],
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

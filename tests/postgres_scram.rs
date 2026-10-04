@@ -66,7 +66,7 @@ async fn attempt(
         let end = initial[5..].iter().position(|byte| *byte == 0).unwrap() + 5;
         assert_eq!(&initial[5..end], b"SCRAM-SHA-256");
         let first = std::str::from_utf8(&initial[end + 5..]).unwrap();
-        assert!(first.starts_with("n,,n=,r="));
+        assert!(first.starts_with("n,,n=") && first.rsplit_once(",r=").is_some());
         server.write_all(&initial).await.unwrap();
         let (mut client_read, mut client_write) = client.into_split();
         let (mut server_read, mut server_write) = server.into_split();
@@ -147,16 +147,22 @@ async fn scram_preserves_startup_roles_and_rejects_invalid_passwords_and_server_
     let password = Uuid::new_v4().simple().to_string();
     let mut roles = vec![];
     let mut creation_error = None;
-    for prefix in ["ascii", "Unicode🧪", "punct,="] {
+    for (prefix, role_password) in [
+        ("ascii", password.clone()),
+        ("Unicode🧪", password.clone()),
+        ("punct,=", password.clone()),
+        ("normalized", format!("synthetic\u{00a0}{suffix}")),
+        ("raw", format!("synthetic\u{0007}{suffix}")),
+    ] {
         let role = format!("puffinbox_{prefix}_{suffix}");
         let quoted = role.replace('"', "\"\"");
         match sqlx::query(&format!(
-            "CREATE ROLE \"{quoted}\" LOGIN PASSWORD '{password}'"
+            "CREATE ROLE \"{quoted}\" LOGIN PASSWORD '{role_password}'"
         ))
         .execute(&mut admin)
         .await
         {
-            Ok(_) => roles.push(role),
+            Ok(_) => roles.push((role, role_password)),
             Err(error) => {
                 creation_error = Some(error);
                 break;
@@ -167,9 +173,17 @@ async fn scram_preserves_startup_roles_and_rejects_invalid_passwords_and_server_
     // Keep cleanup outside the task so a protocol assertion cannot strand owned roles.
     let probe_roles = roles.clone();
     let mut probes = OwnedTask(tokio::spawn(async move {
-        assert_eq!(probe_roles.len(), 3);
-        for role in probe_roles {
+        assert_eq!(probe_roles.len(), 5);
+        for (role, password) in probe_roles {
             assert_eq!(attempt(&base, &role, &password, false).await.unwrap(), role);
+            if password.contains('\u{00a0}') {
+                assert_eq!(
+                    attempt(&base, &role, &password.replace('\u{00a0}', " "), false)
+                        .await
+                        .unwrap(),
+                    role
+                );
+            }
             assert_authentication_rejected(
                 attempt(&base, &role, "wrong-synthetic-password", false).await,
             );
@@ -194,7 +208,7 @@ async fn scram_preserves_startup_roles_and_rejects_invalid_passwords_and_server_
         let _ = (&mut probes.0).await;
     }
     let mut cleanup_errors = vec![];
-    for role in roles {
+    for (role, _) in roles {
         let quoted = role.replace('"', "\"\"");
         if let Err(error) = sqlx::query(&format!("DROP ROLE \"{quoted}\""))
             .execute(&mut admin)

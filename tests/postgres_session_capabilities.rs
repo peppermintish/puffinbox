@@ -77,6 +77,7 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         cors_origins: Vec::new(),
         trusted_proxies: Vec::new(),
         local_networks: Vec::new(),
+        dlna: Default::default(),
         setup_token: None,
         bootstrap_admin_username: None,
         bootstrap_admin_password: None,

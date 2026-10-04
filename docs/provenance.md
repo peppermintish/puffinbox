@@ -25,6 +25,6 @@ Development of the interface relied on the public documentation linked above and
 
 The local HLS adapter is the official `hls.js` v1.7.3 npm distribution. Its registry tarball integrity, local SHA-256, upstream reference, and Apache-2.0 license are recorded in [the bundled dependency record](../web/vendor/README.md); full attribution and license text are included in [third-party notices](../THIRD_PARTY_NOTICES.md) and `LICENSE-APACHE`. The script is served from the local web root and is not fetched from a third-party host at runtime.
 
-## Cargo replacements
+## Cargo dependencies
 
-The route matcher and ASCII identifier adapter in `crates/` are original code implementing public interfaces consumed by MIT/Apache dependencies. They do not copy the replaced implementations. The small digest, hashbrown, and hashlink patches retain their upstream MIT/Apache licenses and notices; source tarball hashes and changes are recorded in [vendor/](../vendor/README.md).
+Cargo resolves upstream implementations from the lockfile. The former license-exclusion forks, ASCII-only URL adapter and exact-license runtime experiments were retired on 2026-10-05. One SQLx PostgreSQL patch preserves valid Unicode database roles with PostgreSQL-compatible password preparation; its verified upstream archive, changed-file hashes and MIT/Apache notices are retained in `vendor/sqlx-postgres/`. Dependencies retain compatible permissive terms and their notices; full license generation and the source/TLS policy check run in CI. See [licensing.md](licensing.md) and [supplemental notices](../vendor/README.md).
