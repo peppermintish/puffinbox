@@ -2271,7 +2271,7 @@ pub async fn browse_items(
     mut query: ItemQuery,
 ) -> Result<(Vec<ItemRecord>, Option<i64>), sqlx::Error> {
     query.start_index = query.start_index.max(0);
-    query.limit = query.limit.clamp(1, 10_000);
+    query.limit = query.limit.clamp(0, 10_000);
     let parent = item_query_parent(pool, query.parent_id).await?;
     if query.parent_id.is_some() && parent.is_none() {
         return Ok((Vec::new(), Some(0)));
@@ -2703,11 +2703,11 @@ async fn run_item_page(
             ));
         }
     }
-    builder
-        .push(", i.id ASC LIMIT ")
-        .push_bind(query.limit)
-        .push(" OFFSET ")
-        .push_bind(query.start_index);
+    builder.push(", i.id ASC");
+    if !query.unlimited {
+        builder.push(" LIMIT ").push_bind(query.limit);
+    }
+    builder.push(" OFFSET ").push_bind(query.start_index);
     let rows = builder.build().fetch_all(pool).await?;
     rows.iter().map(item_from_row).collect()
 }

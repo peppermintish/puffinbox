@@ -245,3 +245,13 @@ operator test runtime `e8dbc686` passed their bounded container and client
 checks. This query-binding change adds no dependency or feature. It does not
 clear the linked runtime or permit bundling the GPL FFmpeg test runtime.
 Records are under `.local/repeated-fields-*`; all five release gates remain open.
+
+
+The zero-limit image's exact static server `6baae5f0` still defines 41 generated
+Rust Unicode namespace symbols. Both strict package audits, selected source
+guards and full notices passed without exceptions; its packaged timestamp MIT
+notice matches reviewed bytes. Core `e6e5d5b4` and separate operator test runtime
+`1e45a3f9` passed bounded container and client checks. The pagination repair
+adds no dependency or feature and does not clear linked-runtime inputs or permit
+bundling the GPL FFmpeg test runtime. Records are under `.local/zero-limit-*`;
+all five release gates remain open.

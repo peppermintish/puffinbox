@@ -1630,23 +1630,37 @@ async fn verify_item_total_modes(
                 ("&EnableTotalRecordCount=false", false),
             ] {
                 for start in [0, 1, 4] {
-                    let query = format!(
-                        "{route}?ParentId={album}&IncludeItemTypes=Audio&SortBy=ParentIndexNumber,IndexNumber,SortName&{selection}&StartIndex={start}&Limit=1{count}"
-                    );
-                    let page = json_body(call(router, &query, Some(token)).await).await;
-                    let page_ids = expected.get(start).copied().into_iter().collect::<Vec<_>>();
-                    let total = if enabled || *full_when_disabled {
-                        expected.len()
-                    } else {
-                        page_ids.len()
-                    };
-                    assert_eq!(item_ids(&page), page_ids, "{query}");
-                    assert_eq!(page["TotalRecordCount"], total, "{query}");
-                    assert_eq!(page["StartIndex"], start, "{query}");
+                    for limit in [0, 1] {
+                        let query = format!(
+                            "{route}?ParentId={album}&IncludeItemTypes=Audio&SortBy=ParentIndexNumber,IndexNumber,SortName&{selection}&StartIndex={start}&Limit={limit}{count}"
+                        );
+                        let page = json_body(call(router, &query, Some(token)).await).await;
+                        let unlimited = limit == 0
+                            && selection.starts_with("Recursive=false")
+                            && !selection.contains("Ids=");
+                        let page_ids = if unlimited {
+                            tracks.get(start..).unwrap_or_default().to_vec()
+                        } else if limit == 0 {
+                            Vec::new()
+                        } else {
+                            expected.get(start).copied().into_iter().collect::<Vec<_>>()
+                        };
+                        let total = if unlimited {
+                            tracks.len()
+                        } else if enabled || (limit != 0 && *full_when_disabled) {
+                            expected.len()
+                        } else {
+                            page_ids.len()
+                        };
+                        assert_eq!(item_ids(&page), page_ids, "{query}");
+                        assert_eq!(page["TotalRecordCount"], total, "{query}");
+                        assert_eq!(page["StartIndex"], start, "{query}");
+                    }
                 }
             }
         }
     }
+    verify_unlimited_children(router, pool, album, library, owner, token, tracks).await;
     assert_eq!(
         saved(db::item_user_data(pool, owner, tracks).await.unwrap()),
         before
@@ -1666,6 +1680,75 @@ async fn verify_item_total_modes(
         .unwrap();
     sqlx::query("DELETE FROM items WHERE id = ANY($1)")
         .bind(&[hidden, restricted][..])
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn verify_unlimited_children(
+    router: &Router,
+    pool: &PgPool,
+    album: Uuid,
+    library: Uuid,
+    owner: Uuid,
+    token: &str,
+    original: &[Uuid],
+) {
+    let mut added = Vec::new();
+    for index in 0..105 {
+        added.push(
+            item(
+                pool,
+                library,
+                Some(album),
+                "Audio",
+                &format!("/media/ordering-music/artist-a/album/extra-{index:03}.flac"),
+            )
+            .await,
+        );
+    }
+    let expected = original
+        .iter()
+        .chain(&added)
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    for route in ["/Items".to_owned(), format!("/Users/{owner}/Items")] {
+        let prefix = format!(
+            "{route}?ParentId={album}&IncludeItemTypes=Audio&Recursive=false&SortBy=SortName"
+        );
+        let bounded =
+            json_body(call(router, &format!("{prefix}&Limit=1000"), Some(token)).await).await;
+        assert_eq!(item_ids(&bounded).len(), 100);
+        for count in ["", "&EnableTotalRecordCount=false"] {
+            let all =
+                json_body(call(router, &format!("{prefix}&Limit=0{count}"), Some(token)).await)
+                    .await;
+            let ids = item_ids(&all);
+            assert_eq!(ids.len(), 109);
+            assert_eq!(
+                ids.iter()
+                    .copied()
+                    .collect::<std::collections::HashSet<_>>(),
+                expected
+            );
+            assert_eq!(&ids[..100], item_ids(&bounded));
+            assert_eq!(all["TotalRecordCount"], 109);
+            let tail = json_body(
+                call(
+                    router,
+                    &format!("{prefix}&Limit=0&StartIndex=106{count}"),
+                    Some(token),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(item_ids(&tail), ids[106..]);
+            assert_eq!(tail["TotalRecordCount"], 109);
+            assert_eq!(tail["StartIndex"], 106);
+        }
+    }
+    sqlx::query("DELETE FROM items WHERE id = ANY($1)")
+        .bind(&added)
         .execute(pool)
         .await
         .unwrap();

@@ -2990,6 +2990,7 @@ pub(crate) fn item_query(
         recursive: params.recursive.unwrap_or(false),
         start_index,
         limit,
+        unlimited: false,
         enable_total_record_count: params.enable_total_record_count,
         sort_by,
         sort_order,
@@ -3170,6 +3171,7 @@ async fn browse_items(
         .as_deref()
         .is_some_and(|value| value.contains(','));
     let entry_sort_requested = params.sort_by.is_some() || params.sort_order.is_some();
+    let zero_limit = params.limit == Some(0);
     let entry_limit = params
         .limit
         .unwrap_or(100)
@@ -3205,9 +3207,18 @@ async fn browse_items(
         return crate::playlists::catalog_children_result(&state, &current, parent_id, query).await;
     }
     ensure_parent_visible(&state, &selected, query.parent_id).await?;
+    if zero_limit {
+        query.limit = 0;
+        query.unlimited =
+            query.parent_id.is_some() && !query.recursive && query.item_ids.is_empty();
+        if query.unlimited {
+            // Zero-limit nonrecursive children ignore the search term.
+            query.search_term = None;
+        }
+    }
     // Searches and nonrecursive children retain a full total. Other ordinary
     // lists report the page size when the caller disables full counting.
-    query.enable_total_record_count |= query.search_term.is_some()
+    query.enable_total_record_count |= (!zero_limit && query.search_term.is_some())
         || (query.parent_id.is_some() && !query.recursive && query.item_ids.is_empty());
     let mut result = item_query_result(&state, &selected, query).await?;
     result
@@ -3394,6 +3405,7 @@ async fn latest_items(
         start_index,
         limit,
         enable_total_record_count: false,
+        unlimited: false,
         sort_by: "DateCreated".to_owned(),
         sort_order: "Descending".to_owned(),
         item_ids: Vec::new(),
@@ -3451,6 +3463,7 @@ async fn resume_items(
         start_index,
         limit,
         enable_total_record_count: true,
+        unlimited: false,
         sort_by: "LastPlayedDate".to_owned(),
         sort_order: "Descending".to_owned(),
         item_ids: Vec::new(),
@@ -3506,6 +3519,7 @@ async fn show_seasons(
         recursive: false,
         start_index,
         limit,
+        unlimited: false,
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
@@ -3553,6 +3567,7 @@ async fn show_episodes(
         recursive: params.season_id.is_none(),
         start_index,
         limit,
+        unlimited: false,
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
@@ -3724,6 +3739,7 @@ async fn list_music_persons(
         recursive: true,
         start_index,
         limit,
+        unlimited: false,
         enable_total_record_count: params.enable_total_record_count,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
@@ -4228,6 +4244,7 @@ async fn search_hints(
         start_index: start,
         limit,
         enable_total_record_count: true,
+        unlimited: false,
         sort_by: "SortName".to_owned(),
         sort_order: "Ascending".to_owned(),
         item_ids: Vec::new(),

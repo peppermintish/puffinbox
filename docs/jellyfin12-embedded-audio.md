@@ -310,3 +310,59 @@ runtime evidence is under `.local/repeated-fields-client-20261004`. The card
 observation is under `.local/repeated-fields-web-card-20261004`. Complete music
 behavior, card-order equivalence, combined IDs/search, zero limits, audible
 quality, final positions and general native video remain open.
+
+
+## Zero limits
+
+The unchanged official Jellyfin 12.0.0 runtime supplied 168 further public reads
+on both ordinary list routes. They cover explicit or omitted recursion,
+nonrecursive/recursive album and artist parents, explicit Audio IDs with and
+without a parent, searches, whitespace-only searches, empty matches, count
+flags and offsets zero and 99. Six positive-limit search controls are included.
+No reference implementation source was read; media, metadata and grants stayed
+unchanged. Records are under `.local/zero-limit-contract-20261004`.
+
+For the observed album-child modes, Limit=0 with nonrecursive selection and no
+explicit IDs returns every remaining child. Search terms are ignored, including
+a term with no matches. The full total remains present with counting off.
+Recursive or explicit-ID zero-limit requests return no items. Their default or
+enabled totals count the visible matches; disabled totals are zero, even for
+meaningful searches. StartIndex is retained. Positive-limit search controls
+continue filtering and return full totals.
+
+Puffinbox implements those paging modes after user and parent visibility checks
+on GET /Items and GET /Users/{userId}/Items. The database omits LIMIT for the
+unlimited child mode and retains OFFSET, sorting, visibility and metadata
+conditions. Other zero-limit lists use LIMIT 0. Search validation still runs
+before the ordinary child mode ignores the term. Playlist branches and
+specialized endpoints retain their preceding pagination behavior. No Cargo
+dependency or feature changed.
+
+The database regression covers both routes, count modes, offsets, searches and
+explicit IDs, with hidden and restricted tracks excluded. An additional 105
+rows produce 109 visible children: the positive limit remains capped at 100,
+while zero returns all 109 and an offset of 106 returns the final three. Saved
+play counts, positions, ratings and favorites remain unchanged. The focused
+case first failed on the preceding one-item response, then passed after repair.
+
+Core `e6e5d5b4` matches all 144 selected pagination/count projections among the
+168 reads. The other 24 artist-parent queries retain their predefined physical
+layout qualification. The preceding core `9b2cd02c` matched 64 of those 144,
+with 80 differences preserved. All preceding scoped count, repeated-Fields,
+audio-field and detail-queue projections still match. Nine folder-filter and
+84 preceding count-catalog/layout qualifications remain.
+
+Both official clients opened Embedded Album from the eight-album main list and
+completed its original four-track FLAC detail-page queue in order. Each returned
+fifteen successful reports and added one play per track. Desktop decoded through
+audio EOF; web audio advanced unpaused without an error. All 50 saved rows match
+the two observed plays per track without a reset. Identity, grants, playlists,
+favorites and media bytes remain intact. Desktop closed normally with unchanged
+settings and Remember Me off. Joined records are under
+`.local/zero-limit-client-20261004`.
+
+Unlimited responses are currently assembled in memory. The 109-child fixture
+does not establish large-response or operational-scale acceptance. Library-root
+layouts, other filters at zero limits, playlist/specialized pagination, combined
+IDs/search selection, card queue ordering, broader DTO fields, audible quality,
+final positions and complete music behavior remain open.

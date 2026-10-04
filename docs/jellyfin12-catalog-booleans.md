@@ -87,3 +87,11 @@ qualified. All 50 saved rows, grants, policy and media hashes were unchanged by
 the reads. The original projection and reference record were retained; this
 does not establish complete DTO equivalence. Records are under
 `.local/repeated-fields-client-20261004/boolean-comparison.json`.
+
+
+The zero-limit build replayed the same 64 observations on core `e6e5d5b4`. Fifty-five
+still match, with nine existing folder-filter differences qualified. All 50
+saved rows, policy and media hashes were unchanged by the reads. The original
+projection and reference bytes were retained; complete DTO equivalence remains
+outside this check. Records are under
+`.local/zero-limit-client-20261004/boolean-comparison.json`.

@@ -69,6 +69,7 @@ pub struct ItemQuery {
     pub recursive: bool,
     pub start_index: i64,
     pub limit: i64,
+    pub unlimited: bool,
     pub enable_total_record_count: bool,
     pub sort_by: String,
     pub sort_order: String,

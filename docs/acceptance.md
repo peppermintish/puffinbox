@@ -2,7 +2,75 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
-The repeated-Fields build passed all thirteen source checks: formatting,
+The zero-limit build passed all thirteen source checks: formatting, strict
+Clippy, 260 standard Rust cases, all 29 enabled database cases, 130 Python cases,
+TLS, both strict package audits, selected-source guards and full notices. The
+database run includes 26 integration and three unit cases; the standard run
+ignored those 29 cases. Four compiled Python controls were skipped. The focused
+regression reproduced the old single-item response before the repair. An
+intermediate compile failed because specialized query constructors lacked the
+new paging flag; the corrected focused and complete runs passed. Failed logs
+remain preserved.
+
+The first image attempt stopped with an EOF while copying the external test
+runtime, and WSL exited before its result ledger was written. A cached retry
+built an image but failed its runtime check with a truncated audio library.
+Both attempts are preserved separately. Rebuilding the operator runtime without
+its cached layers passed. Reversible cache compression retained all 33,078
+incremental files and freed host space; no files were deleted. The retained
+test services restarted with the same images and mounts, all 50 saved rows,
+policies and fixture hashes intact. This recovery does not establish the cause
+of the WSL exit.
+
+The HTTPS harness's preceding temporary Linux workspace was absent after that
+restart. Its new private fixture used the same reviewed harness bytes and
+passed all 29 checks.
+
+Core `e6e5d5b4`, separate operator runtime `1e45a3f9` and server `6baae5f0` passed
+35 container and 29 local HTTPS checks, including active FFmpeg shutdown and
+video resume after restart. No Cargo dependency, feature or license exception
+changed. Runtime licensing and all five release gates remain open.
+
+On the two ordinary item-list routes, Limit=0 now returns every remaining
+nonrecursive parent child when explicit IDs are absent. Those requests ignore
+the search term and retain full totals, as in the observed reference. Recursive
+and explicit-ID requests return an empty page; enabled totals count visible
+matches and disabled totals are zero, including meaningful searches. Positive
+limits keep their preceding bounds and behavior. Permission and metadata
+filters remain active. A PostgreSQL regression checks 109 visible children
+against the 100-item cap, offsets, hidden/restricted files and unchanged saved
+user data. Responses are currently assembled in memory; that bounded fixture
+does not validate large unlimited responses.
+
+The replay matches all 144 selected pagination/count projections among 168
+public reads, including six positive-limit search controls. Twenty-four artist
+parent queries retain their predefined layout qualification. The preceding
+image matched 64 of the 144, with 80 differences retained. The reference's
+original media, metadata and grants were unchanged. All 168 preceding scoped
+count, 24 repeated-Fields, seventeen audio-field and both album-queue projections
+still match. The boolean replay retains 55 matches and nine qualified folder
+filters. See [zero limits](jellyfin12-embedded-audio.md#zero-limits).
+
+Both official clients displayed the eight retained albums and opened Embedded
+Album from the main list. Desktop decoded the original four-track FLAC queue
+through audio EOF; web's detail-page Play completed the same order with advancing,
+unpaused audio and no media error. Each returned fifteen successful playback
+reports and added one play per track. Desktop used Remember Me off, closed
+normally and retained its settings hash. Joined evidence binds 402 frozen source
+fingerprints, both immutable images, client traces and all 50 saved rows to
+those two plays per track. Identity, mounts, grants, playlists, studio favorites
+and original media bytes remain intact; nothing was reset.
+
+Source, image, container, HTTPS and client records are under `.local/zero-limit-*`;
+public observations are under `.local/zero-limit-contract-20261004`. Packaged
+documentation predates this entry. Library-root layouts, other filters at zero
+limits, playlist/specialized pagination, combined IDs/search selection, card
+order equivalence, wider Fields, audible quality, final positions, general
+native video and full client behavior remain incomplete or unvalidated.
+
+Current-patch cloud validation is pending.
+
+The preceding repeated-Fields build passed all thirteen source checks: formatting,
 strict Clippy, 260 standard Rust cases, all 29 enabled database cases, 130 Python
 cases, TLS, both strict package audits, selected-source guards and full notices.
 The standard Rust run ignored the 29 database cases; the separate run passed
@@ -54,8 +122,10 @@ native video and full client compatibility remain incomplete or unvalidated.
 
 At `79eecfc`, [both main cloud jobs](https://github.com/peppermintish/puffinbox/actions/runs/37188628844)
 and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37188628853)
-passed. Those results precede the repeated-Fields patch; its cloud validation
-is pending.
+passed. At `145a5d7`, [both main cloud jobs](https://github.com/peppermintish/puffinbox/actions/runs/37191059990)
+and [both GNU runtime variants](https://github.com/peppermintish/puffinbox/actions/runs/37191060013)
+also passed. Those results precede the current zero-limit patch; its cloud
+validation is pending.
 
 The preceding item-count build passed all thirteen source checks: formatting, strict
 Clippy, 258 Rust cases, all 29 enabled database cases, 130 Python cases, TLS,
