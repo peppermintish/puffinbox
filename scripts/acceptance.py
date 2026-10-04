@@ -1066,7 +1066,7 @@ def verify_catalog_ordering(admin: HttpClient, library_id: str, item_id: str) ->
         require(revoked["Items"] == [] and revoked["TotalRecordCount"] == 0,
                 "multi-field ordering retained a revoked library grant")
         report("Catalogue sorting, artist filters, exclusions, boolean parsing, counts, legacy query, and access revocation", True,
-               "real album/track order and metadata precedence have separate PostgreSQL coverage; folder filtering and omitted disabled counts retain Puffinbox behavior")
+               "real album/track order, metadata precedence and full/page count modes have separate PostgreSQL coverage; folder filtering remains qualified")
     finally:
         reader.json("POST", "/Sessions/Logout", expected=(204,))
 
@@ -1412,7 +1412,7 @@ def run(args: argparse.Namespace) -> int:
     _, _, photo_page = client.json("GET", f"/Users/{admin_user['Id']}/Items?ParentId={photo_parent}&Filters=IsNotFolder&Recursive=false&SortBy=SortName&MediaTypes=Photo,Video&SortOrder=Ascending&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false&CollapseBoxSetItems=false")
     require([item["Id"] for item in photo_page["Items"]] == [photo["Id"]]
             and all(item["IsFolder"] is False for item in photo_page["Items"])
-            and "TotalRecordCount" not in photo_page,
+            and photo_page.get("TotalRecordCount") == 1,
             "official photo viewer query did not select its visible nonfolder fixture")
     _, _, folder_page = client.json("GET", f"/Items?ParentId={library_id}&IsFolder=true&Recursive=true&Limit=1000")
     require(folder_page["Items"] and all(item["IsFolder"] is True for item in folder_page["Items"]),

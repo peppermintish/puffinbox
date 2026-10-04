@@ -3157,7 +3157,14 @@ async fn browse_items(
         return crate::playlists::catalog_children_result(&state, &current, parent_id, query).await;
     }
     ensure_parent_visible(&state, &selected, query.parent_id).await?;
+    // Searches and nonrecursive children retain a full total. Other ordinary
+    // lists report the page size when the caller disables full counting.
+    query.enable_total_record_count |= query.search_term.is_some()
+        || (query.parent_id.is_some() && !query.recursive && query.item_ids.is_empty());
     let mut result = item_query_result(&state, &selected, query).await?;
+    result
+        .total_record_count
+        .get_or_insert(result.items.len() as i64);
     if !include_sort_name {
         for item in &mut result.items {
             item.sort_name = None;

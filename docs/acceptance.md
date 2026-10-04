@@ -2,7 +2,7 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
-The audio-field build passed all thirteen source checks: formatting, strict
+The item-count build passed all thirteen source checks: formatting, strict
 Clippy, 258 Rust cases, all 29 enabled database cases, 130 Python cases, TLS,
 both package audits, selected-source guards and full notices. The standard Rust
 run ignored the 29 database cases; the separate database run passed all 26
@@ -10,38 +10,60 @@ integration and three unit cases. Four compiled Python controls were skipped
 in the default run. The preceding GNU audit separately passed all 80 regressions
 with its C and Rust controls enabled.
 
-Core `6c44dc12`, separate operator runtime `efda02b2` and server `164d3d54` passed
-35 container checks and 29 local HTTPS checks. Thirteen audio details and four
-album lists match the unchanged Jellyfin 12 public reference, including field
-presence. Current embedded metadata without an album name no longer supplies
-the physical folder name as Audio Album; AlbumId remains available. Ordinary
-item lists return SortName when requested through Fields. Database coverage
-checks both list routes, detail routes, stable sorting and paging. Legacy and
-stale metadata fallbacks and the wider Fields contract remain qualified.
+Core `2d3babe8`, separate operator runtime `feec3afe` and server `e037b04f` passed
+35 container checks and 29 local HTTPS checks, including active FFmpeg shutdown
+and video resume across restart. The strict MIT/Apache-2.0 package policy is
+unchanged. Linked runtime licensing and all five release gates remain open.
 
-Both official web and Qt 6 Desktop completed the original four-track FLAC album
-in the reference queue order. Each returned fifteen successful playback reports
-and added one play per track. Desktop WASAPI audio EOF and advancing web audio
-were observed. Independent reads matched all 50 saved rows to those plays;
-identity, grants, mounts, playlists, studio favorites and media hashes were
-retained without a reset. Desktop used Remember Me off, closed normally and
-kept its settings hash. Joined evidence binds 402 source fingerprints under
-`.local/audio-album-field-client-20261004`. Audible quality, general native video,
-wider formats and final-position reliability remain unvalidated. The complete
-runtime license boundary and all five release gates remain open. Packaged
+The count replay retained 252 public observations and matched all 168 scoped
+projections on both ordinary item-list routes. Eighty-four queries remain
+qualified for differing retained catalog membership and library layout; they
+were excluded before comparison. Meaningful searches and nonrecursive parent
+children without explicit IDs return full totals, even when counting is
+requested off. Other ordinary lists return the current page size when counting
+is off. Missing or enabled count flags retain full totals. Empty pages, trimmed
+searches, explicit IDs, permission boundaries and saved-state preservation have
+PostgreSQL coverage. See [the count contract](jellyfin12-embedded-audio.md#ordinary-item-totals).
+
+Seventeen audio-field projections still match. Both original album queues now
+also match TotalRecordCount and StartIndex alongside ordered IDs, names, Album,
+SortName and numeric fields. The boolean replay matches 55 of 64 projections;
+the remaining nine folder-filter differences stay qualified. Combined
+Ids/SearchTerm selection, zero limits and wider ItemFields remain incomplete.
+
+Desktop completed the original four-track FLAC queue with fifteen successful
+playback reports and four WASAPI audio EOF events. Official web completed three
+replays with fifteen successful reports each. The first two lacked an active
+media observation and are retained as qualified visual evidence. Refreshing the
+DOM before the final timed sample captured advancing, unpaused audio without a
+media error. Each replay added exactly one play per track. All 50 saved rows
+match the observed cumulative plays without a reset; identity, grants, mounts,
+playlists, studio favorites and original media hashes remain intact. Desktop
+used Remember Me off, closed normally and kept its settings hash. Its main
+album view still returned 400 for repeated Fields values; playback was reached
+through the home album entry. The preceding Desktop trace has the same failure.
+Album-list navigation and general client compatibility are not passing results.
+
+Joined evidence under `.local/item-total-client-20261004` binds 402 source
+fingerprints, both immutable images, current client traces and all saved rows.
+Source, image, container and HTTPS ledgers are under
+`.local/item-total-*-20261004b`; original count observations are under
+`.local/item-total-contract-20261004`. Audible quality, wider formats, general
+native video and final-position reliability remain unvalidated. Packaged
 documentation predates this entry.
 
-Two album-queue projections match IDs, names, Album, SortName and numeric fields.
-Disabled-total counts remain different and are excluded from those passes.
-Twelve further public reads of the same four-track reference album return a
-total of four with counting enabled or disabled, including an empty final page.
-This observation has not yet been implemented or established for wider queries.
-See [the field contract](jellyfin12-embedded-audio.md#audio-album-and-requested-sort-name).
+The first container attempt failed an old photo-count expectation after twenty
+checks. A setup attempt also lacked a private plugin helper. Those failures
+remain under `.local/item-total-container-20261004`; the corrected harness then
+passed all 35 checks and reproduced the same immutable images. The initial
+focused source regression reproduced the missing total; two intermediate test
+fixtures did not provide indexed search titles. The corrected title fixtures
+and both full source runs passed. Failed logs remain preserved.
 
-At `22112d1`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37182996468)
-and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37182996505)
-completed successfully. These results cover the bounded string inspector and
-precede this audio-field patch. Current-patch cloud validation is pending.
+At `74f8ece`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37184969239)
+and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37184969226)
+completed successfully. Those results precede the item-count patch; its cloud
+validation is pending.
 
 The album-name build passed all thirteen source checks: 258 Rust tests with
 zero failures and 29 ignored database cases, all 29 database cases when enabled,

@@ -990,7 +990,17 @@ async fn verify_music_artist_and_track_ordering(
     assert_eq!(item_ids(&ordered), ascending_tracks);
     let album_queue = json_body(call(router, &format!("/Users/{owner}/Items?ParentId={album}&Filters=IsNotFolder&Recursive=true&SortBy=Album,ParentIndexNumber,IndexNumber,SortName&MediaTypes=Audio,Video&Limit=300&Fields=Chapters,MediaSources,Trickplay&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false&CollapseBoxSetItems=false"), Some(token)).await).await;
     assert_eq!(item_ids(&album_queue), ascending_tracks);
-    assert!(album_queue.get("TotalRecordCount").is_none());
+    assert_eq!(album_queue["TotalRecordCount"], 4);
+    verify_item_total_modes(
+        router,
+        pool,
+        album,
+        library,
+        owner,
+        token,
+        &ascending_tracks,
+    )
+    .await;
     for (id, name) in [(album, "Zebra album"), (unrelated, "Alpha album")] {
         sqlx::query("UPDATE items SET name=$2 WHERE id=$1")
             .bind(id)
@@ -1469,6 +1479,156 @@ async fn verify_audio_sort_names(
         item_ids(&changed_numeric),
         [2, 5, 0, 7, 6, 3, 1, 8, 4].map(|index| tracks[index])
     );
+}
+
+async fn verify_item_total_modes(
+    router: &Router,
+    pool: &PgPool,
+    album: Uuid,
+    library: Uuid,
+    owner: Uuid,
+    token: &str,
+    tracks: &[Uuid],
+) {
+    let hidden = item(
+        pool,
+        library,
+        Some(album),
+        "Audio",
+        "/media/ordering-music/artist-a/album/.hidden.flac",
+    )
+    .await;
+    let restricted = item(
+        pool,
+        library,
+        Some(album),
+        "Audio",
+        "/media/ordering-music/artist-a/album/restricted.flac",
+    )
+    .await;
+    metadata(
+        pool,
+        restricted,
+        "local-nfo",
+        json!([]),
+        json!({}),
+        None,
+        Some(90),
+    )
+    .await;
+    let ids = tracks
+        .iter()
+        .copied()
+        .chain([hidden, restricted])
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let alpha = [tracks[2]];
+    // Give the indexed metadata search real title tokens; these fixture rows
+    // otherwise store full paths as their names.
+    for (id, title) in [
+        (tracks[1], "Count Zebra"),
+        (tracks[2], "Count Alpha"),
+        (tracks[3], "Count Beta"),
+    ] {
+        sqlx::query(
+            "UPDATE item_metadata SET title=$2 WHERE item_id=$1 AND provider_key='local-nfo'",
+        )
+        .bind(id)
+        .bind(title)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    let cases = [
+        ("Recursive=false".to_owned(), true, tracks),
+        ("Recursive=true".to_owned(), false, tracks),
+        ("Recursive=true&SearchTerm=%20".to_owned(), false, tracks),
+        (
+            "Recursive=true&SearchTerm=Count".to_owned(),
+            true,
+            &tracks[1..],
+        ),
+        (
+            "Recursive=false&SearchTerm=Count".to_owned(),
+            true,
+            &tracks[1..],
+        ),
+        (format!("Recursive=false&Ids={ids}"), false, tracks),
+        (format!("Recursive=true&Ids={ids}"), false, tracks),
+        (
+            "Recursive=true&SearchTerm=Alpha".to_owned(),
+            true,
+            &alpha[..],
+        ),
+    ];
+    sqlx::query("INSERT INTO user_item_data(user_id,item_id,is_favorite,played,play_count,playback_position_ticks,rating) VALUES ($1,$2,TRUE,TRUE,7,23,8)")
+        .bind(owner).bind(tracks[0]).execute(pool).await.unwrap();
+    let saved = |rows: std::collections::HashMap<Uuid, db::UserItemData>| {
+        rows.into_iter()
+            .map(|(id, row)| {
+                (
+                    id,
+                    (
+                        row.played,
+                        row.play_count,
+                        row.is_favorite,
+                        row.playback_position_ticks,
+                        row.last_played_at,
+                        row.rating,
+                    ),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let before = saved(db::item_user_data(pool, owner, tracks).await.unwrap());
+    for route in ["/Items".to_owned(), format!("/Users/{owner}/Items")] {
+        for (selection, full_when_disabled, expected) in &cases {
+            for (count, enabled) in [
+                ("", true),
+                ("&EnableTotalRecordCount=true", true),
+                ("&EnableTotalRecordCount=false", false),
+            ] {
+                for start in [0, 1, 4] {
+                    let query = format!(
+                        "{route}?ParentId={album}&IncludeItemTypes=Audio&SortBy=ParentIndexNumber,IndexNumber,SortName&{selection}&StartIndex={start}&Limit=1{count}"
+                    );
+                    let page = json_body(call(router, &query, Some(token)).await).await;
+                    let page_ids = expected.get(start).copied().into_iter().collect::<Vec<_>>();
+                    let total = if enabled || *full_when_disabled {
+                        expected.len()
+                    } else {
+                        page_ids.len()
+                    };
+                    assert_eq!(item_ids(&page), page_ids, "{query}");
+                    assert_eq!(page["TotalRecordCount"], total, "{query}");
+                    assert_eq!(page["StartIndex"], start, "{query}");
+                }
+            }
+        }
+    }
+    assert_eq!(
+        saved(db::item_user_data(pool, owner, tracks).await.unwrap()),
+        before
+    );
+    sqlx::query(
+        "UPDATE item_metadata SET title=NULL WHERE item_id=ANY($1) AND provider_key='local-nfo'",
+    )
+    .bind(tracks)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM user_item_data WHERE user_id=$1 AND item_id=$2")
+        .bind(owner)
+        .bind(tracks[0])
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM items WHERE id = ANY($1)")
+        .bind(&[hidden, restricted][..])
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 async fn verify_embedded_audio_metadata(

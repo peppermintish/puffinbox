@@ -71,3 +71,11 @@ helpers remain separately preserved. Packaged documentation predates this entry.
 The Cargo allowlist and bundled dependencies did not change. Linked runtime
 licensing remains uncleared. Puffinbox is partial and unreleased, with all five
 release gates open.
+
+
+The later item-count build replayed the same 64 observations on core `2d3babe8`.
+Fifty-five now match, including all five formerly qualified disabled-total
+cases. The nine existing IsFolder differences remain qualified. All 50 saved
+rows, policy and media hashes were retained without a reset. This replay uses
+the original projection; it does not establish complete DTO equivalence.
+Records are under `.local/item-total-client-20261004/boolean-comparison.json`.

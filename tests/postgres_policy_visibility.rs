@@ -1318,7 +1318,7 @@ async fn verify_folder_filters(
     }
     let (status, result) = get_json(router, &format!("/Items?ParentId={library_id}&Filters=IsNotFolder&MediaTypes=Photo&Recursive=true&EnableTotalRecordCount=false"), token).await;
     assert_eq!(status, axum::http::StatusCode::OK);
-    assert!(result.get("TotalRecordCount").is_none());
+    assert_eq!(result["TotalRecordCount"], 9);
     assert_eq!(result["Items"].as_array().unwrap().len(), 9);
     assert!(
         result["Items"]
@@ -1438,7 +1438,7 @@ async fn verify_folder_filters(
     assert_eq!(sorted["TotalRecordCount"], 2);
     assert_eq!(sorted["Items"][0]["Id"], first.id.to_string());
     assert_eq!(sorted["Items"][1]["Id"], second.id.to_string());
-    let (status, omitted_count) = get_json(
+    let (status, page_count) = get_json(
         router,
         &format!(
             "/Items?Ids={}&MediaTypes=Video&EnableTotalRecordCount=false",
@@ -1448,8 +1448,8 @@ async fn verify_folder_filters(
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::OK);
-    assert!(omitted_count.get("TotalRecordCount").is_none());
-    assert!(omitted_count["Items"].as_array().unwrap().is_empty());
+    assert_eq!(page_count["TotalRecordCount"], 0);
+    assert!(page_count["Items"].as_array().unwrap().is_empty());
     for selection in [
         String::new(),
         "invalid".to_owned(),

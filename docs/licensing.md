@@ -226,3 +226,12 @@ MIT notice with unchanged SHA-256 `e239ef69`; package audits, source guards and
 full notice generation pass without exceptions. Exact records are under
 `.local/audio-album-field-client-20261004`. Standard-library, native, startup,
 compiler-builtins, anonymous and inlined input review remains open.
+
+
+The item-count image's exact static server `e037b04f` still defines the same 41
+generated Rust Unicode namespace symbols. Both strict package audits,
+selected-source guards and full notices passed again; the packaged timestamp
+MIT notice matches the reviewed bytes. Core `2d3babe8` and operator test runtime
+`feec3afe` passed their bounded container and client checks. These results do
+not clear linked-runtime licensing or permit bundling the separate GPL FFmpeg
+test runtime. Image, source and joined records are under `.local/item-total-*`.

@@ -196,13 +196,13 @@ their database sort or paging keys. Detail endpoints retain SortName. Playlist
 branches and specialized latest, similar and artist endpoints retain their
 preceding behavior; other ItemFields are not implemented by this change.
 
-Core `6c44dc12` matches all seventeen detail/list field observations. Its two
+Preceding core `6c44dc12` matches all seventeen detail/list field observations. Its two
 original album-queue projections match ordered IDs, Name, Album, SortName and
 numeric fields. Disabled-total semantics are excluded: the reference returns
 four while this build omits the count. Twelve additional reference queries on
 both ordinary list routes use enabled/disabled counts and two-item pages at
 offsets zero, two and four. Each returns a total of four, including the empty
-page. This bounded observation remains open for implementation and wider tests.
+page. The later ordinary-count implementation and wider scoped replay are recorded below.
 Exact records are under `.local/album-queue-count-contract-20261004`.
 
 Both official web and Qt 6 Desktop completed the four-track FLAC queue on the
@@ -211,3 +211,52 @@ all 50 saved rows to one added play per track per client; grants, identity and
 fixture bytes were retained without a reset. Joined records are under
 `.local/audio-album-field-client-20261004`. Wider field selection, count semantics,
 legacy metadata behavior and complete music compatibility remain partial.
+
+
+## Ordinary item totals
+
+Public reads on the unchanged official Jellyfin 12.0.0 runtime cover both
+ordinary list routes, default/enabled/disabled count flags, two-item pages and
+empty final pages. Album and artist children, recursive trees, meaningful and
+whitespace-only searches, explicit IDs, combined parent/ID selection and the
+original music library supplied 252 observations. The reference's media bytes,
+metadata and grants were unchanged. Exact records are under
+`.local/item-total-contract-20261004`.
+
+For the observed modes, missing or enabled flags return the full visible total.
+A meaningful normalized search also returns that total with counting off.
+Nonrecursive parent children without explicit IDs do likewise. Other ordinary
+lists with counting off return their page size, including zero on an empty
+page. Explicit IDs retain page counts even with a parent and nonrecursive mode.
+Whitespace-only searches do not force a full recursive count.
+
+Puffinbox implements those modes after visibility checks on GET /Items and
+GET /Users/{userId}/Items. Playlist branches and specialized artist/latest
+responses retain their preceding behavior. SQL visibility, ordering and
+selection are unchanged. PostgreSQL coverage checks default/true/false flags,
+both routes, three offsets, eight selection modes, hidden and restricted tracks
+and unchanged saved user data.
+
+Core `2d3babe8` matches all 168 selected count projections. The other 84 retained
+queries have predefined qualifications for extra catalog membership, physical
+artist selection and different music-library layout; they are not passing
+comparisons. All 50 saved rows are unchanged by the reads. The preceding image
+matched 112 of those 168, with 56 disabled-count differences. Seventeen field
+projections remain matching. Two album queue projections now include matching
+TotalRecordCount and StartIndex as well as their recorded item fields.
+
+Desktop completed one four-track FLAC replay and official web completed three,
+with fifteen successful reports each and one added play per track per run.
+The final web replay includes advancing, unpaused media without an error; the
+first two media observations were incomplete and remain qualified. Joined
+records bind all 50 saved rows to those accumulated plays without a reset.
+Desktop's main album list still returned 400 for repeated Fields values, as in
+its preceding trace. The album was reached through the home row. This is queue
+playback evidence, not album-list navigation acceptance.
+
+Thirty-six further reference reads of Limit=0 remain outside this implementation.
+The original nonrecursive album-child mode returns all four children, while
+recursive and explicit-ID modes return empty pages; enabled totals remain four
+and disabled recursive totals become zero. Puffinbox's minimum limit of one
+still differs. Wider zero-limit behavior, combined IDs/search selection, other
+ItemFields, complete collation and full music compatibility remain open.
