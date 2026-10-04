@@ -2,7 +2,44 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
-The ASCII MIME build passes all thirteen source checks: 258 Rust cases, 27 database cases, 107 Python cases, formatting, strict Clippy, TLS, both strict package audits, selected-source guards and full notices. The patched lookup preserves the complete upstream table of 1,408 extensions, including ordered MIME alternatives, ASCII case variants and Unicode filenames with ASCII suffixes. Forward, optional reverse and file-service header checks pass. Non-ASCII extensions, including Unicode lookalikes, are unknown. The locked production and test graphs no longer contain unicase; the policy allowlist is unchanged.
+The PostgreSQL SCRAM build passed all thirteen source checks: 258 Rust cases with
+zero failures and 28 ignored database cases, all 28 database cases when enabled,
+107 Python cases, formatting, strict Clippy, TLS, both strict package audits,
+selected-source guards and full notices. The database total is 25 integration
+cases and three unit cases. One new integration case checks ten real SCRAM
+exchanges: ASCII, Unicode and punctuation roles authenticate as the exact startup
+role, wrong passwords and a missing role return `28P01`, and altered server
+signatures fail verification. The loopback wire proxy checks the startup role and
+empty SCRAM username independently. Production password and TLS behavior are
+unchanged; wider Unicode password normalization and channel binding remain
+unvalidated. Both Linux normal/build/test trees exclude stringprep, unicode-bidi,
+unicode-normalization and unicode-properties. Inactive SQLx MySQL dependencies
+still retain these names in the lockfile.
+
+Core `96d3a95e`, separate operator runtime `b5f90c62` and server `863f0c01` passed
+35 container checks, 29 local HTTPS checks and nine album projections. Both
+official clients completed the original four-track FLAC album, with automatic
+advancement, fifteen successful reports each and exactly one added play per
+track per client. Desktop WASAPI audio EOF and advancing web audio were observed.
+Independent reads matched all 50 saved rows to those plays without a reset.
+Identity, grants, mounts, playlists, studio favorites and media hashes were
+retained. Joined evidence binds 399 source fingerprints under
+`.local/postgres-scram-client-20261004`. Desktop sign-in succeeded with Remember Me
+off; its owned process closed normally and its settings hash stayed unchanged.
+The first HTTPS wrapper was rejected by its existing-output guard before service
+startup; the corrected run used a fresh output directory. That setup observation
+is preserved separately. The exact static executable still defines 41 generated
+Rust Unicode namespace symbols. [The complete runtime boundary](licensing.md)
+and all five release gates remain open; packaged documentation predates this
+entry.
+
+At MIME checkpoint `5451ebb`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37172970505)
+and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37172970487)
+passed. Both workflows completed successfully. Those cloud results precede the
+PostgreSQL SCRAM patch; their exact job identities and conclusions are under
+`.local/native-source-bytes-cloud-20261003`.
+
+The preceding ASCII MIME build passed all thirteen source checks: 258 Rust cases, 27 database cases, 107 Python cases, formatting, strict Clippy, TLS, both strict package audits, selected-source guards and full notices. The patched lookup preserves the complete upstream table of 1,408 extensions, including ordered MIME alternatives, ASCII case variants and Unicode filenames with ASCII suffixes. Forward, optional reverse and file-service header checks pass. Non-ASCII extensions, including Unicode lookalikes, are unknown. The locked production and test graphs no longer contain unicase; the policy allowlist is unchanged.
 
 Static core `ec1d1973`, separate operator runtime `578c14cb` and server `1d69ce60` passed 35 container checks, 29 local HTTPS checks and nine album projections. Both official clients completed the original four-track FLAC album with fifteen successful reports each. Independent reads matched all 50 saved rows to observed plays without a reset. Identity, grants, mounts, playlists and fixture hashes were retained. Joined evidence binds 281 source fingerprints under `.local/mime-ascii-client-20261004`. Desktop's first password entry returned 401; a controlled re-entry succeeded with Remember Me off. The successful playback and unchanged profile were checked independently, and the isolated process was closed normally. The exact static executable still defines 41 generated Rust Unicode namespace symbols; [MIME data provenance and other runtime inputs](licensing.md) remain under review. All five release gates remain open, and packaged documentation predates this entry.
 

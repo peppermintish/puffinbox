@@ -15,3 +15,4 @@ Dockerfile* text eol=lf
 *.json text eol=lf
 # Preserve the checksum-reviewed upstream bytes, including their original line endings.
 vendor/mime_guess/** -text
+vendor/sqlx-postgres/** -text

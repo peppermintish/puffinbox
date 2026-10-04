@@ -35,6 +35,18 @@ unicase and its generated Unicode case-folding data. See
 `vendor/mime_guess/PUFFINBOX.md` for behavior and remaining historical data-input
 limits. This patch does not clear the full runtime boundary.
 
+## PostgreSQL driver
+
+The local SQLx PostgreSQL 0.8.6 patch retains the upstream MIT and Apache-2.0
+licenses, including the LaunchBadge copyright notices. It sends an empty SCRAM
+username because PostgreSQL uses the unchanged startup role. Removing the
+`stringprep` dependency excludes its generated Unicode dependencies from the
+selected PostgreSQL graph. Password processing, proofs and TLS options remain
+unchanged. The provenance, two changed files and limitations are recorded in
+`vendor/sqlx-postgres/PUFFINBOX.md`; exact retained-file hashes are in
+`vendor/dependency-replacements.json`. The full bundled-runtime review remains
+open.
+
 ## External operator services and executables
 
 The Compose stack references a separate PostgreSQL container image. PostgreSQL is an external service and is not copied into the Puffinbox server image. FFmpeg and ffprobe are supplied by the operator or the test-only acceptance image; the default server image does not include them. Exact image-package inventories and operator-selected FFmpeg build licenses are separate from this project source and are recorded as unresolved in [`docs/licensing.md`](docs/licensing.md).

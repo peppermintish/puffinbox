@@ -59,9 +59,10 @@ hashbrown = { path = "vendor/hashbrown" }
 hashlink = { path = "vendor/hashlink" }
 futures-channel = { path = "vendor/futures-channel" }
 mime_guess = { path = "vendor/mime_guess" }
+sqlx-postgres = { path = "vendor/sqlx-postgres" }
 matchit = { path = "crates/route-matcher" }
 unicode-ident = { path = "crates/ascii-ident" }
 
 [workspace]
 members = ["crates/route-matcher", "crates/ascii-ident"]
-exclude = ["vendor/digest", "vendor/hashbrown", "vendor/hashlink", "vendor/futures-channel", "vendor/mime_guess"]
+exclude = ["vendor/digest", "vendor/hashbrown", "vendor/hashlink", "vendor/futures-channel", "vendor/mime_guess", "vendor/sqlx-postgres"]

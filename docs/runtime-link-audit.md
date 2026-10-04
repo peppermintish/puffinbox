@@ -580,3 +580,17 @@ inventory. The original comparator retains the complete upstream MIME table;
 [the table's historical input review](licensing.md#ascii-mime-lookup) remains open.
 Current static server `1d69ce60` still defines 41 generated Rust Unicode namespace
 symbols. This exclusion does not clear the full runtime boundary.
+
+## PostgreSQL username normalization exclusion
+
+The SQLx PostgreSQL patch sends an empty SCRAM username and preserves the startup
+role. Its selected Linux normal, build and development trees exclude stringprep,
+unicode-bidi, unicode-normalization and unicode-properties. Inactive SQLx MySQL
+entries remain in the lockfile. The earlier normalization replay for GNU
+`a2f2cde7` remains historical provenance evidence, not a current selected-input
+inventory. Current static server `863f0c01` still defines 41 generated Rust Unicode
+namespace symbols. Source checks, both package audits, full notices, 35 container
+checks, 29 local HTTPS checks and both official-client FLAC album checks pass.
+Joined evidence binds 399 source fingerprints and all 50 saved rows without a
+reset. The [driver scope](licensing.md#postgresql-scram-username) does not clear
+standard-library, native, startup or complete runtime licensing.

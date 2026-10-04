@@ -144,3 +144,31 @@ and passing audits do not complete it.
 Static server `1d69ce60` still defines 41 generated Rust Unicode namespace symbols.
 This MIME exclusion leaves the standard-library, native, startup and remaining
 generated-data reviews open. It changes no allowlist, exception or release gate.
+
+## PostgreSQL SCRAM username
+
+The local [SQLx PostgreSQL 0.8.6 patch](../vendor/sqlx-postgres/PUFFINBOX.md)
+retains its MIT and Apache-2.0 notices. The archive SHA-256 is
+`db58fcd5a53cf07c184b154801ff91347e4c30d17a3562a635ff028ad5deda46`,
+and the recorded upstream revision is `bab1b022bd56a64f9a08b46b36b97c5cff19d77e`.
+The exact guard covers 116 files: 113 byte-identical upstream files, two changed
+upstream files and an original provenance note. Git preserves their reviewed
+bytes. The active manifest drops stringprep; the authentication function sends
+an empty SCRAM username. [PostgreSQL uses the role from the startup message](https://www.postgresql.org/docs/18/sasl-authentication.html)
+and ignores the SCRAM username field. Nonce generation, password processing,
+client proofs, server-signature verification and TLS options are unchanged.
+
+The selected normal, build and development dependency trees for both Linux
+targets exclude stringprep, unicode-bidi, unicode-normalization and
+unicode-properties. The lockfile still contains inactive SQLx MySQL dependencies;
+this exclusion does not claim their deletion or a general SASLprep replacement.
+A root integration test, also selected by CI, checks ten real PostgreSQL SCRAM
+exchanges with Unicode and punctuation roles, incorrect passwords, a missing
+role and altered server signatures. Its packet proxy is limited to a disposable
+loopback fixture. Unicode password normalization and channel binding remain
+unvalidated.
+
+Both strict package audits and full notices pass without exceptions. Exact
+current static server `863f0c01` still defines 41 generated Rust Unicode namespace
+symbols. Standard-library, native, startup, historical MIME inputs and complete
+bundled-runtime licensing remain open. No allowlist or release gate is relaxed.

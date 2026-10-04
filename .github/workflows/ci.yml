@@ -82,6 +82,7 @@ jobs:
         env:
           PUFFINBOX_TEST_DATABASE_URL: postgres://throttle_test:throttle_test@127.0.0.1:5432/throttle_test
         run: |
+          cargo test --locked --test postgres_scram -- --ignored --nocapture
           cargo test --locked --test postgres_policy_visibility -- --ignored --nocapture
           cargo test --locked --test postgres_server_guards -- --ignored --nocapture
           cargo test --locked --test postgres_session_capabilities -- --ignored --nocapture
