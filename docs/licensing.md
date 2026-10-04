@@ -172,3 +172,13 @@ Both strict package audits and full notices pass without exceptions. Exact
 current static server `863f0c01` still defines 41 generated Rust Unicode namespace
 symbols. Standard-library, native, startup, historical MIME inputs and complete
 bundled-runtime licensing remain open. No allowlist or release gate is relaxed.
+
+
+The later GNU candidate `3bbe84d4` keeps its separately supplied standard library
+external and has no defined generated Unicode symbols in the runtime inventory.
+Its mapped sources and named objects have identified owners. The new
+[read-only data inspection](runtime-link-audit.md#read-only-variable-data) binds
+address-backed declarations to exact build hashes while reporting unexamined
+bytes explicitly. Source-less vtable names, anonymous constants, inlined
+contents and complete binary provenance remain uncleared. Passing this scoped
+inspection does not establish the requested bundled license boundary.

@@ -91,3 +91,33 @@ python3 scripts/check_gnu_notices.py \
 The notice checker verifies both input hashes and each mapped source hash, then uses the most specific path rule. The Unicode directory's exception does not override its separately licensed `mod.rs`. License choices follow [SPDX expression precedence](https://spdx.github.io/spdx-spec/v3.0.1/annexes/spdx-license-expressions/): `OR` allows an MIT or Apache-2.0 option, `AND` requires every component to fit, and `WITH` additions remain outside the allowlist. Unknown identifiers do not count as allowed licenses. Malformed expressions, unsupported notice trees, unsafe paths, and changed hashes fail. Vendored crates remain unreviewed until their package/version notices are joined; they cannot inherit Rust's default license.
 
 This classifies the compiler's declared path notices. Individual files may carry additional exceptions, and the source inventory does not cover every instruction or constant. Other dependencies, included headers, external-runtime distribution, and production adoption still need review. CI saves the notice and classification as audit records, excluding server and runtime binaries. A passing notice report retains `licenseClearance: false`.
+
+## Read-only variable data
+
+Use the same external inspector and source snapshots to inspect address-backed
+variables separately from executable line mappings:
+
+```sh
+python3 scripts/test_gnu_data.py --require-controls -v
+python3 scripts/check_gnu_data.py \
+  --binary /probe/output/server \
+  --source-hashes /probe/output/standard-library-source-hashes.json \
+  --dependency-sources /probe/output/dependency-source-hashes.json \
+  --output /probe/output/data-variable-inventory.json
+```
+
+The compiled controls require a C compiler. The checker requires pyelftools
+0.33 and debug information in the executable itself; unwind metadata and an
+external debug link are insufficient. It records direct-address variables in
+loaded non-executable read-only sections and GNU RELRO sections, hashes their
+file bytes before relocation and joins declared sources to the build snapshots.
+It measures the union of variable ranges, so aliases cannot inflate coverage.
+Zero-sized entries and unresolved bounds remain distinct.
+
+The report counts source-less vtable names without attributing their origins.
+Location lists, indirect expressions, pointed-to data and anonymous constants
+are outside its coverage. Uncovered section bytes include padding and other
+structures; they remain unreviewed. Known source exceptions and system-header
+declarations fail the check. A successful inventory still has
+`licenseClearance: false`. CI records the inventory for both TLS modes and
+excludes binaries, external libraries and source-byte copies from uploads.

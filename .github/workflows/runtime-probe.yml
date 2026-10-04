@@ -13,6 +13,8 @@ on:
       - 'experiments/linux-gnu-runtime/**'
       - 'scripts/check_gnu_link_map.py'
       - 'scripts/check_gnu_source_map.py'
+      - 'scripts/check_gnu_data.py'
+      - 'scripts/test_gnu_data.py'
       - 'scripts/check_gnu_notices.py'
       - 'scripts/check_gnu_shared_tls.py'
       - 'scripts/test_gnu_shared_tls.py'
@@ -40,6 +42,8 @@ on:
       - 'experiments/linux-gnu-runtime/**'
       - 'scripts/check_gnu_link_map.py'
       - 'scripts/check_gnu_source_map.py'
+      - 'scripts/check_gnu_data.py'
+      - 'scripts/test_gnu_data.py'
       - 'scripts/check_gnu_notices.py'
       - 'scripts/check_gnu_shared_tls.py'
       - 'scripts/test_gnu_shared_tls.py'
@@ -110,6 +114,15 @@ jobs:
             --native-source-bytes "$RUNNER_TEMP/gnu-probe/output/native-source-bytes" \
             --output "$RUNNER_TEMP/source-line-inventory.json"
 
+      - name: Inspect read-only variable data and run compiled controls
+        run: |
+          PYTHONPATH="$RUNNER_TEMP/gnu-inspector" python3 scripts/test_gnu_data.py --require-controls -v
+          PYTHONPATH="$RUNNER_TEMP/gnu-inspector" python3 scripts/check_gnu_data.py \
+            --binary "$RUNNER_TEMP/gnu-probe/output/server" \
+            --source-hashes "$RUNNER_TEMP/gnu-probe/output/standard-library-source-hashes.json" \
+            --dependency-sources "$RUNNER_TEMP/gnu-probe/output/dependency-source-hashes.json" \
+            --output "$RUNNER_TEMP/data-variable-inventory.json"
+
       - name: Classify exact mapped standard-library paths against compiler notices
         run: |
           python3 scripts/check_gnu_notices.py \
@@ -138,5 +151,6 @@ jobs:
             ${{ runner.temp }}/gnu-probe/output/native-compiler-traces/*.json
             ${{ runner.temp }}/gnu-probe/output/COPYRIGHT-library.html
             ${{ runner.temp }}/source-line-inventory.json
+            ${{ runner.temp }}/data-variable-inventory.json
             ${{ runner.temp }}/compiler-notice-classification.json
           if-no-files-found: warn

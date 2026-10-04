@@ -33,6 +33,30 @@ Rust Unicode namespace symbols. [The complete runtime boundary](licensing.md)
 and all five release gates remain open; packaged documentation predates this
 entry.
 
+At clean checkpoint `987c926`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37174717964)
+and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37174717956)
+passed. These cloud results cover the PostgreSQL SCRAM patch and precede the
+read-only data audit added below.
+
+GNU candidate `3bbe84d4`, with separately supplied standard library `5a3f35a0`,
+passed startup, numerical, TLS, 35 container checks, 29 local HTTPS checks and
+nine album projections at that clean checkpoint. The compiled plugin applied
+metadata, survived restart and hid its output when disabled. Both official
+clients completed the original four-track FLAC album with fifteen successful
+playback reports each. Independent reads matched all 50 saved rows to the
+observed plays without a reset. The normal static container `863f0c01` was
+restored with its identity, grants and original mounts. Joined evidence binds
+459 frozen tracked files under `.local/postgres-scram-gnu-client-20261004`.
+The external standard library remains outside the bundled boundary.
+
+The subsequent [data inspection](runtime-link-audit.md#read-only-variable-data)
+passed on this exact GNU executable, with ten compiled-control and attribution
+cases and all 68 GNU audit regressions. Its checker bytes are recorded separately
+from the earlier build. The first control run exposed stripped-debug detection
+and compiler alias behavior; the corrected controls and later conservative
+array-bound check retain separate records. No runtime license clearance or
+release readiness is inferred from these passes.
+
 At MIME checkpoint `5451ebb`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37172970505)
 and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37172970487)
 passed. Both workflows completed successfully. Those cloud results precede the

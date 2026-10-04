@@ -594,3 +594,47 @@ checks, 29 local HTTPS checks and both official-client FLAC album checks pass.
 Joined evidence binds 399 source fingerprints and all 50 saved rows without a
 reset. The [driver scope](licensing.md#postgresql-scram-username) does not clear
 standard-library, native, startup or complete runtime licensing.
+
+## Read-only variable data
+
+At clean checkpoint `987c926`, GNU audit server `3bbe84d4` passed startup,
+numerical, TLS and source/notice checks. All 399 named input objects have owners:
+381 package inputs from 103 packages, sixteen server inputs and two original
+entry inputs. Its 244 mapped standard-library files match the exact compiler
+commit archive and the earlier independently reviewed MIT/Apache declarations.
+These object and source records remain separate from the later audit tool.
+The exact server passed 35 container checks, 29 local HTTPS checks and both
+official-client four-track FLAC checks. All 50 saved rows survived the switch
+and restoration to static server `863f0c01`. Evidence is under
+`.local/postgres-scram-gnu-client-20261004`.
+
+The original [data checker](../scripts/check_gnu_data.py) examines direct
+address-backed DWARF variables in loaded, non-executable read-only sections,
+including GNU RELRO data. It hashes the ELF bytes before relocation, joins
+source declarations to the same build's hash snapshots and measures the union
+of variable byte ranges. Aliases cannot inflate coverage. Missing debug
+information is rejected; unwind metadata alone is insufficient. Zero-sized
+variables are recorded separately. Dynamic array bounds and unreviewed
+language defaults remain unbounded. The external inspector is pinned to
+pyelftools 0.33 and remains test infrastructure.
+
+On `3bbe84d4`, this check records 3,383 variables, including nine zero-sized
+entries and 3,128 source-less vtable names. The other declarations join to 51
+exact package/project source files. No known non-allowlisted source path or
+system-header declaration was observed in this variable scope. The source-less
+names are counted without an origin or license assignment. Variable ranges
+cover 22,640 of 993,372 `.rodata` bytes and 155,864 of 396,224 `.data.rel.ro`
+bytes. The remaining bytes include anonymous constants, padding and other
+structures; they are not cleared by this check. Indirect expressions, location
+lists, pointed-to data, code and linker-generated content also remain outside
+its coverage.
+
+Ten original controls passed, including compiled C fixtures for read-only and
+RELRO data, writable/BSS exclusion, alias coverage, stripped binaries and a
+known exception declared without an executable line interval. All 68 GNU audit
+regressions passed with the external inspector available. CI now runs the
+required compiled controls and records this data inventory in both TLS modes,
+without uploading binaries or external runtime libraries. The later checker
+replay, exact tool hashes and initial control failures are under
+`.local/postgres-scram-gnu-20261004`. Complete executable/data licensing,
+production adoption and all five release gates remain open.
