@@ -132,6 +132,100 @@ def slice_type():
                children=[data, size])
 
 
+def optional_type():
+    scalar = Die(401, tag="DW_TAG_base_type", attrs={"DW_AT_byte_size": 8, "DW_AT_encoding": 7})
+    discriminant = Die(402, tag="DW_TAG_member", attrs={"DW_AT_type": scalar.offset, "DW_AT_data_member_location": 0},
+                       references={"DW_AT_type": scalar})
+    empty = Die(403, tag="DW_TAG_structure_type", attrs={"DW_AT_name": "None", "DW_AT_byte_size": 16})
+    element = string_type()
+    payload = Die(404, tag="DW_TAG_member", attrs={"DW_AT_name": "__0", "DW_AT_type": element.offset,
+                                                "DW_AT_data_member_location": 0}, references={"DW_AT_type": element})
+    some = Die(405, tag="DW_TAG_structure_type", attrs={"DW_AT_name": "Some", "DW_AT_byte_size": 16}, children=[payload])
+    variants = []
+    for index, shape in enumerate((empty, some)):
+        member = Die(406 + index, tag="DW_TAG_member", attrs={"DW_AT_name": shape.attributes["DW_AT_name"].value,
+                                                            "DW_AT_type": shape.offset, "DW_AT_data_member_location": 0},
+                     references={"DW_AT_type": shape})
+        variants.append(Die(408 + index, tag="DW_TAG_variant", attrs={"DW_AT_discr_value": 0} if index == 0 else {},
+                            children=[member]))
+    part = Die(410, tag="DW_TAG_variant_part", attrs={"DW_AT_discr": discriminant.offset},
+               references={"DW_AT_discr": discriminant}, children=[discriminant, *variants])
+    part.attributes["DW_AT_discr"].form = "DW_FORM_ref4"
+    return Die(411, tag="DW_TAG_structure_type", attrs={"DW_AT_name": "Option<&str>", "DW_AT_byte_size": 16},
+               children=[part, empty, some])
+
+
+class OptionalShapeTests(unittest.TestCase):
+    def test_only_the_verified_niche_layout_is_selected(self):
+        shape = optional_type()
+        self.assertEqual(list(string_fields(shape, optional=True)), [(0, ())])
+        self.assertEqual(list(string_fields(shape)), [])
+        shape.children[1].children = [Die(412, tag="DW_TAG_template_type_param")]
+        shape.children[2].children.insert(0, Die(413, tag="DW_TAG_template_type_param"))
+        shape.children.append(Die(414, tag="DW_TAG_subprogram"))
+        self.assertEqual(list(string_fields(shape, optional=True)), [(0, ())])
+
+    def test_nested_offsets_and_variant_paths_keep_the_existing_depth_bound(self):
+        shape = optional_type()
+        member = Die(412, tag="DW_TAG_member", attrs={"DW_AT_name": "label", "DW_AT_type": shape.offset,
+                                                     "DW_AT_data_member_location": 8}, references={"DW_AT_type": shape})
+        parent = Die(413, tag="DW_TAG_structure_type", attrs={"DW_AT_byte_size": 24}, children=[member])
+        self.assertEqual(list(string_fields(parent, optional=True)), [(8, ("label",))])
+        self.assertEqual(list(string_fields(shape, path=("level",) * 6, optional=True)), [(0, ("level",) * 6)])
+        self.assertEqual(list(string_fields(shape, path=("level",) * 7, optional=True)), [])
+
+    def test_malformed_selectors_and_variant_fields_are_not_guessed(self):
+        changes = ("size", "name", "no_selector", "selector_form", "other_member", "signed", "offset", "bit_field",
+                   "discriminant_list", "nonzero_none", "two_defaults", "two_none", "none_payload", "some_offset",
+                   "some_payload", "some_bit_field", "some_cycle", "extra_field", "missing_variant")
+        for change in changes:
+            with self.subTest(change=change):
+                shape = optional_type()
+                part, empty, some = shape.children
+                discriminant, absent, present = part.children
+                if change == "size":
+                    shape.attributes["DW_AT_byte_size"].value = 24
+                elif change == "name":
+                    shape.attributes["DW_AT_name"].value = "Option<&[u8]>"
+                elif change == "no_selector":
+                    del part.attributes["DW_AT_discr"]
+                elif change == "selector_form":
+                    part.attributes["DW_AT_discr"].form = "DW_FORM_data8"
+                elif change == "other_member":
+                    part.references["DW_AT_discr"] = Die(414, tag="DW_TAG_member")
+                elif change == "signed":
+                    discriminant.references["DW_AT_type"].attributes["DW_AT_encoding"].value = 5
+                elif change == "offset":
+                    discriminant.attributes["DW_AT_data_member_location"].value = 8
+                elif change == "bit_field":
+                    discriminant.attributes["DW_AT_bit_size"] = SimpleNamespace(value=64, form="DW_FORM_data1")
+                elif change == "discriminant_list":
+                    present.attributes["DW_AT_discr_list"] = SimpleNamespace(value=[], form="DW_FORM_block")
+                elif change == "nonzero_none":
+                    absent.attributes["DW_AT_discr_value"].value = 1
+                elif change == "two_defaults":
+                    del absent.attributes["DW_AT_discr_value"]
+                elif change == "two_none":
+                    present.attributes["DW_AT_discr_value"] = SimpleNamespace(value=0, form="DW_FORM_data1")
+                elif change == "none_payload":
+                    empty.children = [some.children[0]]
+                elif change == "some_offset":
+                    some.children[0].attributes["DW_AT_data_member_location"].value = 8
+                elif change == "some_payload":
+                    some.children[0].references["DW_AT_type"].attributes["DW_AT_name"].value = "&[u8]"
+                elif change == "some_bit_field":
+                    some.children[0].attributes["DW_AT_data_bit_offset"] = SimpleNamespace(value=0, form="DW_FORM_data1")
+                elif change == "some_cycle":
+                    alias = Die(414, tag="DW_TAG_typedef", attrs={"DW_AT_type": 414})
+                    alias.references["DW_AT_type"] = alias
+                    some.children[0].references["DW_AT_type"] = alias
+                elif change == "extra_field":
+                    shape.children.append(discriminant)
+                else:
+                    part.children.pop()
+                self.assertEqual(list(string_fields(shape, optional=True)), [])
+
+
 class SliceShapeTests(unittest.TestCase):
     def test_only_the_verified_string_slice_layout_is_selected(self):
         shape = slice_type()
@@ -345,6 +439,52 @@ class StringPointerTests(unittest.TestCase):
             reader.inspect(0x1000, 16, 0)
 
 
+class OptionalPointerTests(unittest.TestCase):
+    def reader(self, pointer=0, length=0, relocations=()):
+        header = pointer.to_bytes(8, "little") + length.to_bytes(8, "little")
+        stream = BytesIO(header + bytes(16) + b"hello")
+        sections = [(0x1000, 0x1010, Section(".data.rel.ro", sh_offset=0), True),
+                    (0x3000, 0x3005, Section(".rodata", sh_offset=32), False)]
+        return StringReader(FakeElf(list(relocations)), stream, sections)
+
+    def test_none_never_reads_inactive_length_or_payload(self):
+        for length, writes in [(0, []), (2**64 - 1, []), (2**64 - 1, [relocation(address=0x1008, kind=1, symbol=2)])]:
+            with self.subTest(length=length, writes=writes):
+                option, string, span = self.reader(length=length, relocations=writes).inspect_optional(0x1000, 16, 0)
+                self.assertEqual(option["variant"], "None")
+                self.assertIsNone(string)
+                self.assertIsNone(span)
+
+    def test_some_empty_is_distinct_from_none(self):
+        option, string, span = self.reader(pointer=1).inspect_optional(0x1000, 16, 0)
+        self.assertEqual(option["variant"], "Some")
+        self.assertEqual(string["length"], 0)
+        self.assertIsNone(span)
+        self.assertNotIn("dataAddress", string)
+
+    def test_relocated_pointer_is_selected_before_inspecting_its_stored_word(self):
+        option, string, span = self.reader(length=5, relocations=[relocation(addend=0x3000)]).inspect_optional(0x1000, 16, 0)
+        self.assertEqual(option["variant"], "Some")
+        self.assertEqual(option["discriminantBinding"], "R_X86_64_RELATIVE")
+        self.assertEqual(string["storedBytesSha256"], hashlib.sha256(b"hello").hexdigest())
+        self.assertEqual(span, (0x3000, 0x3005))
+
+    def test_nonlocal_overlapping_duplicate_and_ambiguous_selectors_fail_even_when_empty(self):
+        cases = [[relocation(kind=1, symbol=2)], [relocation(address=0x0FFF)],
+                 [relocation(), relocation()], [relocation(addend=0)], [relocation(addend=-1)]]
+        for writes in cases:
+            with self.subTest(writes=writes), self.assertRaisesRegex(ValueError, "discriminant"):
+                self.reader(relocations=writes).inspect_optional(0x1000, 16, 0)
+
+    def test_active_string_uses_existing_length_bounds_and_relocation_checks(self):
+        for reader in (self.reader(pointer=1, length=5),
+                       self.reader(length=5, relocations=[relocation(addend=0x3000), relocation(address=0x1008)])):
+            with self.assertRaisesRegex(ValueError, "relocation"):
+                reader.inspect_optional(0x1000, 16, 0)
+        with self.assertRaisesRegex(ValueError, "bounded variable"):
+            self.reader().inspect_optional(0x1000, 8, 0)
+
+
 class SlicePointerTests(unittest.TestCase):
     def reader(self, count=2, payload=b"hello", relocations=None):
         header = (1).to_bytes(8, "little") + count.to_bytes(8, "little")
@@ -396,6 +536,59 @@ class SlicePointerTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_INSPECTOR and RUST_COMPILER, "Requires external pyelftools and Rust.")
 class CompiledStringControls(unittest.TestCase):
+    def test_rust_optional_strings_select_the_active_niche_variant(self):
+        from elftools.elf.elffile import ELFFile
+
+        with tempfile.TemporaryDirectory(prefix="puffinbox-optional-string-control-") as directory:
+            root = Path(directory)
+            source, binary = root / "original.rs", root / "control"
+            source.write_text('''
+struct Holder { marker: u64, label: Option<&'static str> }
+struct Budget { strings: [&'static str; 4096], tail: Option<&'static str> }
+#[used] static ORIGINAL_STRING: &str = "optional shared";
+#[used] static ORIGINAL_SOME: Option<&str> = Some("optional shared");
+#[used] static ORIGINAL_EMPTY: Option<&str> = Some("");
+#[used] static ORIGINAL_NONE: Option<&str> = None;
+#[used] static ORIGINAL_HOLDER: Holder = Holder { marker: 17, label: Some("optional nested") };
+#[used] static ORIGINAL_ARRAY: [Option<&str>; 3] = [Some("optional shared"), None, Some("optional array")];
+#[used] static ORIGINAL_BYTES: Option<&[u8]> = Some(b"excluded optional byte slice");
+#[used] static CONTROL_BUDGET: Budget = Budget { strings: ["budget shared"; 4096], tail: Some("excluded budget tail") };
+fn main() {
+    std::hint::black_box((&ORIGINAL_STRING, &ORIGINAL_SOME, &ORIGINAL_EMPTY, &ORIGINAL_NONE,
+                         ORIGINAL_HOLDER.marker, &ORIGINAL_HOLDER.label, &ORIGINAL_ARRAY, &ORIGINAL_BYTES,
+                         &CONTROL_BUDGET.strings, &CONTROL_BUDGET.tail, ORIGINAL_SOME.unwrap_or("fallback")));
+}
+''')
+            subprocess.run([RUST_COMPILER, "-C", "debuginfo=2", "-C", "opt-level=0", "-C", "relocation-model=pic",
+                            "-C", "link-arg=-pie", "-C", "link-arg=-Wl,-z,relro", str(source), "-o", str(binary)],
+                           check=True, capture_output=True)
+            with binary.open("rb") as stream:
+                result = inventory(ELFFile(stream), stream)
+        options = [row for row in result.get("optionalStringReferences", [])
+                   if row["rootName"].startswith("ORIGINAL_")]
+        self.assertEqual(len(options), 7)
+        self.assertEqual(sum(row["variant"] == "Some" for row in options), 5)
+        self.assertEqual(sum(row["variant"] == "None" for row in options), 2)
+        array = [row for row in options if row["rootName"] == "ORIGINAL_ARRAY"]
+        self.assertEqual([row["memberPath"] for row in array], [("[0]",), ("[1]",), ("[2]",)])
+        strings = [row for row in result["stringReferences"] if row["rootName"].startswith("ORIGINAL_")]
+        self.assertEqual(len(strings), 6)
+        shared = [row for row in strings if row.get("storedBytesSha256") == hashlib.sha256(b"optional shared").hexdigest()]
+        self.assertEqual(len(shared), 3)
+        self.assertEqual(len({row["dataAddress"] for row in shared}), 1)
+        nested = next(row for row in strings if row["rootName"] == "ORIGINAL_HOLDER")
+        self.assertEqual(nested["memberPath"], ("label", "Some", "__0"))
+        empty = next(row for row in strings if row["rootName"] == "ORIGINAL_EMPTY")
+        self.assertEqual(empty["length"], 0)
+        self.assertNotIn("dataAddress", empty)
+        self.assertFalse(any(row["rootName"] in ("ORIGINAL_NONE", "ORIGINAL_BYTES") for row in strings))
+        budget = [row for row in result["stringReferences"] if row["rootName"] == "CONTROL_BUDGET"]
+        rejected = [row for row in result["unsupportedOptionalStringFields"] if row["rootName"] == "CONTROL_BUDGET"]
+        self.assertEqual(len(budget), 4096)
+        self.assertEqual(len(rejected), 1)
+        self.assertIn("per-root", rejected[0]["reason"])
+        self.assertFalse(result["licenseClearance"])
+
     def test_rust_string_slices_follow_typed_read_only_lists(self):
         from elftools.elf.elffile import ELFFile
 

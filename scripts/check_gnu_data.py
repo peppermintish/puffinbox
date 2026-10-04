@@ -116,8 +116,82 @@ def unwrapped(die):
     return die
 
 
-def string_fields(die, offset=0, path=(), seen=None, *, slices=False):
-    """Recognize the observed Rust &str layout; never follow arbitrary pointers."""
+def optional_string_layout(die):
+    """Verify the observed null-pointer niche; this is not a general enum reader."""
+    children = list(die.iter_children())
+    parts = [child for child in children if child.tag == "DW_TAG_variant_part"]
+    # Rust also places variant type and method declarations here.
+    if (die.tag != "DW_TAG_structure_type" or byte_size(die) != 16 or len(parts) != 1
+            or any(child.tag not in ("DW_TAG_variant_part", "DW_TAG_structure_type", "DW_TAG_subprogram") for child in children)):
+        return False
+    part = parts[0]
+    reference = part.attributes.get("DW_AT_discr")
+    if reference is None or reference.form not in (
+            "DW_FORM_ref1", "DW_FORM_ref2", "DW_FORM_ref4", "DW_FORM_ref8", "DW_FORM_ref_udata", "DW_FORM_ref_addr"):
+        return False
+    children = list(part.iter_children())
+    members = [child for child in children if child.tag == "DW_TAG_member"]
+    variants = [child for child in children if child.tag == "DW_TAG_variant"]
+    if len(children) != 3 or len(members) != 1 or len(variants) != 2:
+        return False
+    discriminant = part.get_DIE_from_attribute("DW_AT_discr")
+    if discriminant is not members[0]:
+        return False
+
+    def member_type(member, position):
+        if (member.tag != "DW_TAG_member"
+                or any(key in member.attributes for key in ("DW_AT_bit_size", "DW_AT_bit_offset", "DW_AT_data_bit_offset"))
+                or constant(member.attributes.get("DW_AT_data_member_location")) != position):
+            return None
+        owner = inherited(member, "DW_AT_type")
+        return unwrapped(owner.get_DIE_from_attribute("DW_AT_type")) if owner else None
+
+    scalar = member_type(discriminant, 0)
+    encoding = scalar.attributes.get("DW_AT_encoding") if scalar else None
+    if (scalar is None or scalar.tag != "DW_TAG_base_type" or byte_size(scalar) != 8
+            or encoding is None or encoding.value != 7):
+        return False
+    seen = set()
+    for variant in variants:
+        if "DW_AT_discr_list" in variant.attributes:
+            return False
+        value = variant.attributes.get("DW_AT_discr_value")
+        if value is not None and constant(value) != 0:
+            return False
+        expected = "None" if value is not None else "Some"
+        if expected in seen:
+            return False
+        seen.add(expected)
+        children = list(variant.iter_children())
+        if len(children) != 1:
+            return False
+        member = children[0]
+        shape = member_type(member, 0)
+        name = member.attributes.get("DW_AT_name")
+        shape_name = shape.attributes.get("DW_AT_name") if shape else None
+        if (name is None or text(name.value) != expected or shape is None
+                or shape.tag != "DW_TAG_structure_type" or byte_size(shape) != 16
+                or shape_name is None or text(shape_name.value) != expected):
+            return False
+        children = list(shape.iter_children())
+        if any(child.tag not in ("DW_TAG_member", "DW_TAG_template_type_param") for child in children):
+            return False
+        children = [child for child in children if child.tag == "DW_TAG_member"]
+        if expected == "None":
+            if children:
+                return False
+        else:
+            if len(children) != 1:
+                return False
+            element = member_type(children[0], 0)
+            name = children[0].attributes.get("DW_AT_name")
+            if name is None or text(name.value) != "__0" or element is None or list(string_fields(element)) != [(0, ())]:
+                return False
+    return seen == {"None", "Some"}
+
+
+def string_fields(die, offset=0, path=(), seen=None, *, slices=False, optional=False):
+    """Recognize bounded observed Rust string layouts; never follow arbitrary pointers."""
     seen = set() if seen is None else set(seen)
     die = unwrapped(die)
     if die is None or die.offset in seen or len(path) > 8:
@@ -145,7 +219,7 @@ def string_fields(die, offset=0, path=(), seen=None, *, slices=False):
         width = byte_size(element)
         if width is None or width <= 0 or byte_size(die) != slots * width:
             return
-        fields = list(string_fields(element, path=path + ("[]",), seen=seen, slices=slices))
+        fields = list(string_fields(element, path=path + ("[]",), seen=seen, slices=slices, optional=optional))
         if len(fields) * slots > 4096:
             return
         for slot, indices in enumerate(product(*(range(count) for count in dimensions))):
@@ -158,7 +232,11 @@ def string_fields(die, offset=0, path=(), seen=None, *, slices=False):
         return
     members = [child for child in die.iter_children() if child.tag == "DW_TAG_member"]
     name = die.attributes.get("DW_AT_name")
-    if name and text(name.value) == ("&[&str]" if slices else "&str"):
+    if optional and name and text(name.value) == "Option<&str>":
+        if len(path) <= 6 and optional_string_layout(die):
+            yield offset, path
+        return
+    if not optional and name and text(name.value) == ("&[&str]" if slices else "&str"):
         if slices and len(path) >= 8:
             return
         names = {text(child.attributes["DW_AT_name"].value): child for child in members
@@ -204,7 +282,7 @@ def string_fields(die, offset=0, path=(), seen=None, *, slices=False):
             continue
         name = child.attributes.get("DW_AT_name")
         fields.extend(string_fields(field, offset + position,
-                                    path + (text(name.value) if name else None,), seen, slices=slices))
+                                    path + (text(name.value) if name else None,), seen, slices=slices, optional=optional))
         if len(fields) > 4096:
             return
     yield from fields
@@ -310,6 +388,28 @@ class StringReader:
         result.update(section=section, byteSize=size, storedBytesSha256=hashlib.sha256(raw).hexdigest())
         return result, strings, (pointer, pointer + size)
 
+    def inspect_optional(self, address, root_size, offset):
+        if not self.supported:
+            raise ValueError("Optional-string inspection requires supported ELF64 x86-64 relocations.")
+        if offset < 0 or offset + 16 > root_size:
+            raise ValueError("Optional-string header is outside its bounded variable.")
+        field = address + offset
+        raw, _ = self.read(field, 8)
+        pointer = int.from_bytes(raw, "little")
+        writes = self.overlapping(field, 8)
+        if writes:
+            entries = self.relocations.get(field, [])
+            if writes != [field] or len(entries) != 1 or entries[0][:2] != (8, 0) or entries[0][2] <= 0:
+                raise ValueError("Optional-string discriminant has an unsupported or ambiguous relocation.")
+            binding = "R_X86_64_RELATIVE"
+        else:
+            binding = "stored-pointer-word"
+            if pointer == 0:
+                # None has no active length or string payload to inspect.
+                return {"fieldAddress": hex(field), "variant": "None", "discriminantBinding": binding}, None, None
+        observation, span = self.inspect(address, root_size, offset)
+        return {"fieldAddress": hex(field), "variant": "Some", "discriminantBinding": binding}, observation, span
+
 
 def inventory(elf, stream):
     from elftools.dwarf.dwarf_expr import DWARFExprParser
@@ -336,6 +436,7 @@ def inventory(elf, stream):
     rows, sources, spans, counts = [], {}, {}, Counter()
     strings, rejected_strings, string_spans = [], [], {}
     slices, rejected_slices, slice_spans = [], [], {}
+    optional_strings, rejected_optional_strings = [], []
     reader = StringReader(elf, stream, sections)
     for cu in dwarf.iter_CUs():
         counts["compilationUnits"] += 1
@@ -444,6 +545,31 @@ def inventory(elf, stream):
                     except ValueError as error:
                         counts["unsupportedStringSliceFields"] += 1
                         rejected_slices.append({**association, "reason": str(error)})
+                for offset, path in string_fields(owner.get_DIE_from_attribute("DW_AT_type"), optional=True):
+                    counts["typedOptionalStringFields"] += 1
+                    association = {"rootAddress": hex(address), "rootName": name,
+                                   "rootSourceAssociation": source, "memberPath": path}
+                    try:
+                        if root_fields >= 4096:
+                            raise ValueError("Optional string exceeds the per-root string-field budget.")
+                        observation, element, span = reader.inspect_optional(address, size, offset)
+                        optional_strings.append({**association, **observation})
+                        root_fields += 1
+                        if element is None:
+                            counts["absentOptionalStringFields"] += 1
+                            continue
+                        counts["presentOptionalStringFields"] += 1
+                        counts["typedStringFields"] += 1
+                        strings.append({**association, **element, "memberPath": path + ("Some", "__0"),
+                                        "optionalFieldAddress": observation["fieldAddress"]})
+                        if span is None:
+                            counts["emptyStringFields"] += 1
+                        else:
+                            counts["readOnlyStringReferences"] += 1
+                            string_spans.setdefault(element["section"], []).append(span)
+                    except ValueError as error:
+                        counts["unsupportedOptionalStringFields"] += 1
+                        rejected_optional_strings.append({**association, "reason": str(error)})
         # pyelftools 0.33 retains all parsed DIEs. Bound memory to one completed CU.
         # Later references can be parsed again from their original byte offsets.
         cu._dielist.clear()
@@ -468,6 +594,7 @@ def inventory(elf, stream):
     return {"counts": dict(counts), "rows": rows, "sourceFiles": sources, "sectionCoverage": coverage,
             "stringReferences": strings, "unsupportedStringFields": rejected_strings,
             "stringSliceReferences": slices, "unsupportedStringSliceFields": rejected_slices,
+            "optionalStringReferences": optional_strings, "unsupportedOptionalStringFields": rejected_optional_strings,
             "knownNonAllowlistedSourceFiles": [name for name in sources if known_non_allowlisted_path(name)],
             "unreviewedSystemHeaderFiles": [name for name in sources if name.startswith("/usr/include/")],
             "licenseClearance": False,
@@ -479,8 +606,10 @@ def inventory(elf, stream):
                      "structure is bounded to 4096 string fields, and paths to eight levels. "
                      "Observed Rust &[&str] fields additionally cover bounded read-only element storage and "
                      "UTF-8 payloads through supported relocations. Each root has a 4096-string-field budget. "
+                     "The observed Option<&str> null-pointer niche selects only its active variant; None's "
+                     "inactive length is not read. "
                      "Root declarations are associations, not proof of literal origin. Dynamic, strided, oversized "
-                     "or unbounded arrays, variant parts, arbitrary "
+                     "or unbounded arrays, other variant parts, arbitrary "
                      "pointer graphs, location lists, indirect expressions, anonymous roots, code and linker-generated "
                      "material remain outside string coverage. Remaining bytes "
                      "include padding and other structures; no exhaustive data or license clearance is claimed."}

@@ -741,6 +741,51 @@ pointer graphs and remaining data need further review. This is later audit
 tooling applied to a retained historical binary. It changes no production
 runtime, dependency, allowlist or exception, and adds no license clearance.
 
+## Optional-string variant inspection
+
+The checker now selects the active variant of the observed Rust `Option<&str>`
+layout. It verifies the sixteen-byte type, unsigned eight-byte discriminant at
+offset zero, explicit zero-valued `None` and default `Some` variant, and the
+complete pointed-to string layout. [DWARF 5 section 5.7.10](https://dwarfstd.org/doc/DWARF5.pdf)
+defines these selector and default-variant records. Nested type, template and
+method declarations describe the type without adding stored fields. Other
+enum layouts, discriminant lists and bit fields remain unsupported.
+
+Variant selection examines the pointer word and its relocation before reading
+any string length. A relocated selector must have one positive local relative
+addend; ambiguous, external, duplicate and overlapping writes are rejected.
+`None` has no active length or payload to inspect. `Some("")` remains distinct
+from `None`; present strings use the preceding bounds, UTF-8 and relocation
+checks. Traversal preserves the per-root budget and eight-level path bound.
+This follows a verified compiler layout rather than assuming a portable Rust
+enum representation.
+
+All 100 GNU regressions passed, including 42 data controls. The compiled Rust
+PIE fixture covers present, absent, empty, nested and array values, aliases,
+method declarations, byte-slice exclusion and exhaustion of the root budget.
+Negative controls cover malformed selectors and variants, inactive garbage
+lengths and ambiguous relocations. All 154 Python cases passed on Linux with
+both compilers and the external inspector; none were skipped. Initial shape
+failures and a later incomplete join remain under `.local/gnu-optional-data-20261004`.
+That join exposed method declarations on 328 excluded fields. The corrected
+full replay and independent join are under `.local/gnu-optional-data-20261004b`.
+
+On the same retained GNU `3bbe84d4` binary, all preceding variable rows, 51 source
+associations, 986 string references and 221 slice descriptors remain intact.
+The new inspection joins all 442 observed optional strings: 432 present and ten
+absent. It adds 432 string references and 2,694 bytes of `.rodata` coverage.
+The resulting 1,418 string references include two empty strings and 405 distinct
+nonempty payload ranges. Combined coverage is 41,333 of 993,372 `.rodata` bytes,
+leaving 952,039 outside this inspection. `.data.rel.ro` coverage remains
+159,208 of 396,224 bytes, leaving 237,016 unassigned. No optional string was
+rejected within this selected scope.
+
+Source associations do not establish literal origins. Other variant parts,
+anonymous roots, indirect locations, arbitrary pointer graphs, inlined content
+and remaining data still need review. This historical-binary tooling replay
+changes no production runtime, dependency, allowlist or exception. All release
+gates and whole-runtime license clearance remain open.
+
 ## Selected package inputs and timestamp notice
 
 The 103 packages with named retained sections in GNU `3bbe84d4` join to 103

@@ -2,6 +2,22 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
+The later [optional-string audit](runtime-link-audit.md#optional-string-variant-inspection)
+passed 100 GNU regressions, including 42 data controls. All 154 Python cases
+passed on Linux with both compilers and the external inspector; none were
+skipped. The independent join covers all 442 observed optional strings on
+retained GNU `3bbe84d4`, with 432 present and ten absent. Earlier variable,
+source, string and slice records remain intact. Combined coverage leaves
+952,039 `.rodata` bytes and 237,016 `.data.rel.ro` bytes unassigned. Initial
+shape failures and the incomplete first join remain preserved under
+`.local/gnu-optional-data-20261004`; the accepted replay is under
+`.local/gnu-optional-data-20261004b`. This tooling change has no new Rust,
+container or installed-client run. Runtime licensing and all five release
+gates remain open. Cloud validation for this tooling patch is pending.
+
+All four cloud jobs at `752162a` passed: [source and media acceptance](https://github.com/peppermintish/puffinbox/actions/runs/37196616040)
+and [both GNU runtime configurations](https://github.com/peppermintish/puffinbox/actions/runs/37196616024).
+
 The later [typed string-slice audit](runtime-link-audit.md#typed-string-slice-inspection)
 passed 91 GNU regressions, including 33 data controls. All 145 Python cases
 passed on Linux with both compilers and the external inspector available; none

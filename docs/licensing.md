@@ -105,6 +105,14 @@ other variant parts and arbitrary pointer graphs remain outside this traversal.
 Root declarations still do not prove literal origins. This tooling result
 adds no whole-runtime clearance or production adoption.
 
+The [optional-string inspection](runtime-link-audit.md#optional-string-variant-inspection)
+passed 100 GNU regressions, including 42 data controls. Its independent join
+covers all 442 observed values on the historical binary, with 432 present and
+ten absent. It preserves the preceding records and adds 2,694 `.rodata` bytes;
+952,039 `.rodata` bytes and 237,016 `.data.rel.ro` bytes remain unassigned. Only
+the verified compiler layout is selected. Other variants, anonymous data,
+literal origins and whole-runtime licensing remain open.
+
 The GNU audit now preserves exact native source bodies instead of hashes alone. Fresh candidate `d7d42ac4` has all 927 mapped native files available after build cleanup and passes its source/notice checks, 33 container checks and 29 local HTTPS checks. A separate replay regenerated all 107 bodies without byte-identical package candidates from the verified locked OpenSSL archive, matching every preserved output hash. Selected generator/template hashes and their notice contexts are recorded; file-level license review remains open. Copies and non-allowlisted external runtime files stay outside CI uploads and release bundles. This improves reviewability without clearing the boundary; see [runtime-link-audit.md](runtime-link-audit.md#preserved-native-source-copies).
 
 A corrected GNU capture now includes inherited system-header dependencies. Candidate `d1275bc2` passed source/notice checks, 35 container checks and 29 local HTTPS checks, with 1,872 verified byte copies and 252 system input paths. All 927 mapped native body hashes match the earlier candidate. Earlier traces omitted system headers when OpenSSL supplied user-only dependency options; their mapped-body records do not establish complete include coverage. The additional headers and unmapped content remain under review. See [the capture correction](runtime-link-audit.md#system-headers-in-dependency-rules).
