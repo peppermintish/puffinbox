@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 import tomllib
 
+from check_pdf_assets import check as check_pdf_assets
+
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu")
@@ -48,6 +50,8 @@ def check_postgres_patch() -> None:
 
 def main() -> int:
     check_postgres_patch()
+    check_pdf_assets(ROOT)
+    print("PASS: bundled PDF.js assets and notices match reviewed upstream bytes")
     manifest = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
     if manifest.get("lints", {}).get("rust", {}).get("unsafe_code") != "forbid":
         raise SystemExit("All project Cargo targets must forbid unsafe Rust.")

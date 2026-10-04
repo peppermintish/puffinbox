@@ -13,6 +13,8 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | PostgreSQL suite | 29 passed, 0 failed | 26 integration cases and three database-backed unit cases, including real SCRAM logins and rejected proofs. |
 | Python suite | 27 passed | Retired GNU/source-fork tests were removed with their unused implementation. |
 | Source browser checks | Nine groups passed | Client identity, native adapter, heartbeat, offline cache, books, and Chromium offline/Live TV/playlists; delayed response bodies included. |
+| PDF asset restoration | 12 Chromium cases passed | Current source: Japanese CMaps/text, Foxit Symbol, JPEG2000/JBIG2 pixels, both JavaScript decoder fallbacks, and worker cleanup after rendering or while loading. All 194 retained upstream files and nine notices verified. |
+| Packaged PDF reader | Four authenticated browser cases passed | The rebuilt operator image rendered all four original PDF fixtures and released its workers. All 194 packaged assets and nine packaged notices matched their reviewed hashes. |
 | Outbound HTTPS | Four cases passed | Correct trust and hostname accepted; wrong issuer or hostname rejected. |
 | Dependencies and notices | Passed | Full cargo-deny checks, GNU license audit and complete notice generation under the compatible permissive policy. |
 | Images | Passed | Static non-root core, retained notices, operator FFmpeg fd protocol and H.264/AAC encode/probe. |
@@ -20,7 +22,9 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Local HTTPS proxy | 29 passed | Certificate checks, forwarding spoof rejection, secure cookies, media-token scope, logout and active remote-policy changes. Synthetic addresses; no Internet deployment. |
 | Public-schema route report | 107 / 364 exact method/path declarations | Declaration coverage only. |
 
-The tested core is `sha256:6d66ba262dfac268acfa49ec6d6894d2c8b2a8edcd582735410cb1f25e80a841`; the separate operator image is `sha256:53eacf6d1359d2eb1cdce8a8def952768861b9d41cbafbd9ea377fddbb07cae0`. Both were built from the corrected working tree on checkpoint `ece05bd`, with exact source fingerprints in the local ledger. They are not builds of the preceding commit alone. Documentation changes after these tests do not alter the tested implementation.
+The original corrected core is `sha256:6d66ba262dfac268acfa49ec6d6894d2c8b2a8edcd582735410cb1f25e80a841`; its operator image is `sha256:53eacf6d1359d2eb1cdce8a8def952768861b9d41cbafbd9ea377fddbb07cae0`. Both were built from the corrected working tree on checkpoint `ece05bd`, with exact source fingerprints in the local ledger. They are not builds of the preceding commit alone.
+
+The subsequent PDF restoration was built on checkpoint `d7417dd`: core `sha256:ac1ae481c3034b3ef2f0dd537f79f5cd0ba416de4c262150df7f5699eb3a5fe7`, operator `sha256:d5f9882fd84675ed1775f04d6491a9fbb750c7e0e9552caa723163043901e8c2`. A fresh isolated tree passed all 35 container checks, followed by the four authenticated PDF browser cases. Source fingerprints, asset hashes, notices, screenshots and cleanup records are in `.local/pdf-assets-20261005/`. Its synthetic browser cookie was revoked and its stack stopped with state preserved. Japanese glyphs displayed correctly on the tested Windows browser; unembedded font appearance on other hosts remains dependent on installed fonts. Documentation changes after these tests do not alter the tested implementation.
 
 The first container attempt passed twelve checks, then failed because its copied fixture tree lacked the newly required embedded-audio files. The second fresh tree ran the current supplemental generator and passed all 35 checks. Both records are preserved; no acceptance assertion was weakened.
 
@@ -28,7 +32,7 @@ The restart check stopped the server while an FFmpeg HLS process was active. It 
 
 ## Official clients
 
-Unchanged official web assets and the verified Qt 6 Jellyfin Desktop executable were tested against the same operator image through a loopback observation proxy. API responses were forwarded unchanged. A fresh synthetic account and Desktop profile were used; Remember Me was off. Older libraries, grants, media and saved playback rows were preserved.
+Unchanged official web assets and the verified Qt 6 Jellyfin Desktop executable were tested against the original corrected operator image through a loopback observation proxy. API responses were forwarded unchanged. A fresh synthetic account and Desktop profile were used; Remember Me was off. Older libraries, grants, media and saved playback rows were preserved.
 
 Official web visibly decoded the long synthetic HLS fixture at 640×360. Its timeline advanced from 18.830183 to 39.670778 seconds; normal navigation stopped playback and committed 51.948079 seconds. Both clients completed the four-track tagged FLAC album automatically. Each queue generated fifteen successful playback reports and added exactly one play per track; music resume positions stayed zero. A web replay did the same, and active decoded browser audio was observed. All thirteen fixture hashes remained unchanged.
 
@@ -38,7 +42,7 @@ Private evidence is under `.local/policy-correction-20261005/`: `source2`, `brow
 
 ## Cloud and earlier records
 
-Cloud CI for this correction is pending its push. The preceding `ece05bd` passed [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37199589069) and [both retired runtime jobs](https://github.com/peppermintish/puffinbox/actions/runs/37199589042). Those results apply to that preceding source.
+The Rust and compatible-license correction at `d7417dd` passed [both cloud jobs](https://github.com/peppermintish/puffinbox/actions/runs/37229872635), including the isolated media/restart acceptance and static Linux build. The later PDF asset restoration has local source, image and authenticated browser coverage and awaits its own cloud checks. The preceding `ece05bd` passed [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37199589069) and [both retired runtime jobs](https://github.com/peppermintish/puffinbox/actions/runs/37199589042). Each result applies to its named source.
 
 The full earlier acceptance narrative is retained [at checkpoint ece05bd](https://github.com/peppermintish/puffinbox/blob/ece05bdfca3566e4d6d241653d238446d5fc76c8/docs/acceptance.md). The shorter [history](validation-history.md), feature-specific contract documents and private ledgers retain their original artifact scope. The exact-license GNU/OpenSSL experiments are retired.
 

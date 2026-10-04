@@ -1,6 +1,4 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
 const { createPdfLoadingOptions, inflateEntry, isSafeArchivePath, normalizeReference, parseEpub, parseZipDirectory, replaceElementChildren } = require("./book-reader.js");
 
@@ -152,33 +150,17 @@ function minimalEpub(chapterEntries, overrides = {}) {
   ]);
 }
 
-test("PDF.js uses only retained MIT and Apache support assets", () => {
+test("PDF.js loads local support assets with PDF scripting disabled", () => {
   const options = createPdfLoadingOptions("/Books/example/Document");
   assert.equal(options.url, "/Books/example/Document");
   assert.equal(options.useSystemFonts, true);
   assert.equal(options.useWasm, true);
   assert.equal(options.wasmUrl, "/web/vendor/pdfjs/wasm/");
-  assert.equal(options.cMapUrl, undefined);
-  assert.equal(options.standardFontDataUrl, undefined);
-
-  const vendorRoot = path.join(__dirname, "vendor", "pdfjs");
-  for (const removedAsset of [
-    "cmaps",
-    "standard_fonts",
-    "wasm/jbig2.wasm",
-    "wasm/openjpeg.wasm",
-    "wasm/LICENSE_JBIG2",
-    "wasm/LICENSE_PDFJS_JBIG2",
-    "wasm/LICENSE_OPENJPEG",
-    "wasm/LICENSE_PDFJS_OPENJPEG"
-  ]) {
-    assert.equal(fs.existsSync(path.join(vendorRoot, removedAsset)), false, removedAsset);
-  }
-  assert.deepEqual(fs.readdirSync(path.join(vendorRoot, "wasm")).sort(), [
-    "LICENSE_PDFJS_QCMS",
-    "LICENSE_QCMS",
-    "qcms_bg.wasm"
-  ]);
+  assert.equal(options.cMapUrl, "/web/vendor/pdfjs/cmaps/");
+  assert.equal(options.cMapPacked, true);
+  assert.equal(options.standardFontDataUrl, "/web/vendor/pdfjs/standard_fonts/");
+  assert.equal(options.isEvalSupported, false);
+  assert.equal(options.enableXfa, false);
 });
 
 test("archive path checks block traversal and platform-specific paths", () => {

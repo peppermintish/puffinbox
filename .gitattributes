@@ -15,3 +15,9 @@ Dockerfile* text eol=lf
 *.json text eol=lf
 # Preserve the checksum-reviewed upstream bytes, including their original line endings.
 vendor/sqlx-postgres/** -text
+web/vendor/pdfjs/** -text
+# These upstream license notices retain their original, hash-reviewed whitespace.
+web/vendor/pdfjs/cmaps/LICENSE -whitespace
+web/vendor/pdfjs/wasm/LICENSE_* -whitespace
+# PDF cross-reference offsets require byte-for-byte fixture preservation.
+tests/fixtures/books/*.pdf -text -diff

@@ -122,6 +122,7 @@ jobs:
           node --check scripts/test_offline_browser.js
           node --check scripts/test_livetv_browser.js
           node --check scripts/test_playlists_browser.js
+          node --check scripts/test_pdf_browser.js
           node scripts/test_client_compat.js
           node scripts/test_device_id.js
           node scripts/test_jmp_player.js
@@ -147,6 +148,10 @@ jobs:
         env:
           PUFFINBOX_BROWSER_BODY_DELAY_MS: '500'
         run: node scripts/test_playlists_browser.js
+
+      - name: Check PDF rendering and worker cleanup in Chromium
+        timeout-minutes: 5
+        run: node scripts/test_pdf_browser.js
 
       - name: Compare declared routes with the pinned public API schema
         run: python scripts/api_coverage.py --check --output "$RUNNER_TEMP/api-route-coverage.md"

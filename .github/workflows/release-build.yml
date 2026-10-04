@@ -69,6 +69,7 @@ jobs:
           node --check scripts/test_offline_browser.js
           node --check scripts/test_livetv_browser.js
           node --check scripts/test_playlists_browser.js
+          node --check scripts/test_pdf_browser.js
           node scripts/test_client_compat.js
           node scripts/test_device_id.js
           node scripts/test_jmp_player.js
@@ -92,6 +93,9 @@ jobs:
       - name: Check playlists in Chromium
         timeout-minutes: 5
         run: node scripts/test_playlists_browser.js
+      - name: Check PDF rendering and worker cleanup in Chromium
+        timeout-minutes: 5
+        run: node scripts/test_pdf_browser.js
       - name: Run isolated PostgreSQL regression targets
         env:
           PUFFINBOX_TEST_DATABASE_URL: postgres://throttle_test:throttle_test@127.0.0.1:5432/throttle_test

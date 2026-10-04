@@ -413,7 +413,9 @@
       useWasm: true,
       useWorkerFetch: true,
       useSystemFonts: true,
-      // qcms is MIT-licensed; the JBIG2 and OpenJPEG decoders were removed.
+      cMapUrl: "/web/vendor/pdfjs/cmaps/",
+      cMapPacked: true,
+      standardFontDataUrl: "/web/vendor/pdfjs/standard_fonts/",
       wasmUrl: "/web/vendor/pdfjs/wasm/",
       maxImageSize: 10000000,
       stopAtErrors: true
@@ -447,6 +449,8 @@
       const next = document.getElementById("next-page");
       let pdfjs;
       let pdfDocument;
+      let loadingTask;
+      let readerClosed = false;
       let pageNumber = 1;
       let renderTask;
       let renderRevision = 0;
@@ -486,7 +490,7 @@
           next.disabled = pageNumber >= pdfDocument.numPages;
           global.scrollTo(0, 0);
         } catch (reason) {
-          if (revision === renderRevision && reason && reason.name !== "RenderingCancelledException") showError(reason);
+          if (!readerClosed && revision === renderRevision && reason && reason.name !== "RenderingCancelledException") showError(reason);
         }
       }
 
@@ -507,25 +511,28 @@
         try {
           pdfjs = await import("/web/vendor/pdfjs/pdf.min.mjs");
           pdfjs.GlobalWorkerOptions.workerSrc = "/web/vendor/pdfjs/pdf.worker.min.mjs";
-          const loading = pdfjs.getDocument(createPdfLoadingOptions(
+          if (readerClosed) return;
+          loadingTask = pdfjs.getDocument(createPdfLoadingOptions(
             apiUrl("/Books/" + encodeURIComponent(itemId) + "/Document")
           ));
-          pdfDocument = await loading.promise;
+          pdfDocument = await loadingTask.promise;
+          if (readerClosed) return;
           if (pdfDocument.numPages < 1 || pdfDocument.numPages > MAX_PDF_PAGES) {
-            await pdfDocument.destroy();
+            await loadingTask.destroy();
             pdfDocument = null;
             fail("This PDF has too many pages to read here.");
           }
           panel.hidden = false;
           await renderPage();
         } catch (reason) {
-          showError(reason);
+          if (!readerClosed) showError(reason);
         }
       })();
 
       global.addEventListener("pagehide", () => {
+        readerClosed = true;
         if (renderTask) renderTask.cancel();
-        if (pdfDocument) pdfDocument.destroy();
+        if (loadingTask) void loadingTask.destroy().catch(() => {});
       }, { once: true });
       return;
     }

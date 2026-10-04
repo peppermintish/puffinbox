@@ -8,9 +8,9 @@ The project bundles the official hls.js v1.7.3 npm distribution under Apache-2.0
 
 ## PDF reading library
 
-The book reader bundles Mozilla PDF.js `pdfjs-dist` v6.3.289 under Apache-2.0, with the full text in `web/vendor/pdfjs/LICENSE`. The retained qcms WebAssembly decoder uses MIT terms, preserved in `web/vendor/pdfjs/wasm/LICENSE_QCMS` and `LICENSE_PDFJS_QCMS`.
+The book reader bundles unchanged Mozilla PDF.js `pdfjs-dist` v6.3.289 assets under Apache-2.0, with the full text in `web/vendor/pdfjs/LICENSE`. The qcms decoder uses MIT terms. Adobe CMaps and Foxit base fonts use BSD-3-Clause; JBIG2 uses BSD-3-Clause and Apache-2.0; OpenJPEG uses BSD-2-Clause. Their full notices are retained beside the assets and copied into the distribution license bundle.
 
-The current distribution omits Adobe CMaps, Foxit base fonts, JBIG2 and OpenJPEG assets. This limits CMap-dependent text and JBIG2/JPEG2000 images and uses system-font substitutes where possible. Their former BSD-license exclusion is obsolete under the corrected policy; restoration and validation remain pending. Provenance and registry integrity are in `web/vendor/pdfjs/README.md`.
+Liberation fonts with GPL font terms are excluded. The reader uses installed font substitutes where needed and disables PDF scripting and XFA. Provenance, the reviewed file hashes, and registry integrity are in `web/vendor/pdfjs/README.md` and `provenance.json`.
 
 ## Rust dependencies and static runtime
 
