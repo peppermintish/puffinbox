@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify replacements and feature exclusions for known dependency file exceptions."""
+"""Verify reviewed dependency replacements, source constraints and required notices."""
 
 from __future__ import annotations
 
@@ -88,6 +88,20 @@ def validate(root: Path, metadata: dict, review: dict) -> dict:
         result["verifiedFeatureConstraints"] = sum(
             validate_feature_constraint(metadata, constraint) for constraint in constraints
         )
+    notices = review.get("requiredNotices", [])
+    if notices:
+        for notice in notices:
+            relative = Path(notice["path"])
+            source = root / relative
+            if (relative.is_absolute() or ".." in relative.parts
+                    or relative.parts[:2] != ("vendor", "notices")
+                    or any((root / Path(*relative.parts[:index])).is_symlink()
+                           for index in range(1, len(relative.parts) + 1))
+                    or not source.resolve().is_relative_to(root / "vendor" / "notices")
+                    or not source.is_file()
+                    or hashlib.sha256(source.read_bytes()).hexdigest() != notice["sha256"]):
+                raise ValueError(f"Missing or unreviewed required dependency notice: {notice['path']}.")
+        result["verifiedRequiredNotices"] = len(notices)
     return result
 
 

@@ -128,6 +128,57 @@
         "src/backend/linux_raw/vdso.rs": "1ef85f02ba89e5afa5b9b574143ed58c447aed18c4e50eb861183cd0e5cbefb0",
         "src/backend/libc/mod.rs": "92d16eed953b10d3a0eed59f1413352c6a1c64a2b75be2c8d20628c59e7da127"
       }
+    },
+    {
+      "name": "tracing-subscriber",
+      "version": "0.3.23",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "upstreamArchiveSha256": "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319",
+      "allowedFeatures": [
+        "alloc",
+        "ansi",
+        "default",
+        "env-filter",
+        "fmt",
+        "matchers",
+        "nu-ansi-term",
+        "once_cell",
+        "registry",
+        "sharded-slab",
+        "smallvec",
+        "std",
+        "thread_local",
+        "tracing",
+        "tracing-log"
+      ],
+      "requiredFeatures": [
+        "alloc",
+        "ansi",
+        "default",
+        "env-filter",
+        "fmt",
+        "matchers",
+        "nu-ansi-term",
+        "once_cell",
+        "registry",
+        "sharded-slab",
+        "smallvec",
+        "std",
+        "thread_local",
+        "tracing",
+        "tracing-log"
+      ],
+      "reason": "The retained timestamp formatter derives from musl MIT code. Preserve its exact supplemental MIT notice and the cited Kudu contributor MIT permission; blanket musl BSD exceptions describe other routines. Bind this scoped review to the selected source and features without claiming whole-package or runtime clearance.",
+      "upstreamRevision": "54ede4d5d85a536aed5485c5213011d9ec961935",
+      "sourceReference": "https://github.com/tokio-rs/tracing/blob/54ede4d5d85a536aed5485c5213011d9ec961935/tracing-subscriber/src/fmt/time/datetime.rs",
+      "permissionReference": "https://github.com/tokio-rs/tracing/issues/1644#issuecomment-963888244",
+      "originReference": "https://git.musl-libc.org/cgit/musl/tree/src/time/__secs_to_tm.c?id=0784374d561435f7c787a555aeab8ede699ed298",
+      "reviewedConfigFiles": {
+        "Cargo.toml": "77e768dd859bd228564f4504598bc8cf8b226f3a54df03a506a67c3025aea8fb",
+        "LICENSE": "898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1",
+        "src/fmt/time/mod.rs": "723d7dd23dea4b938d5d8834133ab112c3cf66bc61e7378603ae3f65c4edf2ef",
+        "src/fmt/time/datetime.rs": "a6eeeb475e1f0b8cf90d1ef0dcb862b244cea58261485d440d51095694637213"
+      }
     }
   ],
   "replacements": [
@@ -323,6 +374,15 @@
         "src/types/void.rs": "79fa3e4e4bd70216e9f3dd6cdd0a84995322b21aabbb1fba005c7b4c108048e3",
         "src/value.rs": "80f9303a892fb97ac0a4084532bc03e0a344d881495cad1af2d2357150cde0c6"
       }
+    }
+  ],
+  "requiredNotices": [
+    {
+      "dependency": "tracing-subscriber",
+      "path": "vendor/notices/tracing-subscriber-datetime-MIT.txt",
+      "sha256": "e239ef69c9c4eead9406bdc6a34f2bd1220c3dcd3b17c8377cb2fb73fdaf0d38",
+      "sourceFile": "src/fmt/time/datetime.rs",
+      "sourceSha256": "a6eeeb475e1f0b8cf90d1ef0dcb862b244cea58261485d440d51095694637213"
     }
   ]
 }

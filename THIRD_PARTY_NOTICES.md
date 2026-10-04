@@ -47,6 +47,18 @@ unchanged. The provenance, two changed files and limitations are recorded in
 `vendor/dependency-replacements.json`. The full bundled-runtime review remains
 open.
 
+## Timestamp formatter
+
+Tracing Subscriber 0.3.23 retains a timestamp formatter derived from musl's
+MIT-licensed `__secs_to_tm` routine. Its Rich Felker and contributor notice is
+preserved exactly in `vendor/notices/tracing-subscriber-datetime-MIT.txt` and
+copied to `TRACING-DATETIME-MIT.txt` in the generated bundle. The cited Kudu
+contributor also [permits MIT use](https://github.com/tokio-rs/tracing/issues/1644#issuecomment-963888244).
+The source and notice hashes are bound in `vendor/dependency-replacements.json`.
+The broad musl notice names exceptions for other routines; those references do
+not assign BSD terms to this timestamp routine. This scoped notice review does
+not clear the complete dependency or runtime boundary.
+
 ## External operator services and executables
 
 The Compose stack references a separate PostgreSQL container image. PostgreSQL is an external service and is not copied into the Puffinbox server image. FFmpeg and ffprobe are supplied by the operator or the test-only acceptance image; the default server image does not include them. Exact image-package inventories and operator-selected FFmpeg build licenses are separate from this project source and are recorded as unresolved in [`docs/licensing.md`](docs/licensing.md).

@@ -182,3 +182,22 @@ address-backed declarations to exact build hashes while reporting unexamined
 bytes explicitly. Source-less vtable names, anonymous constants, inlined
 contents and complete binary provenance remain uncleared. Passing this scoped
 inspection does not establish the requested bundled license boundary.
+
+## Timestamp notice
+
+The selected Tracing Subscriber 0.3.23 formatter includes a musl-derived
+timestamp routine and its supplemental MIT notice. The exact source SHA-256 is
+`a6eeeb475e1f0b8cf90d1ef0dcb862b244cea58261485d440d51095694637213`.
+The [cited Kudu contributor permits MIT use](https://github.com/tokio-rs/tracing/issues/1644#issuecomment-963888244).
+The upstream blanket musl notice lists BSD exceptions for other paths; it does
+not classify `src/time/__secs_to_tm.c` as BSD. No implementation or license
+declaration was changed for this review.
+
+The [exact supplemental notice](../vendor/notices/tracing-subscriber-datetime-MIT.txt)
+is preserved with SHA-256
+`e239ef69c9c4eead9406bdc6a34f2bd1220c3dcd3b17c8377cb2fb73fdaf0d38`.
+The [source guard](../vendor/dependency-replacements.json) checks the version,
+selected features, source/configuration hashes and notice bytes. Notice
+generation copies it to `TRACING-DATETIME-MIT.txt`; the existing builder-musl
+notice did not contain this exact notice. This resolves a specific attribution
+gap, without clearing every source file, retained constant or runtime input.

@@ -638,3 +638,23 @@ without uploading binaries or external runtime libraries. The later checker
 replay, exact tool hashes and initial control failures are under
 `.local/postgres-scram-gnu-20261004`. Complete executable/data licensing,
 production adoption and all five release gates remain open.
+
+## Selected package inputs and timestamp notice
+
+The 103 packages with named retained sections in GNU `3bbe84d4` join to 103
+exact dependency rules and 2,078 selected source inputs. Every input has a
+verified byte copy in the private audit directory; none is unavailable. These
+rules conservatively include source that may be discarded. They do not cover
+all inlined standard-library content or assign origins to anonymous constants.
+The initial lexical-path normalization failure is retained separately from
+the passing input join under `.local/gnu-selected-inputs-20261004`.
+
+Two BSD text matches appeared inside the blanket musl notice in Tracing
+Subscriber's timestamp source. The exceptions refer to other routines. Review
+of the cited musl routine and the [Kudu contributor's MIT permission](https://github.com/tokio-rs/tracing/issues/1644#issuecomment-963888244)
+supports the file's MIT origin. The exact selected timestamp source has 71
+mapped executable intervals totaling 852 bytes. Its supplemental MIT notice
+was missing from the generated bundle and is now preserved and checked against
+the reviewed source. [The notice record](licensing.md#timestamp-notice) identifies
+the source and notice hashes. This is a scoped source and attribution review;
+complete package, data and executable licensing remain open.

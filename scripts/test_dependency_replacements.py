@@ -74,6 +74,62 @@ class DependencyReplacementTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate(self.root, self.metadata, review)
 
+    def add_required_notice(self):
+        notice = self.root / "vendor/notices/timestamp-MIT.txt"
+        notice.parent.mkdir()
+        data = b"// Synthetic required attribution fixture\n"
+        notice.write_bytes(data)
+        self.review["requiredNotices"] = [{
+            "path": "vendor/notices/timestamp-MIT.txt",
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }]
+        return notice
+
+    def test_required_notice_is_bound_to_reviewed_bytes_without_clearance(self):
+        self.add_required_notice()
+        result = validate(self.root, self.metadata, self.review)
+        self.assertEqual(result["verifiedRequiredNotices"], 1)
+        self.assertFalse(result["licenseClearance"])
+
+    def test_missing_or_changed_required_notice_is_rejected(self):
+        notice = self.add_required_notice()
+        notice.write_bytes(b"// Attribution accidentally removed\n")
+        with self.assertRaisesRegex(ValueError, "required dependency notice"):
+            validate(self.root, self.metadata, self.review)
+        notice.unlink()
+        with self.assertRaisesRegex(ValueError, "required dependency notice"):
+            validate(self.root, self.metadata, self.review)
+
+    def test_required_notice_paths_cannot_escape_notices(self):
+        notice = self.add_required_notice()
+        for path in ["vendor/channel/queue.rs", "vendor/notices/../channel/queue.rs",
+                     "../outside.txt", str(notice)]:
+            with self.subTest(path=path):
+                review = copy.deepcopy(self.review)
+                review["requiredNotices"][0]["path"] = path
+                with self.assertRaisesRegex(ValueError, "required dependency notice"):
+                    validate(self.root, self.metadata, review)
+
+    def test_required_notice_and_parent_symlinks_are_rejected(self):
+        notice = self.add_required_notice()
+        target = self.root / "notice-original.txt"
+        target.write_bytes(notice.read_bytes())
+        notice.unlink()
+        try:
+            notice.symlink_to(target)
+        except (OSError, NotImplementedError):
+            self.skipTest("Symlinks are unavailable on this test host.")
+        with self.assertRaisesRegex(ValueError, "required dependency notice"):
+            validate(self.root, self.metadata, self.review)
+        notice.unlink()
+        notice.parent.rmdir()
+        elsewhere = self.root / "other-notices"
+        elsewhere.mkdir()
+        (elsewhere / notice.name).write_bytes(target.read_bytes())
+        notice.parent.symlink_to(elsewhere, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "required dependency notice"):
+            validate(self.root, self.metadata, self.review)
+
 
 class DependencyFeatureTests(unittest.TestCase):
     def setUp(self):
@@ -251,6 +307,42 @@ class DependencyFeatureTests(unittest.TestCase):
                 node["features"] = constraint["allowedFeatures"] + [feature]
                 with self.assertRaisesRegex(ValueError, "Unreviewed dependency features for tower-http"):
                     validate(self.root, self.metadata, self.review)
+
+    def test_recorded_timestamp_source_features_and_version_require_review(self):
+        record = json.loads((Path(__file__).resolve().parents[1]
+                             / "vendor/dependency-replacements.json").read_text(encoding="utf-8"))
+        constraint = copy.deepcopy(next(item for item in record["featureConstraints"]
+                                        if item["name"] == "tracing-subscriber"))
+        directory = self.root / "registry/tracing-subscriber"
+        directory.mkdir()
+        source = b"// Synthetic reviewed timestamp source fixture\n"
+        for name in constraint["reviewedConfigFiles"]:
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(source)
+            constraint["reviewedConfigFiles"][name] = hashlib.sha256(source).hexdigest()
+        identifier = "registry+crates.io#tracing-subscriber@0.3.23"
+        package = {
+            "name": "tracing-subscriber", "version": constraint["version"],
+            "source": constraint["source"], "id": identifier,
+            "manifest_path": str(directory / "Cargo.toml"),
+        }
+        self.metadata["packages"].append(package)
+        node = {"id": identifier, "features": constraint["allowedFeatures"].copy()}
+        self.metadata["resolve"]["nodes"].append(node)
+        self.review["featureConstraints"].append(constraint)
+        self.assertEqual(validate(self.root, self.metadata, self.review)["verifiedFeatureConstraints"], 2)
+        node["features"].append("time")
+        with self.assertRaisesRegex(ValueError, "Unreviewed dependency features for tracing-subscriber"):
+            validate(self.root, self.metadata, self.review)
+        node["features"].pop()
+        package["version"] = "0.3.24"
+        with self.assertRaisesRegex(ValueError, "new source review for tracing-subscriber"):
+            validate(self.root, self.metadata, self.review)
+        package["version"] = constraint["version"]
+        (directory / "src/fmt/time/datetime.rs").write_bytes(b"// Unreviewed timestamp origin\n")
+        with self.assertRaisesRegex(ValueError, "Unreviewed feature exclusion source"):
+            validate(self.root, self.metadata, self.review)
 
 
 if __name__ == "__main__":

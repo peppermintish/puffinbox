@@ -57,6 +57,16 @@ and compiler alias behavior; the corrected controls and later conservative
 array-bound check retain separate records. No runtime license clearance or
 release readiness is inferred from these passes.
 
+The subsequent package-input join preserves all 2,078 selected source inputs
+from the 103 packages with named retained sections. The scoped timestamp
+review confirms its MIT origin and preserves the exact supplemental notice.
+Twenty-one dependency-guard regressions, both Linux target guards and full
+notice generation pass. These checks cover source and attribution constraints;
+the server code and saved client state are unchanged. Exact hashes and the
+earlier path-normalization failure remain under
+`.local/gnu-selected-inputs-20261004`. [Complete runtime licensing](licensing.md#timestamp-notice)
+and all five release gates remain open.
+
 At MIME checkpoint `5451ebb`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37172970505)
 and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37172970487)
 passed. Both workflows completed successfully. Those cloud results precede the
