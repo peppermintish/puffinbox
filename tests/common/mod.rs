@@ -84,5 +84,10 @@ pub async fn apply_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(include_str!("../../migrations/0027_music_tag_artists.sql"))
         .execute(pool)
         .await?;
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0028_metadata_refresh_options.sql"
+    ))
+    .execute(pool)
+    .await?;
     Ok(())
 }

@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-03T02:02:39.857518+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-03T23:58:28.307025+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `194`
-- Declared pairs matching a schema method/path: `106`
+- Unique declared server method/path pairs: `195`
+- Declared pairs matching a schema method/path: `107`
 - Declared pairs outside the schema: `88`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -168,6 +168,7 @@ This is a source declaration comparison only. It does not establish that a match
 | `DELETE /Audio/{item_id}/hls/{session_id}` | `src/media_features/mod.rs` | custom / not in target schema |
 | `POST /Videos/{item_id}/hls/{session_id}/keepalive` | `src/media_features/mod.rs` | custom / not in target schema |
 | `POST /Audio/{item_id}/hls/{session_id}/keepalive` | `src/media_features/mod.rs` | custom / not in target schema |
+| `POST /Items/{item_id}/Refresh` | `src/metadata/mod.rs` | match |
 | `GET /Puffinbox/Metadata/Refreshes` | `src/metadata/mod.rs` | custom / not in target schema |
 | `POST /Puffinbox/Metadata/Refreshes` | `src/metadata/mod.rs` | custom / not in target schema |
 | `GET /Puffinbox/Metadata/Items/{item_id}` | `src/metadata/mod.rs` | custom / not in target schema |

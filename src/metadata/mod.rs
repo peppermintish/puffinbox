@@ -7,10 +7,10 @@ mod worker;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::Response,
-    routing::get,
+    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,7 @@ use display::{ProviderMetadata, load_provider_details};
 /// are explicit and TVMaze data is always marked with its CC BY-SA attribution.
 pub fn router(state: AppState) -> Router<()> {
     Router::new()
+        .route("/Items/{item_id}/Refresh", post(refresh_item))
         .route(
             "/Puffinbox/Metadata/Refreshes",
             get(list_refreshes).post(enqueue_refresh),
@@ -81,6 +82,128 @@ struct QueuedJobDto {
     id: Uuid,
     provider_key: String,
     status: &'static str,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemRefreshQuery {
+    #[serde(alias = "MetadataRefreshMode")]
+    metadata_refresh_mode: Option<String>,
+    #[serde(alias = "ImageRefreshMode")]
+    image_refresh_mode: Option<String>,
+    #[serde(alias = "ReplaceAllMetadata")]
+    replace_all_metadata: Option<String>,
+    #[serde(alias = "ReplaceAllImages")]
+    replace_all_images: Option<String>,
+    #[serde(alias = "RegenerateTrickplay")]
+    regenerate_trickplay: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum ItemRefreshMode {
+    None,
+    ValidationOnly,
+    Default,
+    FullRefresh,
+}
+
+impl ItemRefreshMode {
+    fn parse(value: Option<&str>) -> Result<Self, ApiError> {
+        match value.unwrap_or("None").trim().to_ascii_lowercase().as_str() {
+            "none" | "0" => Ok(Self::None),
+            "validationonly" | "1" => Ok(Self::ValidationOnly),
+            "default" | "2" => Ok(Self::Default),
+            "fullrefresh" | "3" => Ok(Self::FullRefresh),
+            _ => Err(ApiError::BadRequest(
+                "Invalid metadata refresh mode".to_owned(),
+            )),
+        }
+    }
+
+    fn options(self, replace: bool) -> (bool, bool) {
+        match self {
+            Self::None | Self::ValidationOnly => (false, false),
+            Self::Default => (true, true),
+            Self::FullRefresh => (true, replace),
+        }
+    }
+}
+
+fn refresh_boolean(value: Option<&str>) -> Result<bool, ApiError> {
+    match value
+        .unwrap_or("false")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "false" | "" => Ok(false),
+        "true" => Ok(true),
+        _ => Err(ApiError::BadRequest("Invalid refresh boolean".to_owned())),
+    }
+}
+
+async fn refresh_item(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(item_id): Path<Uuid>,
+    Query(query): Query<ItemRefreshQuery>,
+) -> Result<StatusCode, ApiError> {
+    let metadata_mode = ItemRefreshMode::parse(query.metadata_refresh_mode.as_deref())?;
+    let image_mode = ItemRefreshMode::parse(query.image_refresh_mode.as_deref())?;
+    let (refresh_metadata, replace_metadata) =
+        metadata_mode.options(refresh_boolean(query.replace_all_metadata.as_deref())?);
+    let (refresh_images, replace_images) =
+        image_mode.options(refresh_boolean(query.replace_all_images.as_deref())?);
+    if refresh_boolean(query.regenerate_trickplay.as_deref())? {
+        return Err(ApiError::BadRequest(
+            "Trickplay regeneration is not supported".to_owned(),
+        ));
+    }
+
+    let mut tx = state.db.begin().await?;
+    db::require_active_run(&mut tx, state.run_id).await?;
+    let item_type = sqlx::query_scalar::<_, String>(
+        "SELECT i.item_type FROM items i JOIN libraries l ON l.id=i.library_id \
+         WHERE i.id=$1 AND l.enabled=TRUE FOR SHARE OF i,l",
+    )
+    .bind(item_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+
+    // Local providers need no external-provider consent. A request with both
+    // modes disabled still authenticates and validates its current item.
+    if refresh_metadata || refresh_images {
+        let providers = if item_type == "Audio" && refresh_metadata {
+            &["embedded-audio", "local-nfo"][..]
+        } else {
+            &["local-nfo"][..]
+        };
+        for provider in providers {
+            sqlx::query(
+                "INSERT INTO metadata_refresh_runs(id,scope_kind,scope_item_id,provider_key,status,batch_limit,requested_by,refresh_metadata,refresh_images,replace_metadata,replace_images) \
+                 VALUES ($1,'item',$2,$3,'queued',1,$4,$5,$6,$7,$8) \
+                 ON CONFLICT (scope_item_id,provider_key) WHERE scope_kind='item' AND status IN ('queued','running','retry_wait') \
+                 DO UPDATE SET refresh_metadata=metadata_refresh_runs.refresh_metadata OR EXCLUDED.refresh_metadata, \
+                 refresh_images=metadata_refresh_runs.refresh_images OR EXCLUDED.refresh_images, \
+                 replace_metadata=metadata_refresh_runs.replace_metadata OR EXCLUDED.replace_metadata, \
+                 replace_images=metadata_refresh_runs.replace_images OR EXCLUDED.replace_images, \
+                 rerun_requested=metadata_refresh_runs.rerun_requested OR metadata_refresh_runs.status IN ('running','retry_wait'),updated_at=NOW()",
+            )
+            .bind(Uuid::new_v4())
+            .bind(item_id)
+            .bind(provider)
+            .bind(admin.id)
+            .bind(refresh_metadata)
+            .bind(*provider == "local-nfo" && refresh_images)
+            .bind(replace_metadata)
+            .bind(replace_images)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn enqueue_refresh(

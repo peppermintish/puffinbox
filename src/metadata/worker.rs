@@ -85,12 +85,16 @@ struct Job {
     upper_item_id: Option<Uuid>,
     batch_limit: i16,
     attempt_count: i16,
+    refresh_metadata: bool,
+    refresh_images: bool,
+    replace_metadata: bool,
+    replace_images: bool,
 }
 
 async fn claim_next_job(state: &AppState) -> Result<Option<Job>, sqlx::Error> {
     let mut tx = state.db.begin().await?;
     db::require_active_run(&mut tx, state.run_id).await?;
-    let Some(row) = sqlx::query("SELECT id,scope_kind,scope_library_id,scope_item_id,provider_key,cursor_item_id,upper_item_id,batch_limit,attempt_count FROM metadata_refresh_runs WHERE status IN ('queued','retry_wait') AND (next_attempt_at IS NULL OR next_attempt_at<=NOW()) ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED")
+    let Some(row) = sqlx::query("SELECT id,scope_kind,scope_library_id,scope_item_id,provider_key,cursor_item_id,upper_item_id,batch_limit,attempt_count,refresh_metadata,refresh_images,replace_metadata,replace_images FROM metadata_refresh_runs WHERE status IN ('queued','retry_wait') AND (next_attempt_at IS NULL OR next_attempt_at<=NOW()) ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED")
         .fetch_optional(&mut *tx)
         .await? else {
             tx.commit().await?;
@@ -106,6 +110,10 @@ async fn claim_next_job(state: &AppState) -> Result<Option<Job>, sqlx::Error> {
         upper_item_id: row.try_get("upper_item_id")?,
         batch_limit: row.try_get("batch_limit")?,
         attempt_count: row.try_get("attempt_count")?,
+        refresh_metadata: row.try_get("refresh_metadata")?,
+        refresh_images: row.try_get("refresh_images")?,
+        replace_metadata: row.try_get("replace_metadata")?,
+        replace_images: row.try_get("replace_images")?,
     };
 
     if !scope_enabled(&mut tx, &job).await? {
@@ -233,7 +241,7 @@ async fn process_job(state: &AppState, mut job: Job) -> Result<(), sqlx::Error> 
             if state.shutdown_requested.load(Ordering::Acquire) {
                 return Ok(());
             }
-            let outcome = prepare_item(state, &job.provider_key, &item).await;
+            let outcome = prepare_item(state, &job, &item).await;
             let result = persist_item_outcome(state, &job, &item, outcome).await?;
             match result {
                 ItemPersistResult::Continue { cursor } => job.cursor_item_id = Some(cursor),
@@ -341,13 +349,13 @@ enum ArtworkMutation {
     },
 }
 
-async fn prepare_item(state: &AppState, provider: &str, item: &WorkItem) -> PreparedOutcome {
-    match provider {
-        "local-nfo" => prepare_local_nfo(state, item).await,
+async fn prepare_item(state: &AppState, job: &Job, item: &WorkItem) -> PreparedOutcome {
+    match job.provider_key.as_str() {
+        "local-nfo" => prepare_local_nfo(state, job, item).await,
         "embedded-audio" => prepare_embedded_audio(state, item).await,
         "tvmaze" => prepare_tvmaze(state, item).await,
         _ => {
-            let Some(plugin_id) = provider.strip_prefix("plugin:") else {
+            let Some(plugin_id) = job.provider_key.strip_prefix("plugin:") else {
                 return PreparedOutcome::Failure {
                     code: "provider-unknown",
                     retryable: false,
@@ -438,7 +446,10 @@ fn embedded_audio_title(tagged_title: Option<String>, path: &Path) -> Option<Str
     })
 }
 
-async fn prepare_local_nfo(state: &AppState, item: &WorkItem) -> PreparedOutcome {
+async fn prepare_local_nfo(state: &AppState, job: &Job, item: &WorkItem) -> PreparedOutcome {
+    if !job.refresh_metadata {
+        return local_nfo_outcome(None, read_artwork(state, item).await, false);
+    }
     let filename = nfo_filename(item);
     let standard_movie_nfo = (item.item_type == "Movie").then_some("movie.nfo");
     let has_nfo_sidecar = filename.is_some() || standard_movie_nfo.is_some();
@@ -475,7 +486,11 @@ async fn prepare_local_nfo(state: &AppState, item: &WorkItem) -> PreparedOutcome
     // NFO and artwork are independent inputs. In particular, a poster-only
     // folder must still produce a metadata row, and an unavailable/unsafe
     // image must not prevent a valid content classification from being saved.
-    let artwork_read = read_artwork(state, item).await;
+    let artwork_read = if job.refresh_images {
+        read_artwork(state, item).await
+    } else {
+        ArtworkRead::Unavailable
+    };
     local_nfo_outcome(parsed, artwork_read, has_nfo_sidecar)
 }
 
@@ -977,25 +992,62 @@ async fn persist_item_outcome(
         return Ok(ItemPersistResult::Retry);
     }
 
+    let existing = sqlx::query(
+        "SELECT external_id IS NOT NULL OR title IS NOT NULL OR overview IS NOT NULL \
+         OR premiere_date IS NOT NULL OR genres<>'[]'::JSONB OR metadata_json<>'{}'::JSONB \
+         OR content_rating IS NOT NULL AS has_metadata,artwork_bytes IS NOT NULL AS has_artwork \
+         FROM item_metadata WHERE item_id=$1 AND provider_key=$2 FOR UPDATE",
+    )
+    .bind(item.id)
+    .bind(&job.provider_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let has_metadata = existing
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("has_metadata"))
+        .transpose()?
+        .unwrap_or(false);
+    let has_artwork = existing
+        .as_ref()
+        .map(|row| row.try_get::<bool, _>("has_artwork"))
+        .transpose()?
+        .unwrap_or(false);
+    let update_metadata = job.refresh_metadata && (job.replace_metadata || !has_metadata);
+    let update_artwork = job.refresh_images && (job.replace_images || !has_artwork);
+
     match &outcome {
         PreparedOutcome::Write(write) => {
-            write_metadata(&mut tx, item.id, write.as_ref().clone()).await?
+            let mut write = write.as_ref().clone();
+            if !update_artwork {
+                write.artwork = ArtworkMutation::Keep;
+            }
+            write_metadata(&mut tx, item.id, write, update_metadata).await?
         }
         PreparedOutcome::Delete => {
-            sqlx::query("DELETE FROM item_metadata WHERE item_id=$1 AND provider_key=$2")
-                .bind(item.id)
-                .bind(&job.provider_key)
-                .execute(&mut *tx)
-                .await?;
+            if update_metadata && (job.provider_key != "local-nfo" || update_artwork) {
+                sqlx::query("DELETE FROM item_metadata WHERE item_id=$1 AND provider_key=$2")
+                    .bind(item.id)
+                    .bind(&job.provider_key)
+                    .execute(&mut *tx)
+                    .await?;
+            } else if job.provider_key == "local-nfo" {
+                if update_metadata {
+                    clear_local_metadata(&mut tx, item.id).await?;
+                }
+                if update_artwork {
+                    sqlx::query("UPDATE item_metadata SET artwork_mime=NULL,artwork_size=NULL,artwork_sha256=NULL,artwork_bytes=NULL,updated_at=NOW() WHERE item_id=$1 AND provider_key='local-nfo'")
+                        .bind(item.id).execute(&mut *tx).await?;
+                }
+            }
         }
         PreparedOutcome::ClearLocalPolicy { .. } => {
             sqlx::query("UPDATE item_metadata SET content_rating=NULL,policy_rating_scale=NULL,policy_rating_value=NULL,updated_at=NOW() WHERE item_id=$1 AND provider_key='local-nfo'")
                 .bind(item.id).execute(&mut *tx).await?;
         }
         PreparedOutcome::ClearLocalMetadata => {
-            sqlx::query("UPDATE item_metadata SET external_id=NULL,title=NULL,overview=NULL,premiere_date=NULL,genres='[]'::JSONB,metadata_json='{}'::JSONB,content_rating=NULL,policy_rating_scale=NULL,policy_rating_value=NULL,updated_at=NOW() WHERE item_id=$1 AND provider_key='local-nfo'")
-                .bind(item.id).execute(&mut *tx).await?;
-            db::register_metadata_artists(&mut tx, item.id, "local-nfo").await?;
+            if update_metadata {
+                clear_local_metadata(&mut tx, item.id).await?;
+            }
         }
         PreparedOutcome::Failure { .. } | PreparedOutcome::NoChange => {}
     }
@@ -1027,6 +1079,7 @@ async fn write_metadata(
     tx: &mut Transaction<'_, Postgres>,
     item_id: Uuid,
     write: MetadataWrite,
+    update_metadata: bool,
 ) -> Result<(), sqlx::Error> {
     let provider_key = write.provider_key.clone();
     let (art_mime, art_size, art_hash, art_bytes, art_action) = match write.artwork {
@@ -1044,7 +1097,7 @@ async fn write_metadata(
             2_i16,
         ),
     };
-    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,external_id,title,overview,premiere_date,genres,metadata_json,content_rating,policy_rating_scale,policy_rating_value,artwork_mime,artwork_size,artwork_sha256,artwork_bytes,attribution_name,attribution_url,attribution_license,source_library_id,source_path_hash,source_size_bytes,source_date_modified) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $10::smallint IS NULL THEN NULL ELSE 'US-MPAA-v1' END,$10,$11,$12,$13,$14,$15,$16,$17,$19,$20,$21,$22) ON CONFLICT(item_id,provider_key) DO UPDATE SET external_id=EXCLUDED.external_id,title=EXCLUDED.title,overview=EXCLUDED.overview,premiere_date=EXCLUDED.premiere_date,genres=EXCLUDED.genres,metadata_json=EXCLUDED.metadata_json,content_rating=EXCLUDED.content_rating,policy_rating_scale=EXCLUDED.policy_rating_scale,policy_rating_value=EXCLUDED.policy_rating_value,artwork_mime=CASE WHEN $18=0 THEN item_metadata.artwork_mime WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_mime END,artwork_size=CASE WHEN $18=0 THEN item_metadata.artwork_size WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_size END,artwork_sha256=CASE WHEN $18=0 THEN item_metadata.artwork_sha256 WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_sha256 END,artwork_bytes=CASE WHEN $18=0 THEN item_metadata.artwork_bytes WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_bytes END,attribution_name=EXCLUDED.attribution_name,attribution_url=EXCLUDED.attribution_url,attribution_license=EXCLUDED.attribution_license,source_library_id=EXCLUDED.source_library_id,source_path_hash=EXCLUDED.source_path_hash,source_size_bytes=EXCLUDED.source_size_bytes,source_date_modified=EXCLUDED.source_date_modified,updated_at=NOW()")
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,external_id,title,overview,premiere_date,genres,metadata_json,content_rating,policy_rating_scale,policy_rating_value,artwork_mime,artwork_size,artwork_sha256,artwork_bytes,attribution_name,attribution_url,attribution_license,source_library_id,source_path_hash,source_size_bytes,source_date_modified) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $10::smallint IS NULL THEN NULL ELSE 'US-MPAA-v1' END,$10,$11,$12,$13,$14,$15,$16,$17,$19,$20,$21,$22) ON CONFLICT(item_id,provider_key) DO UPDATE SET external_id=CASE WHEN $23 THEN EXCLUDED.external_id ELSE item_metadata.external_id END,title=CASE WHEN $23 THEN EXCLUDED.title ELSE item_metadata.title END,overview=CASE WHEN $23 THEN EXCLUDED.overview ELSE item_metadata.overview END,premiere_date=CASE WHEN $23 THEN EXCLUDED.premiere_date ELSE item_metadata.premiere_date END,genres=CASE WHEN $23 THEN EXCLUDED.genres ELSE item_metadata.genres END,metadata_json=CASE WHEN $23 THEN EXCLUDED.metadata_json ELSE item_metadata.metadata_json END,content_rating=CASE WHEN $23 THEN EXCLUDED.content_rating ELSE item_metadata.content_rating END,policy_rating_scale=CASE WHEN $23 THEN EXCLUDED.policy_rating_scale ELSE item_metadata.policy_rating_scale END,policy_rating_value=CASE WHEN $23 THEN EXCLUDED.policy_rating_value ELSE item_metadata.policy_rating_value END,artwork_mime=CASE WHEN $18=0 THEN item_metadata.artwork_mime WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_mime END,artwork_size=CASE WHEN $18=0 THEN item_metadata.artwork_size WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_size END,artwork_sha256=CASE WHEN $18=0 THEN item_metadata.artwork_sha256 WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_sha256 END,artwork_bytes=CASE WHEN $18=0 THEN item_metadata.artwork_bytes WHEN $18=1 THEN NULL ELSE EXCLUDED.artwork_bytes END,attribution_name=CASE WHEN $23 THEN EXCLUDED.attribution_name ELSE item_metadata.attribution_name END,attribution_url=CASE WHEN $23 THEN EXCLUDED.attribution_url ELSE item_metadata.attribution_url END,attribution_license=CASE WHEN $23 THEN EXCLUDED.attribution_license ELSE item_metadata.attribution_license END,source_library_id=CASE WHEN $23 THEN EXCLUDED.source_library_id ELSE item_metadata.source_library_id END,source_path_hash=CASE WHEN $23 THEN EXCLUDED.source_path_hash ELSE item_metadata.source_path_hash END,source_size_bytes=CASE WHEN $23 THEN EXCLUDED.source_size_bytes ELSE item_metadata.source_size_bytes END,source_date_modified=CASE WHEN $23 THEN EXCLUDED.source_date_modified ELSE item_metadata.source_date_modified END,updated_at=NOW()")
         .bind(item_id)
         .bind(write.provider_key)
         .bind(write.external_id)
@@ -1067,9 +1120,20 @@ async fn write_metadata(
         .bind(write.source.as_ref().map(|source| db::path_hash(&source.path)))
         .bind(write.source.as_ref().map(|source| source.size_bytes))
         .bind(write.source.as_ref().map(|source| source.date_modified))
+        .bind(update_metadata)
         .execute(&mut **tx)
         .await?;
     db::register_metadata_artists(tx, item_id, &provider_key).await?;
+    Ok(())
+}
+
+async fn clear_local_metadata(
+    tx: &mut Transaction<'_, Postgres>,
+    item_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE item_metadata SET external_id=NULL,title=NULL,overview=NULL,premiere_date=NULL,genres='[]'::JSONB,metadata_json='{}'::JSONB,content_rating=NULL,policy_rating_scale=NULL,policy_rating_value=NULL,updated_at=NOW() WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(item_id).execute(&mut **tx).await?;
+    db::register_metadata_artists(tx, item_id, "local-nfo").await?;
     Ok(())
 }
 
@@ -1334,6 +1398,10 @@ mod tests {
             upper_item_id: Some(item.id),
             batch_limit: 250,
             attempt_count: 1,
+            refresh_metadata: true,
+            refresh_images: true,
+            replace_metadata: true,
+            replace_images: true,
         };
         sqlx::query("INSERT INTO metadata_refresh_runs(id,scope_kind,scope_library_id,scope_library_name,provider_key,status,claimed_run_id,upper_item_id,attempt_count) VALUES ($1,'library',$2,'Audio snapshot test','embedded-audio','running',$3,$4,1)")
             .bind(job.id).bind(library_id).bind(run_id).bind(item.id).execute(&pool).await.unwrap();

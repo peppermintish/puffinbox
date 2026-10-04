@@ -6,6 +6,24 @@ state in PostgreSQL; ordinary item responses read a bounded page of those
 results in one batch query. `GET /Items`, `GET /Items/{itemId}`, and search
 hints expose the supported display fields directly on each item.
 
+Administrators can also use Jellyfin's `POST /Items/{itemId}/Refresh` for local
+metadata and images. Both refresh modes default to `None`. `Default` reloads
+local inputs; `FullRefresh` retains existing provider metadata or artwork
+unless its corresponding replacement flag is true. Missing provider values
+can be populated without replacement. `None` and `ValidationOnly` authenticate
+and validate the enabled catalogue item without importing local fields. The
+observed existing-album behavior and its limits are recorded in
+[the item refresh contract](jellyfin12-item-refresh.md).
+
+Metadata and image work are independent and remain part of the persistent job.
+A metadata-only refresh keeps previously imported artwork, including when its
+sidecar is missing. An image-only refresh leaves metadata and parental labels
+unchanged. Repeated requests reuse an active item/provider job; a request
+during processing schedules another pass. Audio metadata work also requests
+the embedded tag provider. Remote providers and plugins retain the explicit
+extension endpoint and its consent requirements. Trickplay regeneration is
+unsupported and returns an error.
+
 For each display field, Puffinbox prefers local NFO data, then current embedded
 audio tags, then enabled plugins
 whose installed module and manifest hashes still match, then TVMaze data.

@@ -139,6 +139,84 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     .unwrap()
     .token;
     let router = api::router(state.clone());
+
+    // The public item refresh route must validate the item even when its
+    // default modes request no metadata or image changes.
+    let refresh_uri = format!("/Items/{classified_item_id}/Refresh");
+    let noop = call_raw(&router, "POST", &refresh_uri, &token, None, None).await;
+    assert_eq!(noop.status(), StatusCode::NO_CONTENT);
+    let absent = call_raw(
+        &router,
+        "POST",
+        &format!("/Items/{}/Refresh", Uuid::new_v4()),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(absent.status(), StatusCode::NOT_FOUND);
+    for query in [
+        "metadataRefreshMode=Invalid",
+        "imageRefreshMode=Invalid",
+        "replaceAllMetadata=Invalid",
+        "regenerateTrickplay=true",
+    ] {
+        let response = call_raw(
+            &router,
+            "POST",
+            &format!("{refresh_uri}?{query}"),
+            &token,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+    }
+    let import_uri = format!(
+        "{refresh_uri}?metadataRefreshMode=fullrefresh&imageRefreshMode=2&replaceAllMetadata=TRUE"
+    );
+    for _ in 0..2 {
+        let response = call_raw(&router, "POST", &import_uri, &token, None, None).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .is_empty()
+        );
+    }
+    let initial_jobs: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM metadata_refresh_runs WHERE scope_item_id=$1 AND provider_key='local-nfo' AND status='queued'",
+    )
+    .bind(classified_item_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(initial_jobs.len(), 1, "duplicate refresh must coalesce");
+    let policy_job = initial_jobs[0];
+    sqlx::query("UPDATE metadata_refresh_runs SET status='running',claimed_run_id=$2 WHERE id=$1")
+        .bind(policy_job)
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let repeated = call_raw(&router, "POST", &import_uri, &token, None, None).await;
+    assert_eq!(repeated.status(), StatusCode::NO_CONTENT);
+    let rerun: bool =
+        sqlx::query_scalar("SELECT rerun_requested FROM metadata_refresh_runs WHERE id=$1")
+            .bind(policy_job)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        rerun,
+        "a request during a running refresh must survive its completion"
+    );
+    sqlx::query("UPDATE metadata_refresh_runs SET status='queued',claimed_run_id=NULL,rerun_requested=FALSE WHERE id=$1")
+        .bind(policy_job).execute(&pool).await.unwrap();
     metadata::start_worker(state.clone());
 
     let static_response = router
@@ -215,7 +293,6 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     assert_eq!(offline_cache.status(), StatusCode::OK);
 
     let poster_job = enqueue_local_refresh(&router, &token, poster_item_id).await;
-    let policy_job = enqueue_local_refresh(&router, &token, classified_item_id).await;
     wait_for_completed_job(&pool, poster_job).await;
     wait_for_completed_job(&pool, policy_job).await;
 
@@ -322,6 +399,8 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     .token;
     let denied_image = call_raw(&router, "GET", &image_uri, &denied_token, None, None).await;
     assert_eq!(denied_image.status(), StatusCode::NOT_FOUND);
+    let denied_refresh = call_raw(&router, "POST", &refresh_uri, &denied_token, None, None).await;
+    assert_eq!(denied_refresh.status(), StatusCode::FORBIDDEN);
 
     let (classified_status, classified_body) = call_json(
         &router,
@@ -339,6 +418,15 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     assert_eq!(classified_body["Tags"], json!(["Sidecar tag"]));
     assert_eq!(classified_body["ProductionYear"], 2020);
     assert_eq!(classified_body["OfficialRating"], "PG-13");
+    verify_item_refresh_options(
+        &router,
+        &pool,
+        &token,
+        classified_item_id,
+        &root_dir,
+        &poster_bytes,
+    )
+    .await;
     let (filters_status, filters_body) =
         call_json(&router, "GET", "/Items/Filters", &token, None, None).await;
     assert_eq!(filters_status, StatusCode::OK);
@@ -631,6 +719,184 @@ async fn enqueue_local_refresh(router: &axum::Router, token: &str, item_id: Uuid
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     Uuid::parse_str(body["Jobs"][0]["Id"].as_str().unwrap()).unwrap()
+}
+
+async fn enqueue_item_refresh(
+    router: &axum::Router,
+    pool: &sqlx::PgPool,
+    token: &str,
+    item_id: Uuid,
+    query: &str,
+) -> Uuid {
+    let response = call_raw(
+        router,
+        "POST",
+        &format!("/Items/{item_id}/Refresh?{query}"),
+        token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let id = sqlx::query_scalar(
+        "SELECT id FROM metadata_refresh_runs WHERE scope_item_id=$1 AND provider_key='local-nfo' ORDER BY created_at DESC,id DESC LIMIT 1",
+    ).bind(item_id).fetch_one(pool).await.unwrap();
+    wait_for_completed_job(pool, id).await;
+    id
+}
+
+async fn verify_item_refresh_options(
+    router: &axum::Router,
+    pool: &sqlx::PgPool,
+    token: &str,
+    item_id: Uuid,
+    root: &std::path::Path,
+    artwork: &[u8],
+) {
+    let nfo_path = root.join("Classified Movie.nfo");
+    let poster_path = root.join("Classified Movie-poster.png");
+    let original = fs::read(&nfo_path).unwrap();
+    let changed = String::from_utf8(original.clone())
+        .unwrap()
+        .replace("Classified Provider Title", "Changed local title");
+    fs::write(&nfo_path, &changed).unwrap();
+    fs::remove_file(&poster_path).unwrap();
+    let id = enqueue_item_refresh(
+        router,
+        pool,
+        token,
+        item_id,
+        "metadataRefreshMode=Default&imageRefreshMode=None",
+    )
+    .await;
+    let flags: (bool, bool) = sqlx::query_as(
+        "SELECT refresh_metadata,refresh_images FROM metadata_refresh_runs WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(flags, (true, false));
+    let (title,bytes): (Option<String>,Option<Vec<u8>>) = sqlx::query_as("SELECT title,artwork_bytes FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(item_id).fetch_one(pool).await.unwrap();
+    assert_eq!(title.as_deref(), Some("Changed local title"));
+    assert_eq!(
+        bytes.as_deref(),
+        Some(artwork),
+        "metadata-only refresh must retain missing artwork"
+    );
+
+    let further = changed.replace("Changed local title", "Further local title");
+    fs::write(&nfo_path, &further).unwrap();
+    enqueue_item_refresh(
+        router,
+        pool,
+        token,
+        item_id,
+        "metadataRefreshMode=FullRefresh&imageRefreshMode=None&replaceAllMetadata=false",
+    )
+    .await;
+    let title: Option<String> = sqlx::query_scalar(
+        "SELECT title FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'",
+    )
+    .bind(item_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(title.as_deref(), Some("Changed local title"));
+    let before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM metadata_refresh_runs WHERE scope_item_id=$1")
+            .bind(item_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    for mode in ["None", "ValidationOnly"] {
+        let response = call_raw(
+            router,
+            "POST",
+            &format!("/Items/{item_id}/Refresh?metadataRefreshMode={mode}&imageRefreshMode=None"),
+            token,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+    let after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM metadata_refresh_runs WHERE scope_item_id=$1")
+            .bind(item_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        before, after,
+        "disabled import modes must not schedule metadata writes"
+    );
+
+    enqueue_item_refresh(
+        router,
+        pool,
+        token,
+        item_id,
+        "metadataRefreshMode=3&imageRefreshMode=0&replaceAllMetadata=true",
+    )
+    .await;
+    let title: Option<String> = sqlx::query_scalar(
+        "SELECT title FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'",
+    )
+    .bind(item_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(title.as_deref(), Some("Further local title"));
+    fs::write(&poster_path, artwork).unwrap();
+    fs::write(&nfo_path, changed).unwrap();
+    enqueue_item_refresh(
+        router,
+        pool,
+        token,
+        item_id,
+        "metadataRefreshMode=None&imageRefreshMode=Default",
+    )
+    .await;
+    let title: Option<String> = sqlx::query_scalar(
+        "SELECT title FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'",
+    )
+    .bind(item_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        title.as_deref(),
+        Some("Further local title"),
+        "image-only work must not read changed metadata"
+    );
+
+    fs::remove_file(&nfo_path).unwrap();
+    enqueue_item_refresh(
+        router,
+        pool,
+        token,
+        item_id,
+        "metadataRefreshMode=Default&imageRefreshMode=None",
+    )
+    .await;
+    let (title,bytes): (Option<String>,Option<Vec<u8>>) = sqlx::query_as("SELECT title,artwork_bytes FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(item_id).fetch_one(pool).await.unwrap();
+    assert_eq!(
+        title, None,
+        "missing local metadata must clear stale fields"
+    );
+    assert_eq!(bytes.as_deref(), Some(artwork));
+    fs::write(&nfo_path, original).unwrap();
+    enqueue_item_refresh(
+        router,
+        pool,
+        token,
+        item_id,
+        "metadataRefreshMode=FullRefresh&imageRefreshMode=None&replaceAllMetadata=true",
+    )
+    .await;
 }
 
 async fn wait_for_completed_job(pool: &sqlx::PgPool, id: Uuid) {
