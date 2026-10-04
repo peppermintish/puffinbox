@@ -153,11 +153,7 @@ pub(crate) async fn music_artist_page(
     }
     let mut builder = QueryBuilder::<Postgres>::new("");
     super::push_item_source(&mut builder, user, scope, parent);
-    builder.push(if super::item_cte(parent, scope.recursive) {
-        ", visible_catalog_nodes AS ("
-    } else {
-        "WITH visible_catalog_nodes AS ("
-    });
+    builder.push(", visible_catalog_nodes AS (");
     let rating = super::policy_rating_sql("i");
     builder.push(format!(
         "SELECT i.id,i.library_id,i.parent_id,i.name,i.sort_name,i.item_type,i.path,\

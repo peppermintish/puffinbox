@@ -40,6 +40,32 @@ pub(crate) fn title(item: &str) -> String {
     )
 }
 
+// The caller supplies a permission-filtered, inlined visible_album_tracks CTE.
+// A folder keeps its identity; only a single agreed current embedded name can
+// supply its title. Empty tags, stale snapshots and conflicting names do not.
+pub(crate) fn catalog_title(item: &str) -> String {
+    let provider_title = title(item);
+    format!(
+        "COALESCE({provider_title}, (SELECT CASE WHEN COUNT(DISTINCT \
+         (album_name_metadata.metadata_json->>'album') COLLATE \"C\")=1 THEN \
+         MIN((album_name_metadata.metadata_json->>'album') COLLATE \"C\") END \
+         FROM visible_album_tracks album_name_track JOIN items album_name_parent \
+         ON album_name_parent.id=album_name_track.parent_id \
+         AND album_name_parent.library_id=album_name_track.library_id \
+         AND album_name_parent.item_type='MusicAlbum' \
+         JOIN item_metadata album_name_metadata ON album_name_metadata.item_id=album_name_track.id \
+         AND album_name_metadata.provider_key='embedded-audio' \
+         AND album_name_track.library_id=album_name_metadata.source_library_id \
+         AND album_name_track.path_hash=album_name_metadata.source_path_hash \
+         AND album_name_track.size_bytes=album_name_metadata.source_size_bytes \
+         AND album_name_track.date_modified=album_name_metadata.source_date_modified \
+         WHERE album_name_parent.id={item} \
+         AND jsonb_typeof(album_name_metadata.metadata_json->'album')='string' \
+         AND octet_length(btrim(album_name_metadata.metadata_json->>'album')) BETWEEN 1 AND 512 \
+         AND (album_name_metadata.metadata_json->>'album') !~ '[[:cntrl:]]'))"
+    )
+}
+
 pub(crate) fn genres(item: &str) -> String {
     preferred(item, "m.genres", "jsonb_array_length(m.genres)>0")
 }

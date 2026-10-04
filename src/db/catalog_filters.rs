@@ -39,11 +39,7 @@ pub(crate) async fn catalog_facets(
     }
     let mut builder = QueryBuilder::<Postgres>::new("");
     super::push_item_source(&mut builder, user, query, parent);
-    builder.push(if super::item_cte(parent, query.recursive) {
-        ", selected AS ("
-    } else {
-        "WITH selected AS ("
-    });
+    builder.push(", selected AS (");
     builder.push(format!(
         "SELECT {} AS genres, {} AS tags, {} AS rating, {} AS year \
          FROM items i JOIN libraries l ON l.id=i.library_id",

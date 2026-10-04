@@ -683,6 +683,387 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     let _ = fs::remove_dir_all(root_dir);
 }
 
+#[tokio::test]
+#[ignore = "requires a disposable PostgreSQL database via PUFFINBOX_TEST_DATABASE_URL"]
+async fn album_names_follow_current_permitted_tags_before_search_sort_and_paging() {
+    let url = env::var("PUFFINBOX_TEST_DATABASE_URL").unwrap();
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let schema = format!("puffinbox_album_names_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    let selected = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .after_connect(move |connection, _| {
+            let selected = selected.clone();
+            Box::pin(async move {
+                sqlx::query(&format!("SET search_path TO \"{selected}\""))
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    common::apply_migrations(&pool).await.unwrap();
+    let run = Uuid::new_v4();
+    db::activate_run(&pool, run).await.unwrap();
+    let library = Uuid::new_v4();
+    let private = Uuid::new_v4();
+    for (id, name) in [
+        (library, "Visible album names"),
+        (private, "Private album names"),
+    ] {
+        db::insert_library(
+            &pool,
+            run,
+            id,
+            name,
+            "music",
+            &[PathBuf::from("/media")],
+            true,
+        )
+        .await
+        .unwrap();
+    }
+    let viewer_id = Uuid::new_v4();
+    let admin_id = Uuid::new_v4();
+    for (id, name, administrator) in [
+        (viewer_id, "album-name-viewer", false),
+        (admin_id, "album-name-admin", true),
+    ] {
+        sqlx::query("INSERT INTO users(id,username,username_norm,password_hash,is_admin,enable_remote_access,restrict_libraries,max_parental_rating) VALUES($1,$2,$2,'unused-synthetic-hash',$3,TRUE,TRUE,50)")
+            .bind(id).bind(name).bind(administrator).execute(&pool).await.unwrap();
+    }
+    sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES($1,$2)")
+        .bind(viewer_id)
+        .bind(library)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let album = Uuid::new_v4();
+    let middle = Uuid::new_v4();
+    let private_album = Uuid::new_v4();
+    for (id, scope, name) in [
+        (album, library, "Z Folder Album"),
+        (middle, library, "Middle Album"),
+        (private_album, private, "Private Album"),
+    ] {
+        let path = format!("/media/{id}");
+        sqlx::query("INSERT INTO items(id,library_id,name,sort_name,item_type,path,path_hash) VALUES($1,$2,$3,$4,'MusicAlbum',$5,$6)")
+            .bind(id).bind(scope).bind(name).bind(name.to_lowercase()).bind(&path)
+            .bind(db::path_hash(&path)).execute(&pool).await.unwrap();
+    }
+    let first = Uuid::new_v4();
+    let plain = Uuid::new_v4();
+    let hidden = Uuid::new_v4();
+    let restricted = Uuid::new_v4();
+    let foreign = Uuid::new_v4();
+    let middle_track = Uuid::new_v4();
+    for (id, parent, scope, filename, rating, tag) in [
+        (
+            first,
+            album,
+            library,
+            "first.flac",
+            10,
+            Some("Alpha Tagged Album"),
+        ),
+        (plain, album, library, "plain.flac", 10, None),
+        (
+            hidden,
+            album,
+            library,
+            ".hidden.flac",
+            10,
+            Some("Hidden Album"),
+        ),
+        (
+            restricted,
+            album,
+            library,
+            "restricted.flac",
+            80,
+            Some("Restricted Album"),
+        ),
+        (
+            foreign,
+            private_album,
+            private,
+            "foreign.flac",
+            10,
+            Some("Foreign Album"),
+        ),
+        (middle_track, middle, library, "middle.flac", 10, None),
+    ] {
+        let path = format!("/media/{parent}/{filename}");
+        sqlx::query("INSERT INTO items(id,library_id,parent_id,name,sort_name,item_type,path,path_hash,size_bytes,date_modified,rating) VALUES($1,$2,$3,$4,$4,'Audio',$5,$6,1,NOW(),$7)")
+            .bind(id).bind(scope).bind(parent).bind(filename).bind(&path)
+            .bind(db::path_hash(&path)).bind(rating).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO item_metadata(item_id,provider_key,metadata_json,source_library_id,source_path_hash,source_size_bytes,source_date_modified) SELECT id,'embedded-audio',$2,library_id,path_hash,size_bytes,date_modified FROM items WHERE id=$1")
+            .bind(id).bind(Json(json!({"album":tag,"artists":[],"albumArtists":[]})))
+            .execute(&pool).await.unwrap();
+        // Authorization reads the reviewed NFO policy scale, not items.rating.
+        sqlx::query("INSERT INTO item_metadata(item_id,provider_key,policy_rating_scale,policy_rating_value) VALUES($1,'local-nfo','US-MPAA-v1',$2)")
+            .bind(id).bind(rating as i16).execute(&pool).await.unwrap();
+    }
+    // A stale cached source from another library cannot name this album.
+    sqlx::query("UPDATE item_metadata SET source_library_id=$2,metadata_json='{\"album\":\"Foreign Album\"}' WHERE item_id=$1 AND provider_key='embedded-audio'")
+        .bind(plain).bind(private).execute(&pool).await.unwrap();
+    let config = Config {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        public_base_url: None,
+        database_url: url,
+        server_name: "Album-name test".to_owned(),
+        web_root: PathBuf::from("web"),
+        data_dir: PathBuf::from("/tmp"),
+        ffmpeg_path: None,
+        max_scan_workers: 1,
+        max_page_size: 100,
+        access_token_lifetime_hours: 24,
+        cookie_secure: false,
+        cors_origins: vec![],
+        trusted_proxies: vec![],
+        local_networks: vec!["127.0.0.0/8".parse().unwrap()],
+        setup_token: None,
+        bootstrap_admin_username: None,
+        bootstrap_admin_password: None,
+    };
+    let state = AppState::new_for_run(pool.clone(), Arc::new(config), Uuid::new_v4(), run, None);
+    let viewer = db::get_user(&pool, viewer_id).await.unwrap().unwrap();
+    let admin = db::get_user(&pool, admin_id).await.unwrap().unwrap();
+    let token = auth::issue_token(&state, &viewer, "album-name-viewer", "test", "test")
+        .await
+        .unwrap()
+        .token;
+    let admin_token = auth::issue_token(&state, &admin, "album-name-admin", "test", "test")
+        .await
+        .unwrap()
+        .token;
+    let router = api::router(state.clone());
+    let detail = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{album}"),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(detail.0, StatusCode::OK);
+    assert_eq!(detail.1["Id"], album.to_string());
+    assert_eq!(detail.1["Name"], "Alpha Tagged Album");
+    assert_eq!(detail.1["SortName"], "alpha tagged album");
+    let admin_detail = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{album}"),
+        &admin_token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        admin_detail.1["Name"], "Z Folder Album",
+        "conflicting permitted names retain the folder name"
+    );
+    for sort in ["Name", "SortName", "Album", "IndexNumber"] {
+        let (_, page) = call_json(&router, "GET", &format!("/Items?IncludeItemTypes=MusicAlbum&Recursive=true&SortBy={sort}&Limit=1&StartIndex=0"), &token, None, None).await;
+        assert_eq!(page["TotalRecordCount"], 2, "{sort}: {page}");
+        assert_eq!(page["Items"][0]["Id"], album.to_string(), "{sort}: {page}");
+        let (_, page) = call_json(&router, "GET", &format!("/Users/{viewer_id}/Items?IncludeItemTypes=MusicAlbum&Recursive=true&SortBy={sort}&Limit=1&StartIndex=1"), &token, None, None).await;
+        assert_eq!(page["TotalRecordCount"], 2);
+        assert_eq!(page["Items"][0]["Id"], middle.to_string());
+    }
+    for (direction, expected) in [
+        ("Ascending", [first, plain, middle_track]),
+        ("Descending", [middle_track, first, plain]),
+    ] {
+        let (status, page) = call_json(
+            &router,
+            "GET",
+            &format!(
+                "/Items?Ids={first},{plain},{middle_track}&SortBy=Album&SortOrder={direction}"
+            ),
+            &token,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let ids: Vec<_> = page["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["Id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            expected.map(|id| id.to_string()),
+            "each untagged track must inherit its own parent album for {direction} sorting"
+        );
+    }
+    for (search, count) in [
+        ("Alpha", 1),
+        ("Hidden", 0),
+        ("Restricted", 0),
+        ("Foreign", 0),
+    ] {
+        let (status, page) = call_json(
+            &router,
+            "GET",
+            &format!("/Items?IncludeItemTypes=MusicAlbum&Recursive=true&SearchTerm={search}"),
+            &token,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["TotalRecordCount"], count, "{search}: {page}");
+    }
+    let query = library::ItemQuery {
+        exact_name: Some("Alpha Tagged Album".to_owned()),
+        recursive: true,
+        limit: 100,
+        enable_total_record_count: true,
+        sort_by: "Name".to_owned(),
+        sort_order: "Ascending".to_owned(),
+        ..Default::default()
+    };
+    let (items, count) = db::browse_items(&pool, &viewer, query).await.unwrap();
+    assert_eq!(count, Some(1));
+    assert_eq!(items[0].id, album);
+    sqlx::query(
+        "INSERT INTO user_item_data(user_id,item_id,is_favorite,play_count) VALUES($1,$2,TRUE,7)",
+    )
+    .bind(viewer_id)
+    .bind(album)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let saved: Value = sqlx::query_scalar(
+        "SELECT to_jsonb(ud) FROM user_item_data ud WHERE user_id=$1 AND item_id=$2",
+    )
+    .bind(viewer_id)
+    .bind(album)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,title) VALUES($1,'local-nfo','NFO Album Title')")
+        .bind(album).execute(&pool).await.unwrap();
+    let (_, detail) = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{album}"),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(detail["Name"], "NFO Album Title");
+    assert_eq!(detail["SortName"], "nfo album title");
+    sqlx::query("DELETE FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(album)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for value in [
+        json!(null),
+        json!(12),
+        json!(""),
+        json!("   "),
+        json!("Bad\nAlbum"),
+        json!("x".repeat(513)),
+    ] {
+        sqlx::query("UPDATE item_metadata SET metadata_json=jsonb_build_object('album',$2::jsonb) WHERE item_id=$1 AND provider_key='embedded-audio'")
+            .bind(first).bind(Json(value)).execute(&pool).await.unwrap();
+        let (_, detail) = call_json(
+            &router,
+            "GET",
+            &format!("/Items/{album}"),
+            &token,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(detail["Name"], "Z Folder Album");
+    }
+    sqlx::query("UPDATE item_metadata SET metadata_json='{\"album\":\"Alpha Tagged Album\"}',source_size_bytes=2 WHERE item_id=$1 AND provider_key='embedded-audio'")
+        .bind(first).execute(&pool).await.unwrap();
+    let (_, detail) = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{album}"),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        detail["Name"], "Z Folder Album",
+        "stale metadata cannot name the parent"
+    );
+    sqlx::query("UPDATE item_metadata SET source_size_bytes=1 WHERE item_id=$1 AND provider_key='embedded-audio'")
+        .bind(first).execute(&pool).await.unwrap();
+    let (_, detail) = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{album}"),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(detail["Name"], "Alpha Tagged Album");
+    assert_eq!(detail["UserData"]["IsFavorite"], true);
+    assert_eq!(detail["UserData"]["PlayCount"], 7);
+    let after: Value = sqlx::query_scalar(
+        "SELECT to_jsonb(ud) FROM user_item_data ud WHERE user_id=$1 AND item_id=$2",
+    )
+    .bind(viewer_id)
+    .bind(album)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        saved, after,
+        "display changes preserve the album identity and saved data"
+    );
+    sqlx::query("UPDATE libraries SET enabled=FALSE WHERE id=$1")
+        .bind(library)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _) = call_json(
+        &router,
+        "GET",
+        &format!("/Items/{album}"),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    state
+        .shutdown_requested
+        .store(true, std::sync::atomic::Ordering::Release);
+    drop(router);
+    drop(state);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    admin_pool.close().await;
+}
+
 async fn insert_item(pool: &sqlx::PgPool, id: Uuid, library_id: Uuid, path: &std::path::Path) {
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     let path = path.to_str().unwrap().to_owned();

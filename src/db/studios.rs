@@ -42,11 +42,7 @@ pub(crate) async fn studio_page(
     }
     let mut builder = QueryBuilder::<Postgres>::new("");
     super::push_item_source(&mut builder, user, scope, parent);
-    builder.push(if super::item_cte(parent, scope.recursive) {
-        ", selected AS ("
-    } else {
-        "WITH selected AS ("
-    });
+    builder.push(", selected AS (");
     builder.push(format!(
         "SELECT i.id,i.item_type,{} AS studios FROM items i JOIN libraries l ON l.id=i.library_id",
         catalog_sql::studios("i.id")

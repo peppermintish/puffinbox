@@ -201,3 +201,13 @@ selected features, source/configuration hashes and notice bytes. Notice
 generation copies it to `TRACING-DATETIME-MIT.txt`; the existing builder-musl
 notice did not contain this exact notice. This resolves a specific attribution
 gap, without clearing every source file, retained constant or runtime input.
+
+## Album-name image notice check
+
+The current static server `523c195b` still defines 41 generated Rust Unicode
+namespace symbols. Its retained image contains the exact supplemental timestamp
+MIT notice (`e239ef69`), verified against the reviewed source bytes. Source guards,
+package audits and full notice generation pass without exceptions. This image
+check does not clear standard-library, native, startup, compiler-builtins,
+anonymous or inlined inputs. Exact records are under
+`.local/album-tag-name-client-20261004`; all release gates remain open.

@@ -2327,19 +2327,14 @@ fn push_item_source(
             field.trim().eq_ignore_ascii_case("ParentIndexNumber")
                 || field.trim().eq_ignore_ascii_case("Album")
         });
-    if tree || catalog_nodes {
-        builder.push("WITH RECURSIVE ");
-    }
+    push_visible_album_tracks(builder, user);
     if tree {
-        builder.push("tree(id, library_id, path, depth) AS (SELECT i.id, i.library_id, ARRAY[i.id], 0 FROM items i WHERE i.id = ")
+        builder.push(", tree(id, library_id, path, depth) AS (SELECT i.id, i.library_id, ARRAY[i.id], 0 FROM items i WHERE i.id = ")
             .push_bind(parent.and_then(|p| p.1).expect("CTE parent"))
             .push(" UNION ALL SELECT child.id, child.library_id, tree.path || child.id, tree.depth + 1 FROM items child JOIN tree ON child.parent_id = tree.id WHERE child.library_id=tree.library_id AND NOT child.id = ANY(tree.path)) ");
     }
     if catalog_nodes {
-        if tree {
-            builder.push(", ");
-        }
-        builder.push("visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type,i.size_bytes,i.date_modified,i.path_hash FROM items i JOIN libraries l ON l.id=i.library_id");
+        builder.push(", visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type,i.size_bytes,i.date_modified,i.path_hash FROM items i JOIN libraries l ON l.id=i.library_id");
         push_item_conditions(builder, user, &ItemQuery::default(), None, true);
         builder.push(" AND i.item_type IN ('Audio','MusicArtist','MusicAlbum','Season')) ");
         if !query.artist_ids.is_empty()
@@ -2350,6 +2345,18 @@ fn push_item_source(
             builder.push(music_credits::CREDIT_CTES);
         }
     }
+}
+
+pub(crate) fn push_visible_album_tracks(
+    builder: &mut QueryBuilder<'_, Postgres>,
+    user: &UserRecord,
+) {
+    // Inline this relation so correlated album/library predicates can use the
+    // existing parent index rather than materialize the whole audio catalog.
+    // Unused CTEs are pruned for requests that do not need album names.
+    builder.push("WITH RECURSIVE visible_album_tracks AS NOT MATERIALIZED (SELECT i.id,i.parent_id,i.library_id,i.size_bytes,i.date_modified,i.path_hash FROM items i JOIN libraries l ON l.id=i.library_id");
+    push_item_conditions(builder, user, &ItemQuery::default(), None, true);
+    builder.push(" AND i.item_type='Audio') ");
 }
 
 fn push_item_conditions(
@@ -2419,15 +2426,18 @@ fn push_item_conditions(
         .filter(|v| !v.is_empty())
     {
         let title = crate::metadata::catalog_sql::title("candidate.item_id");
+        let album_title = crate::metadata::catalog_sql::catalog_title("i.id");
         builder
-            .push(" AND (i.search_document @@ plainto_tsquery('simple', ")
+            .push(" AND ((i.item_type<>'MusicAlbum' AND i.search_document @@ plainto_tsquery('simple', ")
             .push_bind(search.to_owned())
-            .push(") OR (i.item_type='Audio' AND i.id IN (SELECT candidate.item_id FROM item_metadata candidate WHERE candidate.search_document @@ plainto_tsquery('simple', ")
+            .push(")) OR (i.item_type='Audio' AND i.id IN (SELECT candidate.item_id FROM item_metadata candidate WHERE candidate.search_document @@ plainto_tsquery('simple', ")
             .push_bind(search.to_owned())
-            .push(format!(") AND candidate.title={title}))) "));
+            .push(format!(") AND candidate.title={title})) OR (i.item_type='MusicAlbum' AND to_tsvector('simple',COALESCE({album_title},i.name)) @@ plainto_tsquery('simple', "))
+            .push_bind(search.to_owned())
+            .push("))) ");
     }
     if let Some(exact_name) = query.exact_name.as_deref() {
-        let title = crate::metadata::catalog_sql::title("i.id");
+        let title = crate::metadata::catalog_sql::catalog_title("i.id");
         builder
             .push(format!(" AND lower(COALESCE({title},i.name))=lower("))
             .push_bind(exact_name.to_owned())
@@ -2640,24 +2650,26 @@ async fn run_item_page(
                 "productionyear" => crate::metadata::catalog_sql::year("i.id"),
                 "album" => {
                     let embedded = crate::metadata::catalog_sql::album("i.id");
+                    let parent_title = crate::metadata::catalog_sql::catalog_title("album.id");
                     format!(
-                        "CASE WHEN i.item_type='MusicAlbum' THEN i.name WHEN i.item_type='Audio' THEN COALESCE({embedded}, \
-                    (SELECT album.name FROM visible_catalog_nodes album WHERE album.id=i.parent_id \
+                        "CASE WHEN i.item_type='Audio' THEN COALESCE({embedded}, \
+                    (SELECT COALESCE({parent_title},album.name) FROM visible_catalog_nodes album WHERE album.id=i.parent_id \
                     AND album.library_id=i.library_id AND album.item_type='MusicAlbum')) END"
                     )
                 }
                 "indexnumber" => crate::metadata::catalog_sql::index_number("i", false),
                 "parentindexnumber" => crate::metadata::catalog_sql::index_number("i", true),
                 "name" => {
-                    let title = crate::metadata::catalog_sql::title("i.id");
+                    let title = crate::metadata::catalog_sql::catalog_title("i.id");
                     format!(
-                        "CASE WHEN i.item_type='Audio' THEN lower(COALESCE({title},i.name)) WHEN i.item_type='MusicAlbum' THEN lower(i.name) ELSE i.name END"
+                        "CASE WHEN i.item_type IN ('Audio','MusicAlbum') THEN lower(COALESCE({title},i.name)) ELSE i.name END"
                     )
                 }
                 "sortname" => {
                     let music = crate::metadata::catalog_sql::music_sort_name("i");
+                    let title = crate::metadata::catalog_sql::catalog_title("i.id");
                     format!(
-                        "(CASE WHEN i.item_type='Audio' THEN {music} ELSE i.sort_name END) COLLATE \"C\""
+                        "(CASE WHEN i.item_type='Audio' THEN {music} WHEN i.item_type='MusicAlbum' THEN COALESCE(lower({title}),i.sort_name) ELSE i.sort_name END) COLLATE \"C\""
                     )
                 }
                 _ => "i.sort_name".to_owned(),
@@ -2672,20 +2684,22 @@ async fn run_item_page(
             };
             builder.push(column).push(" ").push(order).push(null_order);
         }
-        let numeric_order = query.sort_by.split(',').any(|field| {
+        let needs_name_tie = query.sort_by.split(',').any(|field| {
             field.trim().eq_ignore_ascii_case("IndexNumber")
                 || field.trim().eq_ignore_ascii_case("ParentIndexNumber")
+                || field.trim().eq_ignore_ascii_case("Album")
         });
         let explicit_sort_name = query
             .sort_by
             .split(',')
             .any(|field| field.trim().eq_ignore_ascii_case("SortName"));
-        if numeric_order && !explicit_sort_name {
-            // The observed numeric comparers keep the default name tie-break
-            // ascending even when the requested numeric direction is descending.
+        if needs_name_tie && !explicit_sort_name {
+            // Nullable album and numeric fields keep the default name tie-break
+            // ascending even when the requested primary direction is descending.
             let music = crate::metadata::catalog_sql::music_sort_name("i");
+            let title = crate::metadata::catalog_sql::catalog_title("i.id");
             builder.push(format!(
-                ", CASE WHEN i.item_type='Audio' THEN lower({music}) ELSE i.sort_name END ASC"
+                ", CASE WHEN i.item_type='Audio' THEN lower({music}) WHEN i.item_type='MusicAlbum' THEN COALESCE(lower({title}),i.sort_name) ELSE i.sort_name END ASC"
             ));
         }
     }

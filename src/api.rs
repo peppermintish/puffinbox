@@ -2697,9 +2697,14 @@ fn item_dto(
                 )
             })
             .or_else(|| {
-                matches!(item.item_type.as_str(), "MusicArtist" | "MusicAlbum")
-                    .then(|| item.sort_name.clone())
-            }),
+                (item.item_type == "MusicAlbum").then(|| {
+                    metadata
+                        .and_then(|metadata| metadata.name.as_deref())
+                        .map(str::to_lowercase)
+                        .unwrap_or_else(|| item.sort_name.clone())
+                })
+            })
+            .or_else(|| (item.item_type == "MusicArtist").then(|| item.sort_name.clone())),
         item_type: item.item_type.clone(),
         is_folder: db::is_folder_item_type(&item.item_type),
         media_type: crate::library::MediaType::for_item_type(&item.item_type)
@@ -3221,7 +3226,8 @@ pub(crate) async fn item_dtos_for_user(
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
     let user_data = db::item_user_data(&state.db, user.id, &item_ids).await?;
     let navigation = db::item_navigation_links(&state.db, user, &item_ids).await?;
-    let display_metadata = crate::metadata::load_display_metadata(&state.db, &item_ids).await?;
+    let display_metadata =
+        crate::metadata::load_display_metadata(&state.db, user, &item_ids).await?;
     let items = items
         .iter()
         .map(|item| {
@@ -4053,7 +4059,8 @@ pub(crate) async fn item_dto_for_user(
         .remove(&item_id)
         .map(|data| user_data_dto(&data, item_id, item.runtime_ticks));
     let navigation = db::item_navigation_links(&state.db, user, &[item_id]).await?;
-    let display_metadata = crate::metadata::load_display_metadata(&state.db, &[item_id]).await?;
+    let display_metadata =
+        crate::metadata::load_display_metadata(&state.db, user, &[item_id]).await?;
     Ok(item_dto(
         item,
         state.server_id,
@@ -4164,7 +4171,8 @@ async fn search_hints(
     let (items, total) = db::browse_items(&state.db, &user, query).await?;
     let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
     let navigation = db::item_navigation_links(&state.db, &user, &item_ids).await?;
-    let display_metadata = crate::metadata::load_display_metadata(&state.db, &item_ids).await?;
+    let display_metadata =
+        crate::metadata::load_display_metadata(&state.db, &user, &item_ids).await?;
     let search_hints = items
         .iter()
         .map(|item| {

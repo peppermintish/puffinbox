@@ -2,6 +2,50 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
+The album-name build passed all thirteen source checks: 258 Rust tests with
+zero failures and 29 ignored database cases, all 29 database cases when enabled,
+119 Python tests with three compiler-dependent cases skipped, formatting,
+strict Clippy, TLS, both package audits, selected-source guards and full notices.
+The database suite includes 26 integration cases and three unit cases. The new
+regression covers current permitted tags, invalid and stale metadata, conflicting
+names, NFO precedence, search, ordering, paging, immediate grant revocation and
+preservation of favorites and play counts. An earlier full run exposed loss of
+stored sort names; a later focused case reproduced a parent-album query alias
+collision. Both failures are retained separately from the final passing run.
+
+Core `aa0e55dc`, separate operator runtime `3d385fef` and server `523c195b` passed
+35 container checks and 29 local HTTPS checks. Two album details, 24 ordered and
+paged album reads and ten artist-scoped searches match the unchanged Jellyfin 12
+public reference. The physical album ID is retained while its title becomes
+`Embedded Album`. Three combined Ids/SearchTerm observations remain qualified;
+the two search-selection differences are recorded, not counted as passes.
+The initial global search replay matched 30 of 31 reads: an older Alpha recent
+album exists only in the retained client catalog. Fresh searches within each
+corresponding artist scope match all ten observations; the original global
+result remains preserved.
+See [the naming contract](jellyfin12-embedded-audio.md#physical-album-names).
+
+Both official web and Qt 6 Desktop displayed the renamed album and completed
+its original four-track FLAC queue. Each client returned fifteen successful
+playback reports and added exactly one play per track. Desktop WASAPI audio EOF
+and advancing web audio were observed. Independent reads matched all 50 saved
+rows to those plays without a reset. Identity, grants, mounts, playlists, studio
+favorites and fixture hashes were retained. Desktop signed in with Remember Me
+off, closed normally and kept the same settings hash. Joined evidence binds 402
+source fingerprints under `.local/album-tag-name-client-20261004`. Wider media,
+audible quality, general native video and final-position reliability remain
+unvalidated. Whole-runtime licensing and all five release gates remain open;
+packaged documentation predates this entry.
+
+At `61e6082`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37177217574)
+and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37177217572)
+passed. At `a6e4967`, [main validation](https://github.com/peppermintish/puffinbox/actions/runs/37178511553)
+and [GNU validation](https://github.com/peppermintish/puffinbox/actions/runs/37178511573)
+both completed successfully with all four jobs passing. These results cover the
+read-only variable-data audit and timestamp notice; they precede album naming.
+Exact job identities and conclusions are under
+`.local/native-source-bytes-cloud-20261003`.
+
 The PostgreSQL SCRAM build passed all thirteen source checks: 258 Rust cases with
 zero failures and 28 ignored database cases, all 28 database cases when enabled,
 107 Python cases, formatting, strict Clippy, TLS, both strict package audits,

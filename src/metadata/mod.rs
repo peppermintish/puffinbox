@@ -414,7 +414,7 @@ async fn get_item_metadata(
     Path(item_id): Path<Uuid>,
 ) -> Result<(HeaderMap, Json<ItemMetadataResponse>), ApiError> {
     let _item = authorized_item(&state, &user, item_id).await?;
-    let preferred = load_display_metadata(&state.db, &[item_id])
+    let preferred = load_display_metadata(&state.db, &user, &[item_id])
         .await?
         .remove(&item_id)
         .unwrap_or_default();

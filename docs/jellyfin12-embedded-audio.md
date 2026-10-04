@@ -37,11 +37,11 @@ Puffinbox imports bounded embedded title, album, artist, album artist, date,
 genre and track/disc fields through its existing confined FFprobe invocation.
 Local NFO fields take precedence. That is an explicit Puffinbox policy; the
 conflicting song NFO did not override embedded fields in this reference.
-Embedded credits currently resolve only to visible artist catalog entries in
-the same library. Automatic creation of tag-named artist and album entries,
+Embedded credits resolve to visible same-library physical or persistent
+[tag-named artists](jellyfin12-tagged-artists.md). Tag-named album creation,
 embedded cover art, wider format coverage and general reference equivalence
-remain incomplete. Folder-derived relationships and the existing filename
-track-index fallback remain qualified differences.
+remain incomplete. Folder-derived relationships and filename track-index
+fallbacks without current embedded metadata remain qualified differences.
 
 ## Audio SortName
 
@@ -126,3 +126,53 @@ coverage includes missing and explicit zero values, mixed directions, both
 pages, display Name ordering, personal filters, stale provider identity,
 malformed metadata and hidden parents. The numeric null rule also applies to
 episodes; the public observation above establishes only this audio contract.
+
+## Physical album names
+
+Fresh public reads on 2026-10-04 used the unchanged reference container and all
+thirteen original FLAC files. The physical folder `Folder Album` returns Name
+`Embedded Album` and SortName `embedded album`; the other physical album returns
+`Sort Contract Album`. The original four tracks retain the first album's ID,
+including the plain track whose public Album field remains null.
+
+Twenty-four queries cover Name, SortName, Album and IndexNumber in both
+directions, with a full page and each one-item page. Name and SortName reverse
+with descending order. The two albums have null Album and IndexNumber fields,
+so those sorts retain the ascending default name tie in both directions.
+Five unscoped album searches return one album for Embedded and Sort and no
+albums for Folder, Alpha or an impossible name.
+
+Three additional queries combine the two album IDs with a search term. The
+reference returns both albums for Embedded and Sort and neither for Folder.
+Puffinbox still intersects IDs with its search result; two selections differ.
+These observations remain qualified and are excluded from the 36 matching
+responses below. Exact reads are under `.local/album-tag-name-contract-20261004`.
+No reference media, grants or metadata were changed. The initial global Alpha
+search finds an older Alpha recent album only in the retained client catalog.
+Ten fresh searches scoped to the two corresponding physical artists match;
+the original global difference remains preserved.
+
+Puffinbox keeps each physical album's identity and derives its display name
+from a single agreed nonempty current embedded name on permitted tracks.
+Provider titles, including local NFO titles, take precedence. Hidden and
+restricted tracks, denied libraries, stale source snapshots, malformed values
+and ambiguous names cannot supply the name. A missing or ambiguous name keeps
+the folder name and its stored sort name. This conservative ambiguity policy
+has database coverage; it is not established as Jellyfin's ambiguity behavior.
+The same name supplies DTOs, exact-name selection, album search and ordering
+before paging. Audio Album sorting can use its own visible parent's name.
+The plain track's returned Album field still falls back to its physical folder
+name and differs from the reference null. Both detail and Play queues now start
+with the plain track, followed by Beta, Alpha and Conflicting. Two queue reads
+match ordered IDs, names and numeric fields. Unrequested SortName presence and
+disabled-total semantics remain qualified; their broader failed comparison is
+preserved.
+
+On the current image, both album details, all 24 order/page queries and all ten
+artist-scoped searches match the projected reference fields and ordered IDs. Both
+official clients display Embedded Album and complete its four-track FLAC queue.
+Each client adds one play per track; all 50 saved rows, grants, IDs and fixture
+hashes remain intact. Records are under `.local/album-tag-name-client-20261004`.
+Tag-named album creation, merged folders, conflicting tags, album-only artist
+registration, parent DTO naming, artwork, wider formats and full music behavior
+remain incomplete or unvalidated.

@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 use uuid::Uuid;
 
 use super::catalog_sql;
-use crate::ApiError;
+use crate::{ApiError, auth::UserRecord};
 
 const MAX_DISPLAY_ITEMS: usize = 10_000;
 const DISPLAY_CHUNK: usize = 500;
@@ -77,6 +77,7 @@ pub struct ProviderMetadata {
 /// reads only its correlated local-NFO/US-MPAA-v1 row.
 pub async fn load_display_metadata(
     pool: &PgPool,
+    user: &UserRecord,
     item_ids: &[Uuid],
 ) -> Result<HashMap<Uuid, DisplayMetadata>, ApiError> {
     if item_ids.len() > MAX_DISPLAY_ITEMS {
@@ -97,8 +98,8 @@ pub async fn load_display_metadata(
              {} AS track_number, {} AS disc_number, {} AS album, {studios} AS studios, \
              (SELECT m.metadata_json->>'communityScore' FROM item_metadata m \
               WHERE m.item_id=requested.item_id AND m.provider_key='tvmaze') AS community_score, \
-             {} AS primary_image_tag, {} AS has_current_audio_source FROM unnest($1::uuid[]) AS requested(item_id)",
-            catalog_sql::title("requested.item_id"),
+             {} AS primary_image_tag, {} AS has_current_audio_source FROM unnest(",
+            catalog_sql::catalog_title("requested.item_id"),
             catalog_sql::preferred("requested.item_id", "m.overview", "m.overview IS NOT NULL"),
             catalog_sql::preferred(
                 "requested.item_id",
@@ -119,7 +120,13 @@ pub async fn load_display_metadata(
             ),
             catalog_sql::current_audio_source("requested.item_id"),
         );
-        let rows = sqlx::query(&projection).bind(chunk).fetch_all(pool).await?;
+        let mut builder = QueryBuilder::<Postgres>::new("");
+        crate::db::push_visible_album_tracks(&mut builder, user);
+        builder
+            .push(projection)
+            .push_bind(chunk)
+            .push("::uuid[]) AS requested(item_id)");
+        let rows = builder.build().fetch_all(pool).await?;
         for row in rows {
             let item_id: Uuid = row.try_get("item_id")?;
             let mut display = DisplayMetadata {
