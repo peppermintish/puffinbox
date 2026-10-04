@@ -13,3 +13,5 @@ Dockerfile* text eol=lf
 *.js text eol=lf
 *.txt text eol=lf
 *.json text eol=lf
+# Preserve the checksum-reviewed upstream bytes, including their original line endings.
+vendor/mime_guess/** -text

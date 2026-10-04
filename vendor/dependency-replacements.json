@@ -6,8 +6,12 @@
       "version": "1.1.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "upstreamArchiveSha256": "2300d0f78cba12f14e29e8dd157ea64050c0a688179aefdb2050105805594a0c",
-      "allowedFeatures": ["std"],
-      "requiredFeatures": ["std"],
+      "allowedFeatures": [
+        "std"
+      ],
+      "requiredFeatures": [
+        "std"
+      ],
       "reason": "Plugins accept compiled WebAssembly only. Exclude the optional wat compiler, wast parser and Unicode width tables from the production and test graphs; original binary fixtures preserve the hook and hostile-module checks.",
       "upstreamRevision": "8273dfb09d493971b7bb12fe614d740cdc857175",
       "sourceReference": "https://github.com/wasmi-labs/wasmi/blob/8273dfb09d493971b7bb12fe614d740cdc857175/crates/wasmi/src/module/mod.rs",
@@ -22,7 +26,9 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "optional": true,
       "upstreamArchiveSha256": "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4",
-      "allowedFeatures": ["std"],
+      "allowedFeatures": [
+        "std"
+      ],
       "reason": "The Unicode table directory has separate Unicode terms. All its table modules are feature-gated in the reviewed version. Only std is currently selected; prevent a transitive dependency from enabling those tables.",
       "upstreamRevision": "140167995737fa11dfe11b8af8b9aa143b790b4e",
       "licenseSource": "https://github.com/rust-lang/regex/blob/140167995737fa11dfe11b8af8b9aa143b790b4e/regex-syntax/src/unicode_tables/LICENSE-UNICODE",
@@ -41,9 +47,22 @@
       "optional": true,
       "upstreamArchiveSha256": "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840",
       "allowedFeatures": [
-        "cors", "default", "follow-redirect", "fs", "futures-core", "futures-util",
-        "httpdate", "limit", "mime", "mime_guess", "percent-encoding", "set-status",
-        "tokio-util", "tower", "trace", "tracing"
+        "cors",
+        "default",
+        "follow-redirect",
+        "fs",
+        "futures-core",
+        "futures-util",
+        "httpdate",
+        "limit",
+        "mime",
+        "mime_guess",
+        "percent-encoding",
+        "set-status",
+        "tokio-util",
+        "tower",
+        "trace",
+        "tracing"
       ],
       "reason": "The pin_project_cfg helper has a separate CC0 notice. Its compression module and shared compression utilities are gated by currently disabled compression/decompression features. Keep the exact reviewed feature selection; default is empty in this version.",
       "upstreamRevision": "1d082ef7bdb6d80a2964698804a46c338b4c6a99",
@@ -62,7 +81,10 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "optional": true,
       "upstreamArchiveSha256": "46eb8fb9fb3b61ce1c0f8a026c4c1a0714d3a9e138e7fbde78753ce2babc3846",
-      "allowedFeatures": ["default", "legacy"],
+      "allowedFeatures": [
+        "default",
+        "legacy"
+      ],
       "reason": "SipHash has an Apache header and separate CC0 reference notice. The project uses no-siphash and no-quic Configure options to exclude its provider and internal QUIC use from bundled native builds rather than infer a license alternative. A linked-symbol check is required separately; package features alone do not prove the native configuration.",
       "upstreamRevision": "64c38cc48205400720199476aff8a780f98d167d",
       "licenseSource": "https://github.com/openssl/openssl/blob/openssl-3.6.3/crypto/siphash/siphash.c",
@@ -137,6 +159,38 @@
         "tests/mpsc-size_hint.rs": "b1a25850e60bd902d4c499e8163739a0b34ebec972202b72669238968cc8beaf",
         "tests/mpsc.rs": "3853d3fbda7442f5f4faa8e46dc6b7354b35b2fec0e6aeb7aace528a709a822d",
         "tests/oneshot.rs": "0f97d28852a1fd1327211772f43322c93916a639be3f2581e49ad37c9f8a2f88"
+      }
+    },
+    {
+      "name": "mime_guess",
+      "version": "2.0.5",
+      "path": "vendor/mime_guess",
+      "upstreamArchiveSha256": "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e",
+      "upstreamRevision": "805964fb54871f0154ee155bf21729b77ffd4a1c",
+      "sourceReference": "https://github.com/abonander/mime_guess/tree/805964fb54871f0154ee155bf21729b77ffd4a1c",
+      "reason": "Preserve the MIT upstream ASCII extension/type table and public lookup API with an original ASCII comparator. Remove unicase and its generated Unicode case-folding data, reject non-ASCII lookup keys, retain ASCII case-insensitive forward and optional reverse mappings. Unicode filenames with ASCII suffixes are unchanged. Omit the historical undeclared PHF branch and benchmark-only criterion dependency.",
+      "unchangedUpstreamFiles": {
+        "Cargo.toml.orig": "b6d3a62dc49595f4afe101bd9158bb2d7adddac5165a0ad69f185a51b29a43e9",
+        "LICENSE": "816000f9c28f7005d931c77636eb79fa7020071eb0f6e6a995515dfccd3559cb",
+        "README.md": "32663b3f4530e71cfec689576cca62911c83e504232963c65da82ebed26e2aa7",
+        "examples/rev_map.rs": "13a79d0b9eba6bfb49f99102917d1dada89c37ffcfab492759af997539b616ba",
+        "src/mime_types.rs": "1e89c58024547606d78e71488f0e027b740613fc22ac5877e24e3851e0f0628b"
+      },
+      "reviewedFiles": {
+        "Cargo.toml": "f5c54ef23e4e1b30549fc439d5bd37d89f0890ae22b889531262c337d96f2b8d",
+        "Cargo.toml.orig": "b6d3a62dc49595f4afe101bd9158bb2d7adddac5165a0ad69f185a51b29a43e9",
+        "LICENSE": "816000f9c28f7005d931c77636eb79fa7020071eb0f6e6a995515dfccd3559cb",
+        "LICENSE-MIME-DB": "965ef284f7f4c176842ec2e87fa13e79feed777d56d7a21a5a3b38f1bb6dc288",
+        "LICENSE-MIMETYPEMAP": "16cf81d070649068456e952583d1a82aa8a8a12dab1c99c23f2942131e6bc2f8",
+        "PUFFINBOX.md": "ee8388cda2b3b3400a0478fd9e014877b2bfde94a9cec62cb70e6556066dbef6",
+        "README.md": "32663b3f4530e71cfec689576cca62911c83e504232963c65da82ebed26e2aa7",
+        "build.rs": "5c34acbcbe5694acc42b290fadd7282159174af457a0398ba24253f85715963a",
+        "examples/rev_map.rs": "13a79d0b9eba6bfb49f99102917d1dada89c37ffcfab492759af997539b616ba",
+        "src/ascii_case.rs": "4f769bd6767b67fd38d6bd738c5efa4434dba0251b54878aaf29d356d697d590",
+        "src/impl_bin_search.rs": "547b63a4776fa6dedd8df627d3728f1c44cef11854be7c0977e22ee28224f727",
+        "src/lib.rs": "71b550f6562b6ec1d12d13182ff4b072454846a0729bd1d4c081f9fc5ccfe735",
+        "src/mime_types.rs": "1e89c58024547606d78e71488f0e027b740613fc22ac5877e24e3851e0f0628b",
+        "tests/ascii_reverse.rs": "dcd629cb716145a5d800e3f486393d0ca25f8ee184599b263f6870688a0c835c"
       }
     }
   ]

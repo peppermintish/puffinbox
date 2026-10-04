@@ -570,3 +570,13 @@ mounts. Joined evidence verifies all 325 frozen source files under
 `.local/item-refresh-gnu-client-20261004`. The external standard library
 remains outside the bundled boundary. Production adoption, full runtime
 licensing and all five release gates remain open.
+
+## MIME case-folding exclusion
+
+The later ASCII MIME patch removes unicase from the locked production and test
+graphs. Its generated map reproduced for historical GNU `a2f2cde7` remains private
+provenance evidence for that earlier artifact. It is not a current dependency
+inventory. The original comparator retains the complete upstream MIME table;
+[the table's historical input review](licensing.md#ascii-mime-lookup) remains open.
+Current static server `1d69ce60` still defines 41 generated Rust Unicode namespace
+symbols. This exclusion does not clear the full runtime boundary.

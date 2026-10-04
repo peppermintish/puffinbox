@@ -23,6 +23,18 @@ The release build creates `dist/licenses/` from the locked Cargo graph using `ca
 
 The Cargo allowlist is limited to MIT and Apache-2.0. Run `cargo deny --locked check licenses` locally; any other or unclear expression stops the Cargo license gate. The current locked graph passes without exceptions. Package declarations do not clear individual file notices: the upstream futures-channel BSD queue is replaced with original MIT/Apache code, with both upstream license texts preserved for the other retained files. The build verifies the selected replacement and reviewed hashes. Rust's linked Unicode tables, musl components and remaining file-level inputs still block release packaging. See [`docs/licensing.md`](docs/licensing.md) for the runtime blocker, replacements, and external component inventory.
 
+## MIME extension data
+
+The local mime_guess 2.0.5 patch retains Austin Bonander's MIT license and the
+upstream extension table. The table cites Samuel Neff's MimeTypeMap and the
+mime-db project; their MIT notices are retained in
+`vendor/mime_guess/LICENSE-MIMETYPEMAP` and `LICENSE-MIME-DB` and copied into the
+generated notice bundle. Exact upstream, retained-file and notice hashes are in
+`vendor/dependency-replacements.json`. The original ASCII comparator excludes
+unicase and its generated Unicode case-folding data. See
+`vendor/mime_guess/PUFFINBOX.md` for behavior and remaining historical data-input
+limits. This patch does not clear the full runtime boundary.
+
 ## External operator services and executables
 
 The Compose stack references a separate PostgreSQL container image. PostgreSQL is an external service and is not copied into the Puffinbox server image. FFmpeg and ffprobe are supplied by the operator or the test-only acceptance image; the default server image does not include them. Exact image-package inventories and operator-selected FFmpeg build licenses are separate from this project source and are recorded as unresolved in [`docs/licensing.md`](docs/licensing.md).

@@ -116,3 +116,31 @@ Adobe CMaps, Foxit base fonts, and JBIG2/OpenJPEG decoders are excluded because 
 | TVmaze metadata | Optional remote data under [TVmaze's CC BY-SA terms](https://www.tvmaze.com/api#licensing). Stored attribution fields do not establish end-user attribution compliance. |
 
 External image inventories and operator obligations remain incomplete. A passing Cargo audit establishes the Cargo graph's policy result, not whole-deployment license closure.
+
+## ASCII MIME lookup
+
+The local [mime_guess 2.0.5 patch](../vendor/mime_guess/PUFFINBOX.md) replaces
+unicase with an original ASCII comparator. The checksum-verified upstream archive
+is `f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e`.
+The MIT notice and complete extension table are unchanged; the table SHA-256 is
+`1e89c58024547606d78e71488f0e027b740613fc22ac5877e24e3851e0f0628b`.
+The exact retained-file guard covers fourteen files. Git preserves their reviewed
+bytes and original line endings. The locked production and test graphs no longer
+contain unicase or its Unicode case-folding table. Forward lookup covers all 1,408
+registered extensions in lower, upper and mixed ASCII case, with Unicode filename
+prefixes. Optional reverse mappings, wildcard projections and nine served-file
+header cases also pass. Non-ASCII extensions return an empty guess and use the
+caller's unknown-type fallback.
+
+The table cites [MimeTypeMap](https://github.com/samuelneff/MimeTypeMap/blob/45622b360000f1450c8241c5e83ad61f46b902d8/LICENSE)
+and [mime-db](https://github.com/jshttp/mime-db/blob/424fb61ca34d480d3f25dd945acc44f37c360f56/LICENSE)
+as data sources. Their MIT notices are preserved and copied into the full notice
+bundle. The [cited converter](https://gist.github.com/soyuka/b7e29d359b2c14c21bdead923c01cc81)
+declares WTFPL; it is not copied, executed or bundled. Those license records do
+not establish the exact historical extraction inputs or later manual updates for
+every retained entry. That input review remains open; package MIT declarations
+and passing audits do not complete it.
+
+Static server `1d69ce60` still defines 41 generated Rust Unicode namespace symbols.
+This MIME exclusion leaves the standard-library, native, startup and remaining
+generated-data reviews open. It changes no allowlist, exception or release gate.

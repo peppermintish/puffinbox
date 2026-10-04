@@ -69,6 +69,8 @@ def main() -> int:
         copy_required(root / "LICENSE-MIT", staging / "LICENSE-MIT")
         copy_required(root / "LICENSE-APACHE", staging / "LICENSE-APACHE")
         copy_required(root / "THIRD_PARTY_NOTICES.md", staging / "PROJECT_THIRD_PARTY_NOTICES.md")
+        copy_required(root / "vendor" / "mime_guess" / "LICENSE-MIMETYPEMAP", staging / "MIMETYPEMAP-LICENSE.txt")
+        copy_required(root / "vendor" / "mime_guess" / "LICENSE-MIME-DB", staging / "MIME-DB-LICENSE.txt")
         copy_required(root / "web" / "vendor" / "hls.js-LICENSE.txt", staging / "HLS-JS-LICENSE.txt")
         copy_required(root / "web" / "vendor" / "README.md", staging / "HLS-JS-PROVENANCE.md")
         copy_required(Path("/usr/share/doc/musl/copyright"), staging / "MUSL-COPYRIGHT")
