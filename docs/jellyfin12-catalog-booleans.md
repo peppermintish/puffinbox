@@ -79,3 +79,11 @@ cases. The nine existing IsFolder differences remain qualified. All 50 saved
 rows, policy and media hashes were retained without a reset. This replay uses
 the original projection; it does not establish complete DTO equivalence.
 Records are under `.local/item-total-client-20261004/boolean-comparison.json`.
+
+
+The repeated-Fields build replayed the same 64 observations on core `9b2cd02c`.
+Fifty-five still match and the nine existing folder-filter differences remain
+qualified. All 50 saved rows, grants, policy and media hashes were unchanged by
+the reads. The original projection and reference record were retained; this
+does not establish complete DTO equivalence. Records are under
+`.local/repeated-fields-client-20261004/boolean-comparison.json`.

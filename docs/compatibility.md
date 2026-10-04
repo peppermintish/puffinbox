@@ -23,10 +23,10 @@ Plugin staging now requires compiled WebAssembly. The original hook has database
 
 The public [item refresh route](jellyfin12-item-refresh.md) now queues independent local metadata and image work. Ten request-binding observations, five existing-album metadata modes and the complete recorded album projection match the isolated Jellyfin 12 reference. Duplicate work, permissions, replacement options and sidecar cleanup have PostgreSQL coverage. Recursive refresh, complete validation, remote providers, image-mode equivalence, trickplay and broader item types remain incomplete or unvalidated.
 
-The Rust workspace passes formatting, strict Clippy and 258 standard tests.
+The Rust workspace passes formatting, strict Clippy and 260 standard tests.
 All 26 PostgreSQL integration cases and three database-backed unit cases passed;
-130 Python tests passed and four compiled controls were skipped. Core `2d3babe8`,
-operator `feec3afe` and server `e037b04f` passed 35 container and 29 local HTTPS
+130 Python tests passed and four compiled controls were skipped. Core `9b2cd02c`,
+operator `e8dbc686` and server `43fcd337` passed 35 container and 29 local HTTPS
 checks, including active FFmpeg shutdown, video resume and saved metadata/user
 data after restart. Seventeen [audio field observations](jellyfin12-embedded-audio.md#audio-album-and-requested-sort-name)
 match the reference. Ordinary item lists select SortName through Fields; wider
@@ -39,17 +39,24 @@ remain full when requested off; other disabled counts use the returned page
 size. Both album queue projections now include matching totals and offsets.
 Combined Ids/SearchTerm behavior and zero-limit semantics remain different.
 
-Qt 6 Desktop and the final official web replay displayed the album and completed
-its original four-track FLAC queue with automatic advancement and fifteen
-successful reports each. Two earlier web replays also completed their events
-and saved plays but lacked an active media observation. All four runs added one
-play per track each. Desktop reached the album through its home entry; its main
-album list still returned 400 for repeated Fields values. Album-list navigation
-and general client compatibility remain open. Desktop audio EOF and advancing
-web audio were observed. The retained backend kept its identity, grants, all 50
-saved item rows, playlists, studio favorites and original media hashes without
-a reset. Joined evidence binds 402 source fingerprints. Audible quality, wider
-formats, general native video and final-position reliability remain unvalidated.
+The [repeated-Fields binder](jellyfin12-embedded-audio.md#repeated-fields) accepts
+CSV, repeated and mixed-alias values on both ordinary item-list routes. All
+24 scoped reference projections match; encoded delimiters remain text and
+duplicate scalar options still fail. Other array binders and complete field
+selection remain partial.
+
+Qt 6 Desktop and official web now display all eight retained albums in their
+main Albums views. Desktop opened Embedded Album from the list and decoded its
+four original FLAC tracks through EOF. Web's detail-page Play completed the
+same order with advancing audio and no media error. Both accepted runs returned
+fifteen successful reports and added one play per track. A separate web artwork
+click activated its overlay Play control and completed a different order; that
+card run remains qualified, with its reports and saved plays retained. All 50
+saved rows match the three observed plays per track without a reset. Identity,
+grants, mounts, playlists, studio favorites and media hashes remain intact.
+Desktop closed normally, with Remember Me off and unchanged settings. Joined
+evidence binds 402 source fingerprints. Wider formats, audible quality, general
+native video, final positions and broader client behavior remain unvalidated.
 The complete runtime license review remains open.
 
 The preceding experimental external-TLS web replay exposed an initial progress/start race with an explicit client session ID. One progress report returned 404 before its concurrent start completed; that failed attempt remains in [the audit record](runtime-link-audit.md#preprocessing-only-inputs). The [startup repair](jellyfin12-playback-behavior.md#concurrent-start-and-progress) extends the existing bounded wait to explicit IDs, retaining the same user, device, item and current-run constraints. A database-backed HTTP regression reproduced the failure before the fix and passed afterward. The current official-client runs above passed separately; their passing web trace did not reproduce concurrent request ordering.

@@ -260,3 +260,53 @@ recursive and explicit-ID modes return empty pages; enabled totals remain four
 and disabled recursive totals become zero. Puffinbox's minimum limit of one
 still differs. Wider zero-limit behavior, combined IDs/search selection, other
 ItemFields, complete collation and full music compatibility remain open.
+
+
+## Repeated Fields
+
+The official Desktop Albums request sends `fields=MediaSourceCount` and
+`fields=PrimaryImageAspectRatio` as separate query values. The preceding
+Puffinbox binder rejected it with a duplicate-field 400, leaving the main
+Albums list empty. The same failure appears in the preceding client traces.
+
+Twenty-four public reads on the unchanged official Jellyfin 12.0.0 runtime
+cover both ordinary list routes, Audio album children and MusicAlbum artist
+children. CSV, repeated lower-case values, requested SortName, mixed aliases,
+duplicate members and empty members all return 200. The selected projection
+contains status, ordered Id/Name/Type, SortName presence/value, TotalRecordCount
+and StartIndex. Known parent Album differences were excluded before the new
+image comparison; the initial wider comparison remains preserved. No reference
+implementation source was read and no reference fixture or grant changed.
+
+Puffinbox now combines only repeated `Fields`/`fields` values before normal
+deserialization on GET /Items and GET /Users/{userId}/Items. Each decoded key
+and value is re-encoded, so embedded ampersands, equals signs and plus signs
+cannot become query options. Duplicate scalar options keep their existing
+rejection. Two binder regressions cover delimiter preservation and scalar
+validation. Twenty database-backed CSV/repeated equivalence checks cover both
+routes and item types. SQL selection, visibility, sorting and paging are
+unchanged; no Cargo dependency or feature changed.
+
+Core `9b2cd02c` matches all 24 scoped binding projections, compared with four
+on the preceding image and twenty duplicate-field errors. All 168 scoped count
+projections, seventeen audio-field projections and both original detail-page
+album queues still match. Nine folder-filter and 84 count-catalog/layout
+qualifications remain. Broader DTO equivalence, other array options and field
+selection beyond the recorded projection remain incomplete.
+
+Both official clients display all eight retained albums in the main list.
+Desktop opened Embedded Album from it and decoded all four original FLAC tracks
+through EOF in the expected order. Web's detail-page Play completed the same
+queue with advancing, unpaused audio and no media error. A separate web artwork
+click activated the overlay Play control and completed a different order; that
+observation remains qualified. All three runs produced fifteen successful
+reports each and added exactly one play per track each. Joined evidence binds
+all 50 saved rows to those plays without a reset. Identity, grants, playlists,
+favorites and fixture hashes remain intact. Desktop closed normally with its
+settings hash unchanged and Remember Me off.
+
+Reference records are under `.local/repeated-fields-contract-20261004`; joined
+runtime evidence is under `.local/repeated-fields-client-20261004`. The card
+observation is under `.local/repeated-fields-web-card-20261004`. Complete music
+behavior, card-order equivalence, combined IDs/search, zero limits, audible
+quality, final positions and general native video remain open.

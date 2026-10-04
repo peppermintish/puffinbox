@@ -1001,6 +1001,7 @@ async fn verify_music_artist_and_track_ordering(
         &ascending_tracks,
     )
     .await;
+    verify_repeated_item_fields(router, album, artist, owner, token).await;
     for (id, name) in [(album, "Zebra album"), (unrelated, "Alpha album")] {
         sqlx::query("UPDATE items SET name=$2 WHERE id=$1")
             .bind(id)
@@ -1479,6 +1480,45 @@ async fn verify_audio_sort_names(
         item_ids(&changed_numeric),
         [2, 5, 0, 7, 6, 3, 1, 8, 4].map(|index| tracks[index])
     );
+}
+
+async fn verify_repeated_item_fields(
+    router: &Router,
+    album: Uuid,
+    artist: Uuid,
+    owner: Uuid,
+    token: &str,
+) {
+    for route in ["/Items".to_owned(), format!("/Users/{owner}/Items")] {
+        for (parent, kind) in [(album, "Audio"), (artist, "MusicAlbum")] {
+            let prefix = format!(
+                "{route}?ParentId={parent}&IncludeItemTypes={kind}&Recursive=true&SortBy=SortName&Limit=100"
+            );
+            for (csv, repeated) in [
+                (
+                    "MediaSourceCount,PrimaryImageAspectRatio",
+                    "fields=MediaSourceCount&fields=PrimaryImageAspectRatio",
+                ),
+                (
+                    "MediaSourceCount,SortName",
+                    "Fields=MediaSourceCount&Fields=SortName",
+                ),
+                (
+                    "MediaSourceCount,SortName,PrimaryImageAspectRatio",
+                    "fields=MediaSourceCount&Fields=SortName,PrimaryImageAspectRatio",
+                ),
+                ("SortName", "Fields=SortName&Fields=SortName"),
+                ("SortName", "Fields=&Fields=SortName"),
+            ] {
+                let canonical =
+                    json_body(call(router, &format!("{prefix}&Fields={csv}"), Some(token)).await)
+                        .await;
+                let response = call(router, &format!("{prefix}&{repeated}"), Some(token)).await;
+                assert_eq!(response.status(), StatusCode::OK, "{prefix}&{repeated}");
+                assert_eq!(json_body(response).await, canonical, "{prefix}&{repeated}");
+            }
+        }
+    }
 }
 
 async fn verify_item_total_modes(

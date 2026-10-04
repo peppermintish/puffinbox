@@ -235,3 +235,13 @@ MIT notice matches the reviewed bytes. Core `2d3babe8` and operator test runtime
 `feec3afe` passed their bounded container and client checks. These results do
 not clear linked-runtime licensing or permit bundling the separate GPL FFmpeg
 test runtime. Image, source and joined records are under `.local/item-total-*`.
+
+
+The repeated-Fields image's exact static server `43fcd337` still defines 41
+generated Rust Unicode namespace symbols. Both strict package audits, selected
+source guards and full notices passed without exceptions; the packaged
+timestamp MIT notice still matches reviewed bytes. Core `9b2cd02c` and separate
+operator test runtime `e8dbc686` passed their bounded container and client
+checks. This query-binding change adds no dependency or feature. It does not
+clear the linked runtime or permit bundling the GPL FFmpeg test runtime.
+Records are under `.local/repeated-fields-*`; all five release gates remain open.

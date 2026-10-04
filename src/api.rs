@@ -3,7 +3,7 @@ use std::{collections::HashSet, path::PathBuf};
 use axum::{
     Json, Router,
     body::to_bytes,
-    extract::{Path, Query, RawQuery, Request, State},
+    extract::{FromRequestParts, Path, Query, RawQuery, Request, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -2520,6 +2520,54 @@ where
         .ok_or_else(|| serde::de::Error::custom("expected true or false"))
 }
 
+struct ItemsQuery(ItemsQueryParams);
+
+impl ItemsQuery {
+    fn try_from_uri(uri: &axum::http::Uri) -> Result<Self, Box<Response>> {
+        let pairs = url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes())
+            .collect::<Vec<_>>();
+        let fields = pairs
+            .iter()
+            .filter(|(key, _)| matches!(key.as_ref(), "Fields" | "fields"))
+            .map(|(_, value)| value.as_ref())
+            .collect::<Vec<_>>();
+        if fields.len() < 2 {
+            return Query::<ItemsQueryParams>::try_from_uri(uri)
+                .map(|Query(params)| Self(params))
+                .map_err(|error| Box::new(error.into_response()));
+        }
+        // The clients send this array as either CSV or repeated query values.
+        // Re-encode every value so embedded delimiters remain ordinary text.
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in &pairs {
+            if !matches!(key.as_ref(), "Fields" | "fields") {
+                query.append_pair(key, value);
+            }
+        }
+        query.append_pair("Fields", &fields.join(","));
+        let normalized = axum::http::Uri::builder()
+            .path_and_query(format!("{}?{}", uri.path(), query.finish()))
+            .build()
+            .map_err(|_| {
+                Box::new(ApiError::BadRequest("Invalid item query".to_owned()).into_response())
+            })?;
+        Query::<ItemsQueryParams>::try_from_uri(&normalized)
+            .map(|Query(params)| Self(params))
+            .map_err(|error| Box::new(error.into_response()))
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for ItemsQuery {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Self::try_from_uri(&parts.uri).map_err(|response| *response)
+    }
+}
+
 impl ItemsQueryParams {
     pub(crate) fn facet_scope(
         parent_id: Option<Uuid>,
@@ -3109,7 +3157,7 @@ async fn browse_items(
     State(state): State<AppState>,
     CurrentUser(current): CurrentUser,
     RawQuery(raw_query): RawQuery,
-    Query(params): Query<ItemsQueryParams>,
+    ItemsQuery(params): ItemsQuery,
 ) -> Result<Response, ApiError> {
     let selected = selected_user(&state, &current, params.user_id).await?;
     let include_sort_name = params.fields.as_deref().is_some_and(|fields| {
@@ -3178,7 +3226,7 @@ async fn browse_user_items(
     CurrentUser(current): CurrentUser,
     Path(user_id): Path<Uuid>,
     RawQuery(raw_query): RawQuery,
-    Query(mut params): Query<ItemsQueryParams>,
+    ItemsQuery(mut params): ItemsQuery,
 ) -> Result<Response, ApiError> {
     if params.user_id.is_some_and(|requested| requested != user_id) {
         return Err(ApiError::BadRequest(
@@ -3190,7 +3238,7 @@ async fn browse_user_items(
         State(state),
         CurrentUser(current),
         RawQuery(raw_query),
-        Query(params),
+        ItemsQuery(params),
     )
     .await
 }
@@ -4467,7 +4515,7 @@ mod item_dto_tests {
         let uri: axum::http::Uri = "/Items?Recursive=%20tRuE%20&EnableTotalRecordCount=%09FaLsE%09&IsPlayed=TRUE&IsFolder=False&SearchTerm=TRUE"
             .parse()
             .unwrap();
-        let Query(params) = Query::<ItemsQueryParams>::try_from_uri(&uri).unwrap();
+        let ItemsQuery(params) = ItemsQuery::try_from_uri(&uri).unwrap();
         assert_eq!(params.recursive, Some(true));
         assert!(!params.enable_total_record_count);
         assert_eq!(params.is_played, Some(true));
@@ -4478,7 +4526,7 @@ mod item_dto_tests {
             "/Items?recursive=FALSE&enableTotalRecordCount=True&isPlayed=false&isFolder=TRUE"
                 .parse()
                 .unwrap();
-        let Query(params) = Query::<ItemsQueryParams>::try_from_uri(&aliases).unwrap();
+        let ItemsQuery(params) = ItemsQuery::try_from_uri(&aliases).unwrap();
         assert_eq!(params.recursive, Some(false));
         assert!(params.enable_total_record_count);
         assert_eq!(params.is_played, Some(false));
@@ -4489,7 +4537,7 @@ mod item_dto_tests {
     fn catalog_boolean_queries_keep_defaults_and_reject_invalid_values() {
         for query in ["", "Recursive=&IsPlayed=&IsFolder="] {
             let uri: axum::http::Uri = format!("/Items?{query}").parse().unwrap();
-            let Query(params) = Query::<ItemsQueryParams>::try_from_uri(&uri).unwrap();
+            let ItemsQuery(params) = ItemsQuery::try_from_uri(&uri).unwrap();
             assert_eq!(params.recursive, None);
             assert_eq!(params.is_played, None);
             assert_eq!(params.is_folder, None);
@@ -4504,7 +4552,7 @@ mod item_dto_tests {
         ] {
             for value in ["1", "0", "yes", "null", "true,false", "tr%20ue"] {
                 let uri: axum::http::Uri = format!("/Items?{field}={value}").parse().unwrap();
-                assert!(Query::<ItemsQueryParams>::try_from_uri(&uri).is_err());
+                assert!(ItemsQuery::try_from_uri(&uri).is_err());
             }
         }
         for query in [
@@ -4513,7 +4561,45 @@ mod item_dto_tests {
             "EnableTotalRecordCount=True&enableTotalRecordCount=False",
         ] {
             let uri: axum::http::Uri = format!("/Items?{query}").parse().unwrap();
-            assert!(Query::<ItemsQueryParams>::try_from_uri(&uri).is_err());
+            assert!(ItemsQuery::try_from_uri(&uri).is_err());
+        }
+    }
+
+    #[test]
+    fn repeated_item_fields_keep_requested_fields_and_encoded_text() {
+        let uri: axum::http::Uri = "/Items?fields=MediaSourceCount&Fields=SortName,PrimaryImageAspectRatio&SearchTerm=Rock%20%26%20Roll%2B&Recursive=%20TrUe%20"
+            .parse().unwrap();
+        let ItemsQuery(params) = ItemsQuery::try_from_uri(&uri).unwrap();
+        assert_eq!(
+            params.fields.as_deref(),
+            Some("MediaSourceCount,SortName,PrimaryImageAspectRatio")
+        );
+        assert_eq!(params.search_term.as_deref(), Some("Rock & Roll+"));
+        assert_eq!(params.recursive, Some(true));
+
+        let uri: axum::http::Uri = "/Items?Fields=SortName&fields=Overview%26UserId%3D00000000-0000-0000-0000-000000000001"
+            .parse().unwrap();
+        let ItemsQuery(params) = ItemsQuery::try_from_uri(&uri).unwrap();
+        assert_eq!(params.user_id, None);
+        assert_eq!(
+            params.fields.as_deref(),
+            Some("SortName,Overview&UserId=00000000-0000-0000-0000-000000000001")
+        );
+    }
+
+    #[test]
+    fn repeated_item_fields_do_not_merge_scalar_options() {
+        for suffix in [
+            "Recursive=true&recursive=false",
+            "EnableTotalRecordCount=true&enableTotalRecordCount=false",
+            "Limit=1&limit=2",
+            "UserId=00000000-0000-0000-0000-000000000001&userId=00000000-0000-0000-0000-000000000002",
+            "UserId=invalid",
+        ] {
+            let uri: axum::http::Uri = format!("/Items?Fields=SortName&fields=Overview&{suffix}")
+                .parse()
+                .unwrap();
+            assert!(ItemsQuery::try_from_uri(&uri).is_err(), "{suffix}");
         }
     }
 

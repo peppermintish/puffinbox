@@ -2,7 +2,62 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
-The item-count build passed all thirteen source checks: formatting, strict
+The repeated-Fields build passed all thirteen source checks: formatting,
+strict Clippy, 260 standard Rust cases, all 29 enabled database cases, 130 Python
+cases, TLS, both strict package audits, selected-source guards and full notices.
+The standard Rust run ignored the 29 database cases; the separate run passed
+all 26 integration and three unit cases. Four compiled Python controls were
+skipped in the default run. The focused regression first reproduced the
+duplicate-Fields 400. The first full run then failed Clippy on the error size;
+boxing that error fixed the lint without an exception. All failed logs remain.
+
+Core `9b2cd02c`, separate operator runtime `e8dbc686` and server `43fcd337` passed
+35 container and 29 local HTTPS checks, including active FFmpeg shutdown and
+video resume across restart. No dependency, feature or license exception was
+added. Whole-runtime licensing and all five release gates remain open.
+
+Both ordinary item-list routes now accept CSV, repeated and mixed-alias Fields
+values. Encoded delimiters remain text; duplicate scalar options still fail.
+Twenty-four scoped binding projections match the unchanged official reference.
+The preceding image matched four, with twenty duplicate-field errors. These
+projections include status, ordered identity/name/type, requested SortName,
+totals and offsets. The initial wider comparison also exposed two known parent
+Album differences; it remains preserved and is not a complete DTO pass. See
+[the Fields contract](jellyfin12-embedded-audio.md#repeated-fields).
+
+The count replay still matches 168 of 252 retained observations; 84 predefined
+catalog-membership/layout qualifications remain. Seventeen audio-field and
+both album-queue projections match. The boolean replay matches 55 of 64, with
+nine existing folder-filter differences qualified. All read-only comparisons
+retained the 50 saved rows, policy and media bytes.
+
+Desktop and official web now display all eight retained albums in their main
+Albums views. Desktop opened Embedded Album from that list and decoded its
+four FLAC tracks through EOF in the expected order. Web's detail-page Play
+action completed the same queue, with advancing, unpaused audio and no media
+error. Each accepted run produced fifteen successful playback reports and
+added one play per track. A separate web artwork click activated its overlay
+Play control and completed a different order; its fifteen reports and saved
+plays remain qualified under `.local/repeated-fields-web-card-20261004`.
+That card order is not a passing detail-queue comparison.
+
+Joined evidence under `.local/repeated-fields-client-20261004` binds 402 frozen
+source fingerprints, both immutable images, traces, navigation screenshots and
+all 50 saved rows to the three observed plays per track. Nothing was reset.
+Identity, grants, mounts, playlists, studio favorites and original media hashes
+remain intact. Desktop used Remember Me off, closed normally and retained its
+settings hash. Source checks are under `.local/repeated-fields-source-20261004b`;
+image, container, HTTPS and client ledgers use `.local/repeated-fields-*`.
+Packaged documentation predates this entry. Wider Fields and array binders,
+combined IDs/search, zero limits, audible quality, final positions, general
+native video and full client compatibility remain incomplete or unvalidated.
+
+At `79eecfc`, [both main cloud jobs](https://github.com/peppermintish/puffinbox/actions/runs/37188628844)
+and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37188628853)
+passed. Those results precede the repeated-Fields patch; its cloud validation
+is pending.
+
+The preceding item-count build passed all thirteen source checks: formatting, strict
 Clippy, 258 Rust cases, all 29 enabled database cases, 130 Python cases, TLS,
 both package audits, selected-source guards and full notices. The standard Rust
 run ignored the 29 database cases; the separate database run passed all 26
@@ -62,8 +117,8 @@ and both full source runs passed. Failed logs remain preserved.
 
 At `74f8ece`, [both main jobs](https://github.com/peppermintish/puffinbox/actions/runs/37184969239)
 and [both GNU TLS jobs](https://github.com/peppermintish/puffinbox/actions/runs/37184969226)
-completed successfully. Those results precede the item-count patch; its cloud
-validation is pending.
+completed successfully. The later `79eecfc` item-count cloud results are
+recorded above.
 
 The album-name build passed all thirteen source checks: 258 Rust tests with
 zero failures and 29 ignored database cases, all 29 database cases when enabled,
