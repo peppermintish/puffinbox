@@ -29,10 +29,10 @@ There is no remote plug-in upload or command-execution endpoint. An operator sta
 
 ```text
 <PUFFINBOX_DATA_DIR>/plugins/<plugin-id>/manifest.json
-<PUFFINBOX_DATA_DIR>/plugins/<plugin-id>/metadata-enricher.wat
+<PUFFINBOX_DATA_DIR>/plugins/<plugin-id>/metadata-enricher.wasm
 ```
 
-The module must have a supported basename, match the SHA-256 in its manifest, and implement the `metadata.enrich.v1` Wasm ABI. The API accepts only the explicit metadata input/output schema. Modules receive no host imports, filesystem, network, clock, or command interface. Module bytes, JSON input/output, parser limits, Wasm resources, execution fuel, and worker concurrency are bounded.
+The module must be compiled WebAssembly version 1, use `module.wasm` or `metadata-enricher.wasm`, match the SHA-256 in its manifest, and implement the `metadata.enrich.v1` Wasm ABI. Text modules (`.wat`) are rejected, including text renamed to `.wasm`. Earlier unreleased checkpoints accepted text; compile those hooks and update their manifests before staging them. The API accepts only the explicit metadata input/output schema. Modules receive no host imports, filesystem, network, clock, or command interface. Module bytes, JSON input/output, parser limits, Wasm resources, execution fuel, and worker concurrency are bounded.
 
 The hook input is the serialized production catalog projection. Its JSON keys are `id`, `name`, `itemType`, and nullable `overview`, for example:
 
@@ -48,6 +48,6 @@ After staging, an administrator authenticates and reviews the declared metadata,
 2. `POST /Puffinbox/Plugins/example-metadata-enricher/Enable`.
 3. `POST /Puffinbox/Metadata/Refreshes` with an item or library scope and `Providers:["plugin:example-metadata-enricher"]`.
 
-The original demonstration module is [metadata-enricher.wat](metadata-enricher.wat); its module SHA-256 is `4f4231bd8ce59019b6a249872240254549977fe5dcc27072489f52e220ebac02`. Its manifest is included beside it. The manifest's license and provenance strings are operator-supplied claims, not legal verification or a substitute for reviewing module source and dependencies. The example contains no third-party code or metadata.
+Stage the original demonstration binary [metadata-enricher.wasm](metadata-enricher.wasm) with the adjacent manifest. Its SHA-256 is `7f8e3f558994efa0055e3dbc0b151aef45c803899ae0ef577a6889139c71a2a6`. Run `python3 examples/plugins/build_example.py` to reproduce that binary with the original fixed example encoder; [metadata-enricher.wat](metadata-enricher.wat) describes the same hook for review. The encoder does not parse arbitrary text modules. The manifest's license and provenance strings are operator-supplied claims, not legal verification or a substitute for reviewing module source and dependencies. The example contains no third-party code or metadata.
 
 Plugin output is stored in a separate provider row. Disabling or re-trusting a plug-in hides the old row from preferred item display until a refresh under the currently enabled, trusted module succeeds. A failed refresh keeps the last successful metadata unless the provider deliberately reports no result.

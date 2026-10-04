@@ -2,6 +2,21 @@
   "scope": "Guards for known file-level license exceptions and inactive non-allowlisted features; not a complete dependency or runtime license audit.",
   "featureConstraints": [
     {
+      "name": "wasmi",
+      "version": "1.1.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "upstreamArchiveSha256": "2300d0f78cba12f14e29e8dd157ea64050c0a688179aefdb2050105805594a0c",
+      "allowedFeatures": ["std"],
+      "requiredFeatures": ["std"],
+      "reason": "Plugins accept compiled WebAssembly only. Exclude the optional wat compiler, wast parser and Unicode width tables from the production and test graphs; original binary fixtures preserve the hook and hostile-module checks.",
+      "upstreamRevision": "8273dfb09d493971b7bb12fe614d740cdc857175",
+      "sourceReference": "https://github.com/wasmi-labs/wasmi/blob/8273dfb09d493971b7bb12fe614d740cdc857175/crates/wasmi/src/module/mod.rs",
+      "reviewedConfigFiles": {
+        "Cargo.toml": "69155d7392de50f60d3d1da5e9b15fae4ef61d5b1198c0ac4f1f38534fbc052f",
+        "src/module/mod.rs": "6b6b97d16619860f03971f4852721afde09f266ca739467ca81025f33315e2bd"
+      }
+    },
+    {
       "name": "regex-syntax",
       "version": "0.8.11",
       "source": "registry+https://github.com/rust-lang/crates.io-index",

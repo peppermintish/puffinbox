@@ -37,7 +37,8 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
 # The upstream ASCII-only backend avoids bundling Unicode data under another license.
 idna_adapter = "=1.0.0"
 url = "2.5.4"
-wasmi = { version = "=1.1.0", default-features = false, features = ["std", "wat"] }
+# Plugins are compiled Wasm; do not bundle the optional text compiler or its data tables.
+wasmi = { version = "=1.1.0", default-features = false, features = ["std"] }
 uuid = { version = "1.16.0", features = ["serde", "v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

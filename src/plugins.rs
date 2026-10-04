@@ -358,7 +358,7 @@ fn validate_manifest(manifest: &PluginManifest, expected_id: &str) -> Result<(),
         || manifest.hook != "metadata.enrich.v1"
         || !matches!(
             manifest.module.as_str(),
-            "module.wasm" | "module.wat" | "metadata-enricher.wat"
+            "module.wasm" | "metadata-enricher.wasm"
         )
         || !is_sha256(&manifest.module_sha256)
         || manifest.license.trim().is_empty()
@@ -612,6 +612,9 @@ fn validate_and_execute(module_bytes: &[u8], input: &[u8]) -> Result<PluginOutpu
     {
         return Err("module-or-input-size".to_owned());
     }
+    if !module_bytes.starts_with(b"\0asm\x01\0\0\0") {
+        return Err("module-invalid".to_owned());
+    }
     let mut config = Config::default();
     config
         .set_max_recursion_depth(64)
@@ -698,6 +701,27 @@ mod tests {
         read_staged_plugin, sha256_hex, valid_plugin_id, validate_and_execute,
     };
 
+    // Original binary fixtures: one four-i32 function, memory and ABI exports.
+    // Each test supplies Wasm instructions ending before the function's final end.
+    fn binary_hook(max_memory_pages: u8, instructions: &[u8]) -> Vec<u8> {
+        assert!(max_memory_pages < 128 && instructions.len() < 124);
+        let mut module = b"\0asm\x01\0\0\0".to_vec();
+        module.extend_from_slice(b"\x01\x09\x01\x60\x04\x7f\x7f\x7f\x7f\x01\x7f");
+        module.extend_from_slice(b"\x03\x02\x01\x00");
+        module.extend_from_slice(&[5, 4, 1, 1, 1, max_memory_pages]);
+        module.extend_from_slice(b"\x07\x13\x02\x06memory\x02\x00\x06enrich\x00\x00");
+        module.extend_from_slice(&[
+            10,
+            instructions.len() as u8 + 4,
+            1,
+            instructions.len() as u8 + 2,
+            0,
+        ]);
+        module.extend_from_slice(instructions);
+        module.push(0x0b);
+        module
+    }
+
     #[test]
     fn plugin_ids_match_the_database_grammar() {
         for id in ["a", "7plugin", "metadata-enricher", "a.b_c-9"] {
@@ -718,7 +742,7 @@ mod tests {
 
     #[test]
     fn original_example_module_runs_without_host_imports() {
-        let bytes = include_bytes!("../examples/plugins/metadata-enricher.wat");
+        let bytes = include_bytes!("../examples/plugins/metadata-enricher.wasm");
         let input = serde_json::to_vec(&PluginInput {
             id: "item-1".to_owned(),
             name: "Example".to_owned(),
@@ -757,7 +781,8 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_host_imports() {
-        let imported = br#"(module (import "host" "clock" (func)))"#;
+        let imported =
+            b"\0asm\x01\0\0\0\x01\x04\x01\x60\x00\x00\x02\x0e\x01\x04host\x05clock\x00\x00";
         assert_eq!(
             validate_and_execute(imported, b"{}").unwrap_err(),
             "plugin-imports-not-allowed"
@@ -766,33 +791,25 @@ mod tests {
 
     #[test]
     fn hostile_modules_cannot_grow_past_the_memory_limit() {
-        let module = br#"(module
-            (memory (export "memory") 1 32)
-            (func (export "enrich") (param i32 i32 i32 i32) (result i32)
-                i32.const 16
-                memory.grow
-                i32.const -1
-                i32.eq
-                if
-                    unreachable
-                end
-                i32.const 2))"#;
+        // Grow by 16 pages, trapping explicitly if the grow returns -1.
+        let module = binary_hook(
+            32,
+            &[
+                0x41, 16, 0x40, 0, 0x41, 0x7f, 0x46, 0x04, 0x40, 0, 0x0b, 0x41, 2,
+            ],
+        );
         assert_eq!(
-            validate_and_execute(module, b"{}").unwrap_err(),
+            validate_and_execute(&module, b"{}").unwrap_err(),
             "hook-trapped"
         );
     }
 
     #[test]
     fn hostile_modules_cannot_exhaust_unbounded_execution_fuel() {
-        let module = br#"(module
-            (memory (export "memory") 1 16)
-            (func (export "enrich") (param i32 i32 i32 i32) (result i32)
-                (loop $forever
-                    br $forever)
-                unreachable))"#;
+        // Loop forever, followed by unreachable to satisfy the result type.
+        let module = binary_hook(16, &[0x03, 0x40, 0x0c, 0, 0x0b, 0]);
         assert_eq!(
-            validate_and_execute(module, b"{}").unwrap_err(),
+            validate_and_execute(&module, b"{}").unwrap_err(),
             "hook-trapped"
         );
     }
@@ -805,12 +822,10 @@ mod tests {
             "module-or-input-size"
         );
 
-        let oversized_output = br#"(module
-            (memory (export "memory") 1 16)
-            (func (export "enrich") (param i32 i32 i32 i32) (result i32)
-                i32.const 49153))"#;
+        // Return one byte more than the output cap without touching memory.
+        let oversized_output = binary_hook(16, &[0x41, 0x81, 0x80, 3]);
         assert_eq!(
-            validate_and_execute(oversized_output, b"{}").unwrap_err(),
+            validate_and_execute(&oversized_output, b"{}").unwrap_err(),
             "hook-output-length"
         );
 
@@ -819,6 +834,30 @@ mod tests {
             genres: None,
         };
         assert!(super::validate_plugin_output(oversized).is_err());
+    }
+
+    #[test]
+    fn text_and_unsupported_binary_versions_are_rejected() {
+        assert_eq!(
+            validate_and_execute(
+                include_bytes!("../examples/plugins/metadata-enricher.wat"),
+                b"{}"
+            )
+            .unwrap_err(),
+            "module-invalid"
+        );
+        let mut invalid = include_bytes!("../examples/plugins/metadata-enricher.wasm").to_vec();
+        invalid[4] = 2;
+        assert_eq!(
+            validate_and_execute(&invalid, b"{}").unwrap_err(),
+            "module-invalid"
+        );
+        invalid[4] = 1;
+        invalid.truncate(9);
+        assert_eq!(
+            validate_and_execute(&invalid, b"{}").unwrap_err(),
+            "module-invalid"
+        );
     }
 
     #[test]
@@ -853,14 +892,14 @@ mod tests {
         ));
         let plugin_dir = data_dir.join("plugins").join("hash-fixture");
         fs::create_dir_all(&plugin_dir).unwrap();
-        let module_bytes = include_bytes!("../examples/plugins/metadata-enricher.wat");
+        let module_bytes = include_bytes!("../examples/plugins/metadata-enricher.wasm");
         let manifest = serde_json::json!({
             "id": "hash-fixture",
             "name": "Hash fixture",
             "version": "1.0.0",
             "apiVersion": 1,
             "hook": "metadata.enrich.v1",
-            "module": "metadata-enricher.wat",
+            "module": "metadata-enricher.wasm",
             "moduleSha256": sha256_hex(module_bytes),
             "license": "MIT OR Apache-2.0",
             "provenance": "Original test fixture"
@@ -870,7 +909,7 @@ mod tests {
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        let module_path = plugin_dir.join("metadata-enricher.wat");
+        let module_path = plugin_dir.join("metadata-enricher.wasm");
         fs::write(&module_path, module_bytes).unwrap();
 
         let staged = read_staged_plugin(&data_dir, "hash-fixture").unwrap();

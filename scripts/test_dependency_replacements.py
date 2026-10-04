@@ -186,6 +186,40 @@ class DependencyFeatureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unreviewed dependency features for rustix: runtime"):
             validate(self.root, self.metadata, self.review)
 
+    def test_recorded_wasmi_selection_rejects_text_compiler_features(self):
+        record = json.loads((Path(__file__).resolve().parents[1]
+                             / "vendor/dependency-replacements.json").read_text(encoding="utf-8"))
+        constraint = copy.deepcopy(next(item for item in record["featureConstraints"]
+                                        if item["name"] == "wasmi"))
+        self.assertEqual(constraint["allowedFeatures"], ["std"])
+        self.assertEqual(constraint["requiredFeatures"], ["std"])
+        directory = self.root / "registry/wasmi"
+        directory.mkdir()
+        source = b"// Synthetic reviewed text-parser feature gate fixture\n"
+        for name in constraint["reviewedConfigFiles"]:
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(source)
+            constraint["reviewedConfigFiles"][name] = hashlib.sha256(source).hexdigest()
+        identifier = "registry+crates.io#wasmi@1.1.0"
+        self.metadata["packages"].append({
+            "name": "wasmi", "version": constraint["version"],
+            "source": constraint["source"], "id": identifier,
+            "manifest_path": str(directory / "Cargo.toml"),
+        })
+        node = {"id": identifier, "features": ["std"]}
+        self.metadata["resolve"]["nodes"].append(node)
+        self.review["featureConstraints"].append(constraint)
+        self.assertEqual(validate(self.root, self.metadata, self.review)["verifiedFeatureConstraints"], 2)
+        for feature in ["wat", "default", "future-parser-feature"]:
+            with self.subTest(feature=feature):
+                node["features"] = ["std", feature]
+                with self.assertRaisesRegex(ValueError, "Unreviewed dependency features for wasmi"):
+                    validate(self.root, self.metadata, self.review)
+        node["features"] = []
+        with self.assertRaisesRegex(ValueError, "Required dependency features for wasmi: std"):
+            validate(self.root, self.metadata, self.review)
+
     def test_recorded_tower_selection_rejects_compression_and_full_features(self):
         record = json.loads((Path(__file__).resolve().parents[1]
                              / "vendor/dependency-replacements.json").read_text(encoding="utf-8"))

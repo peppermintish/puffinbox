@@ -4,8 +4,8 @@
   "version": "1.0.0",
   "apiVersion": 1,
   "hook": "metadata.enrich.v1",
-  "module": "metadata-enricher.wat",
-  "moduleSha256": "4f4231bd8ce59019b6a249872240254549977fe5dcc27072489f52e220ebac02",
+  "module": "metadata-enricher.wasm",
+  "moduleSha256": "7f8e3f558994efa0055e3dbc0b151aef45c803899ae0ef577a6889139c71a2a6",
   "license": "MIT OR Apache-2.0",
-  "provenance": "Original source included at examples/plugins/metadata-enricher.wat"
+  "provenance": "Original hook encoded by examples/plugins/build_example.py; review source in metadata-enricher.wat"
 }

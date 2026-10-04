@@ -22,6 +22,8 @@ The selected `rustix 1.1.5` [Linux vDSO parser](https://github.com/bytecodeallia
 
 That broader review also verified historical mapped and selected Rust source inputs, including three generated modules replayed from locked build scripts. The tracing date-conversion file's full musl notice includes BSD exceptions for other files; its selected time-conversion code and the upstream author's permission identify MIT/Apache options. Those text matches do not establish a selected BSD origin. Logging was left unchanged. The [runtime audit](runtime-link-audit.md#rust-package-input-review) records the exact primary permission evidence and the limits of textual searches.
 
+Plugins now accept compiled WebAssembly only. Wasmi's optional text compiler is disabled, removing `wat`, `wast`, `wasm-encoder`, `unicode-width`, `leb128fmt` and the compiler's separate `wasmparser` version from the locked graph. The guard allows only Wasmi's required `std` feature and verifies its exact manifest and parser gate against the checksum-verified 1.1.0 archive. Original binary fixtures retain the hook, import rejection, memory, fuel and output-limit checks. The [example instructions](../examples/plugins/README.md) explain how to stage the binary and migrate text hooks from earlier unreleased checkpoints. This removes one generated-data dependency; the other Unicode inputs and whole-runtime review remain open.
+
 ```sh
 cargo deny --locked check
 python3 scripts/build_license_bundle.py

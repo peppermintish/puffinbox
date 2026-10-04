@@ -526,8 +526,8 @@ gate or packaging policy changed.
 
 ## Generated Unicode package inputs
 
-The locked `unicode-width 0.2.2`, `unicode-normalization 0.1.25` and
-`unicase 2.9.0` generated modules were reproduced byte for byte in private
+The `unicode-width 0.2.2`, `unicode-normalization 0.1.25` and
+`unicase 2.9.0` modules locked for GNU server `a2f2cde7` were reproduced byte for byte in private
 storage. Their source commits, packaged source/generator bytes and locked
 archive checksums were verified. Independent review matched all three outputs
 to the exact mapped files in GNU server `a2f2cde7` and verified nineteen fixed
@@ -543,6 +543,14 @@ audit material and was not added to the project or its images. Records are
 under `.local/generated-unicode-review-20261004`; the earlier missing input
 and empty-output observations remain separate. Generated-data licensing,
 retained constants and complete executable review remain open.
+
+The subsequent compiled-plugin change disables Wasmi's optional text parser
+and removes `unicode-width` with the WAT compiler from the locked production
+and test graphs. The source guard checks only the required `std` feature and
+exact parser/configuration hashes from the verified Wasmi archive. Binary
+fixtures retain the metadata hook and hostile-module checks. This exclusion
+does not change the earlier provenance record or clear the other generated
+modules and runtime inputs.
 
 ## Current item-refresh GNU checks
 

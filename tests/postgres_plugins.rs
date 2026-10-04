@@ -97,14 +97,14 @@ async fn staged_plugin_trust_enable_refresh_and_disable_are_hash_bound() {
     let plugin_id = "lifecycle-fixture";
     let plugin_dir = data_dir.join("plugins").join(plugin_id);
     fs::create_dir_all(&plugin_dir).unwrap();
-    let module = include_bytes!("../examples/plugins/metadata-enricher.wat");
+    let module = include_bytes!("../examples/plugins/metadata-enricher.wasm");
     let manifest = json!({
         "id": plugin_id,
         "name": "Lifecycle fixture",
         "version": "1.0.0",
         "apiVersion": 1,
         "hook": "metadata.enrich.v1",
-        "module": "metadata-enricher.wat",
+        "module": "metadata-enricher.wasm",
         "moduleSha256": sha256_hex(module),
         "license": "MIT OR Apache-2.0",
         "provenance": "Original repository test fixture"
@@ -114,7 +114,7 @@ async fn staged_plugin_trust_enable_refresh_and_disable_are_hash_bound() {
         serde_json::to_vec(&manifest).unwrap(),
     )
     .unwrap();
-    let module_path = plugin_dir.join("metadata-enricher.wat");
+    let module_path = plugin_dir.join("metadata-enricher.wasm");
     fs::write(&module_path, module).unwrap();
 
     let config = Config {
@@ -151,6 +151,60 @@ async fn staged_plugin_trust_enable_refresh_and_disable_are_hash_bound() {
         .0,
         StatusCode::UNAUTHORIZED
     );
+
+    // Text cannot be trusted by renaming it or by supplying a matching hash.
+    let text = include_bytes!("../examples/plugins/metadata-enricher.wat");
+    let mut text_manifest = manifest.clone();
+    text_manifest["moduleSha256"] = json!(sha256_hex(text));
+    fs::write(&module_path, text).unwrap();
+    fs::write(
+        plugin_dir.join("manifest.json"),
+        serde_json::to_vec(&text_manifest).unwrap(),
+    )
+    .unwrap();
+    let (text_status, text_body) = call_json(
+        &router,
+        "POST",
+        "/Puffinbox/Plugins/TrustStaged",
+        Some(token),
+        json!({"PluginId": plugin_id}),
+    )
+    .await;
+    assert_eq!(text_status, StatusCode::BAD_REQUEST, "{text_body}");
+    assert!(text_body.to_string().contains("module-invalid"));
+
+    text_manifest["module"] = json!("metadata-enricher.wat");
+    fs::write(plugin_dir.join("metadata-enricher.wat"), text).unwrap();
+    fs::write(
+        plugin_dir.join("manifest.json"),
+        serde_json::to_vec(&text_manifest).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        call_json(
+            &router,
+            "POST",
+            "/Puffinbox/Plugins/TrustStaged",
+            Some(token),
+            json!({"PluginId": plugin_id}),
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let trusted: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM trusted_plugins WHERE plugin_id=$1)")
+            .bind(plugin_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!trusted);
+    fs::write(&module_path, module).unwrap();
+    fs::write(
+        plugin_dir.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
 
     let (trust_status, trust_body) = call_json(
         &router,
