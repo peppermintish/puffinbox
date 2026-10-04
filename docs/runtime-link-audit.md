@@ -492,3 +492,26 @@ assign each file a license or establish exhaustive coverage of inlined,
 unmapped and linker-generated content. They leave whole-binary clearance and
 all five release gates false. The separately supplied standard library still
 contains non-allowlisted components and must not be bundled.
+
+## Preserved mapped standard-library inputs
+
+For GNU server `b957a857`, a separate review preserved all 246 mapped Rust
+standard-library source files from exact builder `26dc10cf`, totaling
+8,685,966 bytes. Every copy matches the earlier line inventory's source hash.
+The builder reports Rust 1.98.1, commit
+`48a229ceaefd4985c50990b14116b6d856af0985`. Five release notice files were
+retrieved at that exact commit and preserved by hash.
+
+Each mapped path has an MIT/Apache-2.0 declaration in the released
+[REUSE annotations](https://github.com/rust-lang/rust/blob/48a229ceaefd4985c50990b14116b6d856af0985/REUSE.toml).
+An independent pass verified all bytes and resolved all 246 paths through the
+released [license metadata tree](https://github.com/rust-lang/rust/blob/48a229ceaefd4985c50990b14116b6d856af0985/license-metadata.json),
+with the same allowed choices. Source copies, notice hashes and independent
+review records are preserved under `.local/gnu-standard-inputs-20261004`.
+
+This assigns released declarations to the mapped paths, including declarations
+inherited from Rust's library subtree. Submodule policy inheritance, upstream
+source-commit joins, unmapped and inlined origins, conservative compile-input
+completeness and whole-binary licensing still need review. The external
+standard library and static Unicode-bearing runtime retain their separate
+distribution limits. No release gate or packaging policy changed.
