@@ -116,7 +116,7 @@ def unwrapped(die):
     return die
 
 
-def string_fields(die, offset=0, path=(), seen=None):
+def string_fields(die, offset=0, path=(), seen=None, *, slices=False):
     """Recognize the observed Rust &str layout; never follow arbitrary pointers."""
     seen = set() if seen is None else set(seen)
     die = unwrapped(die)
@@ -145,7 +145,7 @@ def string_fields(die, offset=0, path=(), seen=None):
         width = byte_size(element)
         if width is None or width <= 0 or byte_size(die) != slots * width:
             return
-        fields = list(string_fields(element, path=path + ("[]",), seen=seen))
+        fields = list(string_fields(element, path=path + ("[]",), seen=seen, slices=slices))
         if len(fields) * slots > 4096:
             return
         for slot, indices in enumerate(product(*(range(count) for count in dimensions))):
@@ -158,13 +158,17 @@ def string_fields(die, offset=0, path=(), seen=None):
         return
     members = [child for child in die.iter_children() if child.tag == "DW_TAG_member"]
     name = die.attributes.get("DW_AT_name")
-    if name and text(name.value) == "&str":
+    if name and text(name.value) == ("&[&str]" if slices else "&str"):
+        if slices and len(path) >= 8:
+            return
         names = {text(child.attributes["DW_AT_name"].value): child for child in members
                  if "DW_AT_name" in child.attributes}
         if byte_size(die) != 16 or len(members) != 2 or set(names) != {"data_ptr", "length"}:
             return
         types = []
         for field, position in ((names["data_ptr"], 0), (names["length"], 8)):
+            if any(key in field.attributes for key in ("DW_AT_bit_size", "DW_AT_bit_offset", "DW_AT_data_bit_offset")):
+                return
             location = field.attributes.get("DW_AT_data_member_location")
             owner = inherited(field, "DW_AT_type")
             if constant(location) != position or owner is None:
@@ -175,7 +179,9 @@ def string_fields(die, offset=0, path=(), seen=None):
                 or "DW_AT_type" not in pointer.attributes):
             return
         element = unwrapped(pointer.get_DIE_from_attribute("DW_AT_type"))
-        for scalar, width in ((element, 1), (length, 8)):
+        if slices and (element is None or list(string_fields(element)) != [(0, ())]):
+            return
+        for scalar, width in (((length, 8),) if slices else ((element, 1), (length, 8))):
             encoding = scalar.attributes.get("DW_AT_encoding") if scalar else None
             if (scalar is None or scalar.tag != "DW_TAG_base_type" or byte_size(scalar) != width
                     or encoding is None or encoding.value != 7):
@@ -198,7 +204,7 @@ def string_fields(die, offset=0, path=(), seen=None):
             continue
         name = child.attributes.get("DW_AT_name")
         fields.extend(string_fields(field, offset + position,
-                                    path + (text(name.value) if name else None,), seen))
+                                    path + (text(name.value) if name else None,), seen, slices=slices))
         if len(fields) > 4096:
             return
     yield from fields
@@ -245,7 +251,8 @@ class StringReader:
             raise ValueError("Truncated string bytes.")
         return data, section.name
 
-    def inspect(self, address, root_size, offset):
+    def reference(self, address, root_size, offset, limit=1024 * 1024,
+                  bound="one-MiB inspection bound"):
         if not self.supported:
             raise ValueError("String inspection requires ELF64 little-endian x86-64 and explicit-addend relocations.")
         if offset < 0 or offset + 16 > root_size:
@@ -257,8 +264,8 @@ class StringReader:
             raise ValueError("String length overlaps a relocation.")
         if length == 0:
             return {"fieldAddress": hex(field), "length": 0, "binding": "empty-no-dereference"}, None
-        if length > 1024 * 1024:
-            raise ValueError("String payload exceeds the one-MiB inspection bound.")
+        if length > limit:
+            raise ValueError("String payload exceeds the " + bound + ".")
         writes = self.overlapping(field, 8)
         if writes:
             if writes != [field] or self.relocations[field] != [(8, 0, self.relocations[field][0][2])]:
@@ -269,6 +276,14 @@ class StringReader:
             binding = "absolute"
         else:
             raise ValueError("Nonempty PIE string pointer lacks a supported relocation.")
+        return {"fieldAddress": hex(field), "binding": binding, "dataAddress": hex(pointer),
+                "length": length}, pointer
+
+    def inspect(self, address, root_size, offset):
+        reference, pointer = self.reference(address, root_size, offset)
+        if pointer is None:
+            return reference, None
+        length = reference["length"]
         data, section = self.read(pointer, length)
         if self.overlapping(pointer, length):
             raise ValueError("String payload overlaps a relocation.")
@@ -276,9 +291,24 @@ class StringReader:
             data.decode("utf-8")
         except UnicodeDecodeError as error:
             raise ValueError("String payload is not valid UTF-8.") from error
-        return {"fieldAddress": hex(field), "binding": binding, "dataAddress": hex(pointer),
-                "length": length, "section": section, "storedBytesSha256": hashlib.sha256(data).hexdigest(),
+        return {**reference, "section": section, "storedBytesSha256": hashlib.sha256(data).hexdigest(),
                 "utf8Validated": True}, (pointer, pointer + length)
+
+    def inspect_slice(self, address, root_size, offset, limit=4096):
+        reference, pointer = self.reference(address, root_size, offset, min(limit, 4096),
+                                            "bounded string-slice element count")
+        count = reference.pop("length")
+        result = {**reference, "elementCount": count, "elementByteSize": 16}
+        if pointer is None:
+            return result, [], None
+        if pointer % 8:
+            raise ValueError("String-slice data is not aligned to its observed pointer layout.")
+        size = count * 16
+        raw, section = self.read(pointer, size)
+        # Validate the entire slice before returning any coverage or payloads.
+        strings = [self.inspect(pointer, size, index * 16) for index in range(count)]
+        result.update(section=section, byteSize=size, storedBytesSha256=hashlib.sha256(raw).hexdigest())
+        return result, strings, (pointer, pointer + size)
 
 
 def inventory(elf, stream):
@@ -305,6 +335,7 @@ def inventory(elf, stream):
         sections.append((start, stop, section, after_relocation))
     rows, sources, spans, counts = [], {}, {}, Counter()
     strings, rejected_strings, string_spans = [], [], {}
+    slices, rejected_slices, slice_spans = [], [], {}
     reader = StringReader(elf, stream, sections)
     for cu in dwarf.iter_CUs():
         counts["compilationUnits"] += 1
@@ -371,6 +402,7 @@ def inventory(elf, stream):
             owner = inherited(die, "DW_AT_type")
             language = cu.get_top_DIE().attributes.get("DW_AT_language")
             if source and digest and owner and language and language.value == 0x1C:
+                root_fields = 0
                 for offset, path in string_fields(owner.get_DIE_from_attribute("DW_AT_type")):
                     counts["typedStringFields"] += 1
                     association = {"rootAddress": hex(address), "rootName": name,
@@ -378,6 +410,7 @@ def inventory(elf, stream):
                     try:
                         observation, span = reader.inspect(address, size, offset)
                         strings.append({**association, **observation})
+                        root_fields += 1
                         if span is None:
                             counts["emptyStringFields"] += 1
                         else:
@@ -386,6 +419,31 @@ def inventory(elf, stream):
                     except ValueError as error:
                         counts["unsupportedStringFields"] += 1
                         rejected_strings.append({**association, "reason": str(error)})
+                for offset, path in string_fields(owner.get_DIE_from_attribute("DW_AT_type"), slices=True):
+                    counts["typedStringSliceFields"] += 1
+                    association = {"rootAddress": hex(address), "rootName": name,
+                                   "rootSourceAssociation": source, "memberPath": path}
+                    try:
+                        observation, elements, storage = reader.inspect_slice(address, size, offset, 4096 - root_fields)
+                        slices.append({**association, **observation})
+                        root_fields += len(elements)
+                        if storage is None:
+                            counts["emptyStringSliceFields"] += 1
+                        else:
+                            counts["readOnlyStringSliceReferences"] += 1
+                            slice_spans.setdefault(observation["section"], []).append(storage)
+                        for index, (element, span) in enumerate(elements):
+                            counts["typedStringFields"] += 1
+                            strings.append({**association, **element, "memberPath": path + (f"[{index}]",),
+                                            "sliceFieldAddress": observation["fieldAddress"]})
+                            if span is None:
+                                counts["emptyStringFields"] += 1
+                            else:
+                                counts["readOnlyStringReferences"] += 1
+                                string_spans.setdefault(element["section"], []).append(span)
+                    except ValueError as error:
+                        counts["unsupportedStringSliceFields"] += 1
+                        rejected_slices.append({**association, "reason": str(error)})
         # pyelftools 0.33 retains all parsed DIEs. Bound memory to one completed CU.
         # Later references can be parsed again from their original byte offsets.
         cu._dielist.clear()
@@ -397,13 +455,19 @@ def inventory(elf, stream):
         covered = covered_bytes(spans.get(section.name, []))
         payloads = string_spans.get(section.name, [])
         combined = covered_bytes(spans.get(section.name, []) + payloads)
+        slice_storage = slice_spans.get(section.name, [])
+        with_slices = covered_bytes(spans.get(section.name, []) + payloads + slice_storage)
         coverage.append({"section": section.name, "bytes": stop - start,
                          "variableBytes": covered, "remainingBytes": stop - start - covered,
                          "stringPayloadBytes": covered_bytes(payloads), "variableAndStringBytes": combined,
                          "remainingAfterStringInspection": stop - start - combined,
+                         "stringSliceStorageBytes": covered_bytes(slice_storage),
+                         "variableStringAndSliceBytes": with_slices,
+                         "remainingAfterSliceInspection": stop - start - with_slices,
                          "readOnlyAfterRelocation": after_relocation})
     return {"counts": dict(counts), "rows": rows, "sourceFiles": sources, "sectionCoverage": coverage,
             "stringReferences": strings, "unsupportedStringFields": rejected_strings,
+            "stringSliceReferences": slices, "unsupportedStringSliceFields": rejected_slices,
             "knownNonAllowlistedSourceFiles": [name for name in sources if known_non_allowlisted_path(name)],
             "unreviewedSystemHeaderFiles": [name for name in sources if name.startswith("/usr/include/")],
             "licenseClearance": False,
@@ -413,6 +477,8 @@ def inventory(elf, stream):
                      "Rust &str structures and fixed dense arrays within source-associated variables, using supported "
                      "x86-64 relocations. Array paths use zero-based storage indices. Each array expansion and "
                      "structure is bounded to 4096 string fields, and paths to eight levels. "
+                     "Observed Rust &[&str] fields additionally cover bounded read-only element storage and "
+                     "UTF-8 payloads through supported relocations. Each root has a 4096-string-field budget. "
                      "Root declarations are associations, not proof of literal origin. Dynamic, strided, oversized "
                      "or unbounded arrays, variant parts, arbitrary "
                      "pointer graphs, location lists, indirect expressions, anonymous roots, code and linker-generated "

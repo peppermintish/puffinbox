@@ -119,6 +119,54 @@ def string_type():
                children=[data, size])
 
 
+def slice_type():
+    element = string_type()
+    pointer = Die(301, tag="DW_TAG_pointer_type", attrs={"DW_AT_byte_size": 8, "DW_AT_type": element.offset},
+                  references={"DW_AT_type": element})
+    length = Die(302, tag="DW_TAG_base_type", attrs={"DW_AT_byte_size": 8, "DW_AT_encoding": 7})
+    data = Die(303, tag="DW_TAG_member", attrs={"DW_AT_name": "data_ptr", "DW_AT_type": pointer.offset,
+                                              "DW_AT_data_member_location": 0}, references={"DW_AT_type": pointer})
+    size = Die(304, tag="DW_TAG_member", attrs={"DW_AT_name": "length", "DW_AT_type": length.offset,
+                                              "DW_AT_data_member_location": 8}, references={"DW_AT_type": length})
+    return Die(305, tag="DW_TAG_structure_type", attrs={"DW_AT_name": "&[&str]", "DW_AT_byte_size": 16},
+               children=[data, size])
+
+
+class SliceShapeTests(unittest.TestCase):
+    def test_only_the_verified_string_slice_layout_is_selected(self):
+        shape = slice_type()
+        self.assertEqual(list(string_fields(shape, slices=True)), [(0, ())])
+        self.assertEqual(list(string_fields(shape)), [])
+        member = Die(306, tag="DW_TAG_member", attrs={"DW_AT_name": "names", "DW_AT_type": shape.offset,
+                                                     "DW_AT_data_member_location": 8},
+                     references={"DW_AT_type": shape})
+        parent = Die(307, tag="DW_TAG_structure_type", attrs={"DW_AT_byte_size": 24}, children=[member])
+        self.assertEqual(list(string_fields(parent, slices=True)), [(8, ("names",))])
+
+    def test_names_cannot_substitute_for_a_valid_pointee_and_header(self):
+        for change in ("byte_element", "signed_count", "offset", "bit_field", "cycle", "reference_offset"):
+            with self.subTest(change=change):
+                shape = slice_type()
+                data, size = shape.children
+                pointer = data.references["DW_AT_type"]
+                if change == "byte_element":
+                    pointer.references["DW_AT_type"] = Die(308, tag="DW_TAG_base_type",
+                                                           attrs={"DW_AT_byte_size": 1, "DW_AT_encoding": 7})
+                elif change == "signed_count":
+                    size.references["DW_AT_type"].attributes["DW_AT_encoding"].value = 5
+                elif change == "offset":
+                    size.attributes["DW_AT_data_member_location"].value = 4
+                elif change == "bit_field":
+                    size.attributes["DW_AT_bit_size"] = SimpleNamespace(value=64, form="DW_FORM_data1")
+                elif change == "cycle":
+                    alias = Die(308, tag="DW_TAG_typedef", attrs={"DW_AT_type": 308})
+                    alias.references["DW_AT_type"] = alias
+                    pointer.references["DW_AT_type"] = alias
+                else:
+                    size.attributes["DW_AT_data_member_location"].form = "DW_FORM_ref4"
+                self.assertEqual(list(string_fields(shape, slices=True)), [])
+
+
 class StringShapeTests(unittest.TestCase):
     def array(self, element, counts, *, size=None):
         attributes = {"DW_AT_type": element.offset}
@@ -297,8 +345,101 @@ class StringPointerTests(unittest.TestCase):
             reader.inspect(0x1000, 16, 0)
 
 
+class SlicePointerTests(unittest.TestCase):
+    def reader(self, count=2, payload=b"hello", relocations=None):
+        header = (1).to_bytes(8, "little") + count.to_bytes(8, "little")
+        elements = (1).to_bytes(8, "little") + (5).to_bytes(8, "little") + bytes(16)
+        stream = BytesIO(header + bytes(48) + elements + bytes(32) + payload)
+        sections = [(0x1000, 0x1010, Section(".data.rel.ro", sh_offset=0), True),
+                    (0x2000, 0x2020, Section(".data.rel.ro.elements", sh_offset=64), True),
+                    (0x3000, 0x3000 + len(payload), Section(".rodata", sh_offset=128), False)]
+        entries = [relocation(addend=0x2000), relocation(address=0x2000, addend=0x3000)]
+        return StringReader(FakeElf(entries if relocations is None else relocations), stream, sections)
+
+    def test_element_count_reads_complete_descriptors_and_shared_string_checks(self):
+        row, strings, storage = self.reader().inspect_slice(0x1000, 16, 0)
+        self.assertEqual(row["elementCount"], 2)
+        self.assertEqual(row["byteSize"], 32)
+        self.assertEqual(storage, (0x2000, 0x2020))
+        self.assertEqual(strings[0][1], (0x3000, 0x3005))
+        self.assertEqual(strings[0][0]["storedBytesSha256"], hashlib.sha256(b"hello").hexdigest())
+        self.assertEqual(strings[1][0]["length"], 0)
+        self.assertIsNone(strings[1][1])
+
+    def test_empty_slice_never_dereferences_its_pointer(self):
+        row, strings, storage = self.reader(count=0, relocations=[]).inspect_slice(0x1000, 16, 0)
+        self.assertEqual(row["elementCount"], 0)
+        self.assertNotIn("dataAddress", row)
+        self.assertEqual(strings, [])
+        self.assertIsNone(storage)
+
+    def test_excessive_counts_and_root_budget_fail_before_expansion(self):
+        for reader, limit in [(self.reader(count=4097), 4096), (self.reader(), 1)]:
+            with self.assertRaisesRegex(ValueError, "element count"):
+                reader.inspect_slice(0x1000, 16, 0, limit)
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            self.reader(count=3).inspect_slice(0x1000, 16, 0)
+
+    def test_nonlocal_misaligned_or_invalid_elements_do_not_return_partial_coverage(self):
+        cases = [
+            (self.reader(relocations=[relocation(kind=1, symbol=2)]), "relocation"),
+            (self.reader(relocations=[relocation(addend=0x2001)]), "aligned"),
+            (self.reader(relocations=[relocation(addend=0x2000), relocation(address=0x2000, kind=1, symbol=2)]), "relocation"),
+            (self.reader(relocations=[relocation(addend=0x2000), relocation(address=0x2000, addend=0x3000),
+                                      relocation(address=0x2008)]), "relocation"),
+            (self.reader(payload=b"\xffello"), "UTF-8"),
+        ]
+        for reader, reason in cases:
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                reader.inspect_slice(0x1000, 16, 0)
+
+
 @unittest.skipUnless(HAS_INSPECTOR and RUST_COMPILER, "Requires external pyelftools and Rust.")
 class CompiledStringControls(unittest.TestCase):
+    def test_rust_string_slices_follow_typed_read_only_lists(self):
+        from elftools.elf.elffile import ELFFile
+
+        with tempfile.TemporaryDirectory(prefix="puffinbox-slice-control-") as directory:
+            root = Path(directory)
+            source, binary = root / "original.rs", root / "control"
+            source.write_text('''
+struct Holder { marker: u64, strings: &'static [&'static str] }
+#[used] static ORIGINAL_SINGLE: &str = "slice shared";
+#[used] static ORIGINAL_STRINGS: &[&str] = &["slice first", "slice shared", ""];
+#[used] static ORIGINAL_EMPTY_SLICE: &[&str] = &[];
+#[used] static ORIGINAL_HOLDER: Holder = Holder { marker: 17, strings: &["slice shared", "slice last"] };
+#[used] static ORIGINAL_BYTES: &[u8] = b"excluded byte slice";
+fn main() {
+    std::hint::black_box((&ORIGINAL_SINGLE, &ORIGINAL_STRINGS, &ORIGINAL_EMPTY_SLICE,
+                         ORIGINAL_HOLDER.marker, &ORIGINAL_HOLDER.strings, &ORIGINAL_BYTES));
+}
+''')
+            subprocess.run([RUST_COMPILER, "-C", "debuginfo=2", "-C", "opt-level=0", "-C", "relocation-model=pic",
+                            "-C", "link-arg=-pie", "-C", "link-arg=-Wl,-z,relro", str(source), "-o", str(binary)],
+                           check=True, capture_output=True)
+            with binary.open("rb") as stream:
+                result = inventory(ELFFile(stream), stream)
+        slices = {row["rootName"]: row for row in result.get("stringSliceReferences", [])
+                  if row["rootName"].startswith("ORIGINAL_")}
+        self.assertEqual(set(slices), {"ORIGINAL_STRINGS", "ORIGINAL_EMPTY_SLICE", "ORIGINAL_HOLDER"})
+        self.assertEqual(slices["ORIGINAL_STRINGS"]["elementCount"], 3)
+        self.assertEqual(slices["ORIGINAL_EMPTY_SLICE"]["elementCount"], 0)
+        self.assertNotIn("dataAddress", slices["ORIGINAL_EMPTY_SLICE"])
+        self.assertEqual(slices["ORIGINAL_HOLDER"]["memberPath"], ("strings",))
+        strings = [row for row in result["stringReferences"] if row["rootName"].startswith("ORIGINAL_")]
+        self.assertEqual(len(strings), 6)
+        shared = [row for row in strings if row.get("storedBytesSha256") == hashlib.sha256(b"slice shared").hexdigest()]
+        self.assertEqual(len(shared), 3)
+        self.assertEqual(len({row["dataAddress"] for row in shared}), 1)
+        self.assertEqual([row["memberPath"] for row in strings if row["rootName"] == "ORIGINAL_STRINGS"],
+                         [("[0]",), ("[1]",), ("[2]",)])
+        self.assertEqual([row["memberPath"] for row in strings if row["rootName"] == "ORIGINAL_HOLDER"],
+                         [("strings", "[0]"), ("strings", "[1]")])
+        payloads = [(int(row["dataAddress"], 16), int(row["dataAddress"], 16) + row["length"])
+                    for row in strings if row["length"]]
+        self.assertEqual(covered_bytes(payloads), len(b"slice firstslice sharedslice last"))
+        self.assertFalse(result["licenseClearance"])
+
     def test_rust_pie_structures_arrays_aliases_and_empty_strings_use_real_dwarf(self):
         from elftools.elf.elffile import ELFFile
 

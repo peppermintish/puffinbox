@@ -96,6 +96,15 @@ binary found no additional eligible fields and retained all previous variable,
 source and string records. Read-only coverage and the licensing blocker are
 unchanged; dynamic layouts and anonymous roots remain outside this audit.
 
+The later [typed string-slice audit](runtime-link-audit.md#typed-string-slice-inspection)
+passed 91 GNU regressions, including 33 data controls. Its two bounded pointer
+hops add 221 slice descriptors and 543 string references on the same earlier
+binary, retaining all preceding records. Combined coverage leaves 954,733
+`.rodata` bytes and 237,016 `.data.rel.ro` bytes unassigned. Optional strings,
+other variant parts and arbitrary pointer graphs remain outside this traversal.
+Root declarations still do not prove literal origins. This tooling result
+adds no whole-runtime clearance or production adoption.
+
 The GNU audit now preserves exact native source bodies instead of hashes alone. Fresh candidate `d7d42ac4` has all 927 mapped native files available after build cleanup and passes its source/notice checks, 33 container checks and 29 local HTTPS checks. A separate replay regenerated all 107 bodies without byte-identical package candidates from the verified locked OpenSSL archive, matching every preserved output hash. Selected generator/template hashes and their notice contexts are recorded; file-level license review remains open. Copies and non-allowlisted external runtime files stay outside CI uploads and release bundles. This improves reviewability without clearing the boundary; see [runtime-link-audit.md](runtime-link-audit.md#preserved-native-source-copies).
 
 A corrected GNU capture now includes inherited system-header dependencies. Candidate `d1275bc2` passed source/notice checks, 35 container checks and 29 local HTTPS checks, with 1,872 verified byte copies and 252 system input paths. All 927 mapped native body hashes match the earlier candidate. Earlier traces omitted system headers when OpenSSL supplied user-only dependency options; their mapped-body records do not establish complete include coverage. The additional headers and unmapped content remain under review. See [the capture correction](runtime-link-audit.md#system-headers-in-dependency-rules).

@@ -703,6 +703,44 @@ unbounded arrays, variant parts and arbitrary pointer graphs remain outside
 this traversal. The replay adds no runtime license clearance or production
 adoption, and changes no dependency or policy exception.
 
+## Typed string-slice inspection
+
+The checker also recognizes the observed Rust `&[&str]` layout within the same
+bounded, source-associated roots. It verifies both the slice header and its
+pointed-to string type. Each nonempty pointer must satisfy the preceding local
+relocation rules; descriptor storage must be aligned and fit wholly in one
+loaded read-only or read-only-after-relocation section. Every element must pass
+the existing UTF-8, bounds and relocation checks before any slice coverage is
+returned. Empty slices are recorded without dereferencing their pointer. The
+two pointer hops are limited to this layout, with a total budget of 4,096 string
+fields per root. Byte slices, arbitrary pointers and enum variant parts remain
+outside this traversal.
+
+All 91 GNU audit regressions passed, including 33 data controls. The compiled
+Rust PIE control covers standalone and nested slices, shared and empty strings,
+an empty slice and exclusion of a byte slice. Negative controls cover misleading
+type names, malformed layouts, alias cycles, excessive counts, section bounds,
+nonlocal relocations, alignment and invalid UTF-8. All 145 Python cases passed
+on Linux with both compilers and the external inspector available; none were
+skipped. The initial omission and passing records are retained under
+`.local/gnu-slice-data-20261004`.
+
+Replay of the exact earlier GNU `3bbe84d4` binary retained all 3,383 variable
+rows, 51 source associations and 443 preceding string references. It adds 221
+slice descriptors, including eleven empty slices, and 543 string references.
+The resulting 986 string references include two empty strings and 361 distinct
+nonempty payload ranges. Range-union coverage is 38,639 of 993,372 `.rodata`
+bytes, leaving 954,733 unassigned. Slice descriptor storage accounts for 3,344
+additional `.data.rel.ro` bytes; its combined coverage is 159,208 of 396,224,
+leaving 237,016 outside this inspection. No string or slice was rejected in the
+selected scope. Aliases are counted without duplicating covered bytes.
+
+Root declarations remain associations, not proof of literal origin. Optional
+strings and other variant parts, anonymous roots, indirect locations, arbitrary
+pointer graphs and remaining data need further review. This is later audit
+tooling applied to a retained historical binary. It changes no production
+runtime, dependency, allowlist or exception, and adds no license clearance.
+
 ## Selected package inputs and timestamp notice
 
 The 103 packages with named retained sections in GNU `3bbe84d4` join to 103

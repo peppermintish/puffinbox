@@ -2,6 +2,22 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
+The later [typed string-slice audit](runtime-link-audit.md#typed-string-slice-inspection)
+passed 91 GNU regressions, including 33 data controls. All 145 Python cases
+passed on Linux with both compilers and the external inspector available; none
+were skipped. Replay of the retained GNU `3bbe84d4` binary preserves all earlier
+variable rows, source associations and 443 string references. It adds 221 slice
+descriptors and 543 string references. Combined coverage leaves 954,733
+`.rodata` bytes and 237,016 `.data.rel.ro` bytes unassigned. Exact logs, hashes
+and independent joins are under `.local/gnu-slice-data-20261004`. This tooling
+change has no new Rust, container or installed-client run and does not clear
+runtime licensing. All five release gates remain open.
+
+All four cloud jobs at `46d17dd` passed: [source and media acceptance](https://github.com/peppermintish/puffinbox/actions/runs/37195120118)
+and [both GNU runtime configurations](https://github.com/peppermintish/puffinbox/actions/runs/37195120104). The preceding
+`a103078` media job and both GNU jobs passed, but its source job was cancelled
+by the newer push. That cancelled run is not a complete source-CI pass.
+
 The later [fixed-array GNU audit](runtime-link-audit.md#fixed-array-string-inspection)
 passed 84 regressions, including 26 data controls. Its compiled Rust control
 verifies dense arrays, nested dimensions, structure elements, aliases and empty
