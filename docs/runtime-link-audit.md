@@ -509,9 +509,56 @@ released [license metadata tree](https://github.com/rust-lang/rust/blob/48a229ce
 with the same allowed choices. Source copies, notice hashes and independent
 review records are preserved under `.local/gnu-standard-inputs-20261004`.
 
-This assigns released declarations to the mapped paths, including declarations
-inherited from Rust's library subtree. Submodule policy inheritance, upstream
-source-commit joins, unmapped and inlined origins, conservative compile-input
-completeness and whole-binary licensing still need review. The external
-standard library and static Unicode-bearing runtime retain their separate
-distribution limits. No release gate or packaging policy changed.
+An independent upstream archive comparison then matched all 246 source files
+byte for byte at that compiler commit. The preserved archive has SHA-256
+`50ac07d25365f6681bae413743695e35b2c35bf7d45dc9a3749d5f7549b0f31d`.
+All nearest package manifests agree with the release declarations. The mapped
+stdarch, portable-simd and std_detect files are ordinary files in this commit;
+none falls under an unresolved submodule. Twenty-two policy inputs and four
+matching earlier notice hashes were independently verified.
+
+GNU server `a2f2cde7` maps the same 246 hash-identical library inputs. Their
+current joins are recorded under `.local/item-refresh-gnu-20261004`. Unmapped
+and inlined origins, conservative compile-input completeness and whole-binary
+licensing still need review. The external standard library and static
+Unicode-bearing runtime retain their separate distribution limits. No release
+gate or packaging policy changed.
+
+## Generated Unicode package inputs
+
+The locked `unicode-width 0.2.2`, `unicode-normalization 0.1.25` and
+`unicase 2.9.0` generated modules were reproduced byte for byte in private
+storage. Their source commits, packaged source/generator bytes and locked
+archive checksums were verified. Independent review matched all three outputs
+to the exact mapped files in GNU server `a2f2cde7` and verified nineteen fixed
+Unicode 17.0.0 data inputs. Unicase's recorded generation date is an explicit
+clock input; its output handle was closed before comparison.
+
+The software packages declare MIT/Apache choices. The data inputs refer to
+separate [Unicode terms](https://www.unicode.org/copyright.html) and the
+[Unicode License v3](https://www.unicode.org/license.txt). Reproducing the
+outputs establishes provenance; it does not waive those input terms or clear
+generated data under the requested boundary. The raw data remains private
+audit material and was not added to the project or its images. Records are
+under `.local/generated-unicode-review-20261004`; the earlier missing input
+and empty-output observations remain separate. Generated-data licensing,
+retained constants and complete executable review remain open.
+
+## Current item-refresh GNU checks
+
+At clean source `63a28a9`, GNU audit server `a2f2cde7` passed startup,
+numerical, TLS, source/notice and all 434 named-object ownership checks. The
+owners are 416 package objects, sixteen server objects and two original entry
+objects. The runtime inventory reports no known retained runtime archives or
+defined generated Unicode symbols; seven Unicode functions remain imported
+from the separately supplied standard library.
+
+The exact executable passed 35 isolated container checks, 29 HTTPS checks and
+nine album projections. Both official clients completed the original
+four-track FLAC album with fifteen successful playback reports each. All 50
+saved rows matched expected plays without a reset. The retained backend was
+restored to static server `99440a3e`, with its original identity, grants and
+mounts. Joined evidence verifies all 325 frozen source files under
+`.local/item-refresh-gnu-client-20261004`. The external standard library
+remains outside the bundled boundary. Production adoption, full runtime
+licensing and all five release gates remain open.
