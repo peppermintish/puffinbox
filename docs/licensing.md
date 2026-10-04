@@ -89,6 +89,13 @@ including compiled C and Rust controls. Root declarations do not establish
 literal origins, and most read-only data remains uncovered. This is additional
 audit evidence; whole-runtime clearance and the MIT/Apache boundary are unchanged.
 
+The later [fixed-array checker](runtime-link-audit.md#fixed-array-string-inspection)
+passed 84 GNU regressions, including 26 data controls. It follows bounded dense
+arrays and rejects nonconstant sizes and dimensions. Replay on the same older
+binary found no additional eligible fields and retained all previous variable,
+source and string records. Read-only coverage and the licensing blocker are
+unchanged; dynamic layouts and anonymous roots remain outside this audit.
+
 The GNU audit now preserves exact native source bodies instead of hashes alone. Fresh candidate `d7d42ac4` has all 927 mapped native files available after build cleanup and passes its source/notice checks, 33 container checks and 29 local HTTPS checks. A separate replay regenerated all 107 bodies without byte-identical package candidates from the verified locked OpenSSL archive, matching every preserved output hash. Selected generator/template hashes and their notice contexts are recorded; file-level license review remains open. Copies and non-allowlisted external runtime files stay outside CI uploads and release bundles. This improves reviewability without clearing the boundary; see [runtime-link-audit.md](runtime-link-audit.md#preserved-native-source-copies).
 
 A corrected GNU capture now includes inherited system-header dependencies. Candidate `d1275bc2` passed source/notice checks, 35 container checks and 29 local HTTPS checks, with 1,872 verified byte copies and 252 system input paths. All 927 mapped native body hashes match the earlier candidate. Earlier traces omitted system headers when OpenSSL supplied user-only dependency options; their mapped-body records do not establish complete include coverage. The additional headers and unmapped content remain under review. See [the capture correction](runtime-link-audit.md#system-headers-in-dependency-rules).

@@ -2,6 +2,17 @@
 
 Puffinbox is partial and unreleased. The source and container checks below passed locally through 2026-10-04. Earlier browser checks remain applicable to unchanged interface code; client observations identify their tested image and scope.
 
+The later [fixed-array GNU audit](runtime-link-audit.md#fixed-array-string-inspection)
+passed 84 regressions, including 26 data controls. Its compiled Rust control
+verifies dense arrays, nested dimensions, structure elements, aliases and empty
+strings. All 138 Python cases also passed on Linux with the external inspector
+and both compilers available; none were skipped. Replay of the exact earlier
+GNU `3bbe84d4` binary retained all 3,383
+variable rows, 51 source associations and 443 string references, with no new
+eligible array fields. Read-only coverage and runtime licensing remain
+unchanged. This tooling replay does not replace the zero-limit image checks
+below. Its failures and passing evidence are under `.local/gnu-array-data-20261004`.
+
 The zero-limit build passed all thirteen source checks: formatting, strict
 Clippy, 260 standard Rust cases, all 29 enabled database cases, 130 Python cases,
 TLS, both strict package audits, selected-source guards and full notices. The

@@ -675,6 +675,34 @@ remaining read-only bytes are still outside this inspection. This replay is an
 audit of the earlier GNU binary, not a build of the current album-name source.
 It does not change runtime packaging, the allowlist or `licenseClearance: false`.
 
+## Fixed-array string inspection
+
+The data checker now follows fixed, dense arrays of the supported Rust `&str`
+layout, including nested arrays and structure elements. Dimensions, sizes and
+member offsets must use literal constant forms. An integer-valued debug-record
+reference is not a constant; [DWARF's static/dynamic attribute rules](https://dwarfstd.org/issues/230412.1.html)
+permit those distinct representations. Derived sizes with explicit strides,
+unknown dimensions, inconsistent sizes and non-row-major layouts are refused.
+Traversal retains its eight-level path bound and limits each array expansion
+and structure to 4,096 string fields. Array paths use zero-based storage indices.
+The preceding relocation, UTF-8 and read-only payload checks still apply.
+
+All 84 GNU audit regressions passed, including 26 data controls. The compiled
+Rust PIE control verifies array elements, nested dimensions, structure member
+offsets, shared payloads and empty strings against real DWARF and relocations.
+The first run reproduced the old array omission. An intermediate negative
+control exposed a missing early return for an unknown upper bound; its failure
+and the corrected runs are retained under `.local/gnu-array-data-20261004`.
+
+Replaying the exact earlier `3bbe84d4` binary retained all 3,383 variable rows,
+51 source associations and 443 string references. It found no additional
+eligible array fields, so coverage remains 36,435 of 993,372 `.rodata` bytes;
+956,937 remain unassigned. This result does not establish that arrays are absent
+from anonymous or otherwise uninspected data. Dynamic, strided, oversized and
+unbounded arrays, variant parts and arbitrary pointer graphs remain outside
+this traversal. The replay adds no runtime license clearance or production
+adoption, and changes no dependency or policy exception.
+
 ## Selected package inputs and timestamp notice
 
 The 103 packages with named retained sections in GNU `3bbe84d4` join to 103

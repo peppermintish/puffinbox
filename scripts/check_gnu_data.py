@@ -8,6 +8,7 @@ import argparse
 from bisect import bisect_left
 from collections import Counter
 import hashlib
+from itertools import product
 import json
 from pathlib import Path
 import re
@@ -30,13 +31,51 @@ def inherited(die, attribute):
     return None
 
 
+def constant(attribute):
+    """Integer-valued references and expressions are not literal dimensions."""
+    if attribute is None or getattr(attribute, "form", None) not in (
+            "DW_FORM_data1", "DW_FORM_data2", "DW_FORM_data4", "DW_FORM_data8", "DW_FORM_data16",
+            "DW_FORM_udata", "DW_FORM_sdata", "DW_FORM_implicit_const"):
+        return None
+    return attribute.value if type(attribute.value) is int else None
+
+
+def array_dimensions(die):
+    dimensions = []
+    for child in die.iter_children():
+        if child.tag != "DW_TAG_subrange_type":
+            continue
+        attrs = child.attributes
+        if "DW_AT_count" in attrs:
+            count = constant(attrs["DW_AT_count"])
+        elif "DW_AT_upper_bound" in attrs:
+            upper = constant(attrs["DW_AT_upper_bound"])
+            if upper is None:
+                return None
+            if "DW_AT_lower_bound" in attrs:
+                lower = constant(attrs["DW_AT_lower_bound"])
+            else:
+                language = die.cu.get_top_DIE().attributes.get("DW_AT_language")
+                # Only the zero-based C and Rust defaults used by these builds.
+                if language is None or language.value not in (0x01, 0x02, 0x0C, 0x1C, 0x1D):
+                    return None
+                lower = 0
+            count = upper - lower + 1 if upper is not None and lower is not None else None
+        else:
+            return None
+        if count is None or count < 0:
+            return None
+        dimensions.append(count)
+    return dimensions or None
+
+
 def byte_size(die, seen=None):
     seen = set() if seen is None else seen
     if die.offset in seen:
         return None
     seen.add(die.offset)
     if "DW_AT_byte_size" in die.attributes:
-        value = die.attributes["DW_AT_byte_size"].value
+        value = constant(die.attributes["DW_AT_byte_size"])
         return value if isinstance(value, int) and value >= 0 else None
     if die.tag in ("DW_TAG_pointer_type", "DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
         return die.cu.header.address_size
@@ -45,34 +84,14 @@ def byte_size(die, seen=None):
         return None
     size = byte_size(owner.get_DIE_from_attribute("DW_AT_type"), seen)
     if die.tag == "DW_TAG_array_type":
-        dimensions = 0
-        for child in die.iter_children():
-            if child.tag != "DW_TAG_subrange_type":
-                continue
-            dimensions += 1
-            attrs = child.attributes
-            if "DW_AT_count" in attrs:
-                count = attrs["DW_AT_count"].value
-            elif "DW_AT_upper_bound" in attrs:
-                upper = attrs["DW_AT_upper_bound"].value
-                if not isinstance(upper, int):
-                    return None
-                if "DW_AT_lower_bound" in attrs:
-                    lower = attrs["DW_AT_lower_bound"].value
-                else:
-                    language = die.cu.get_top_DIE().attributes.get("DW_AT_language")
-                    # Only the zero-based C and Rust defaults used by these builds.
-                    if language is None or language.value not in (0x01, 0x02, 0x0C, 0x1C, 0x1D):
-                        return None
-                    lower = 0
-                count = upper - lower + 1 if isinstance(upper, int) and isinstance(lower, int) else None
-            else:
-                return None
-            if not isinstance(count, int) or count < 0 or size is None:
-                return None
-            size *= count
-        if not dimensions:
+        dimensions = array_dimensions(die)
+        if dimensions is None or size is None:
             return None
+        for shape in [die, *die.iter_children()]:
+            if any(key in shape.attributes for key in ("DW_AT_byte_stride", "DW_AT_bit_stride")):
+                return None
+        for count in dimensions:
+            size *= count
     return size
 
 
@@ -101,9 +120,42 @@ def string_fields(die, offset=0, path=(), seen=None):
     """Recognize the observed Rust &str layout; never follow arbitrary pointers."""
     seen = set() if seen is None else set(seen)
     die = unwrapped(die)
-    if die is None or die.offset in seen or len(path) > 8 or die.tag != "DW_TAG_structure_type":
+    if die is None or die.offset in seen or len(path) > 8:
         return
     seen.add(die.offset)
+    if die.tag == "DW_TAG_array_type":
+        owner = inherited(die, "DW_AT_type")
+        ordering = die.attributes.get("DW_AT_ordering")
+        if owner is None or (ordering is not None and constant(ordering) != 0):
+            return
+        for shape in [die, *die.iter_children()]:
+            if any(key in shape.attributes for key in ("DW_AT_byte_stride", "DW_AT_bit_stride",
+                                                       "DW_AT_data_location", "DW_AT_allocated",
+                                                       "DW_AT_associated", "DW_AT_rank")):
+                return
+        dimensions = array_dimensions(die)
+        if dimensions is None or any(count == 0 for count in dimensions):
+            return
+        slots = 1
+        for count in dimensions:
+            slots *= count
+            if slots > 4096:
+                return
+        element = owner.get_DIE_from_attribute("DW_AT_type")
+        width = byte_size(element)
+        if width is None or width <= 0 or byte_size(die) != slots * width:
+            return
+        fields = list(string_fields(element, path=path + ("[]",), seen=seen))
+        if len(fields) * slots > 4096:
+            return
+        for slot, indices in enumerate(product(*(range(count) for count in dimensions))):
+            # Indices describe zero-based dense storage, not language lower bounds.
+            label = "".join(f"[{index}]" for index in indices)
+            for position, member_path in fields:
+                yield offset + slot * width + position, path + (label,) + member_path[len(path) + 1:]
+        return
+    if die.tag != "DW_TAG_structure_type":
+        return
     members = [child for child in die.iter_children() if child.tag == "DW_TAG_member"]
     name = die.attributes.get("DW_AT_name")
     if name and text(name.value) == "&str":
@@ -115,7 +167,7 @@ def string_fields(die, offset=0, path=(), seen=None):
         for field, position in ((names["data_ptr"], 0), (names["length"], 8)):
             location = field.attributes.get("DW_AT_data_member_location")
             owner = inherited(field, "DW_AT_type")
-            if location is None or location.value != position or owner is None:
+            if constant(location) != position or owner is None:
                 return
             types.append(unwrapped(owner.get_DIE_from_attribute("DW_AT_type")))
         pointer, length = types
@@ -133,17 +185,23 @@ def string_fields(die, offset=0, path=(), seen=None):
     total = byte_size(die)
     if total is None:
         return
+    fields = []
     for child in members:
         location = child.attributes.get("DW_AT_data_member_location")
         owner = inherited(child, "DW_AT_type")
-        if location is None or not isinstance(location.value, int) or owner is None:
+        position = constant(location)
+        if position is None or owner is None:
             continue
         field = owner.get_DIE_from_attribute("DW_AT_type")
         size = byte_size(field)
-        if size is None or location.value < 0 or location.value + size > total:
+        if size is None or position < 0 or position + size > total:
             continue
         name = child.attributes.get("DW_AT_name")
-        yield from string_fields(field, offset + location.value, path + (text(name.value) if name else None,), seen)
+        fields.extend(string_fields(field, offset + position,
+                                    path + (text(name.value) if name else None,), seen))
+        if len(fields) > 4096:
+            return
+    yield from fields
 
 
 class StringReader:
@@ -352,8 +410,11 @@ def inventory(elf, stream):
             "scope": "Direct DW_OP_addr/addrx variables in loaded non-executable read-only and GNU RELRO sections. "
                      "Hashes describe ELF file bytes before relocation. Source-less vtable names are counted, not "
                      "attributed or cleared. String references cover bounded UTF-8 payloads reached through observed "
-                     "Rust &str structures within source-associated variables, using supported x86-64 relocations. "
-                     "Root declarations are associations, not proof of literal origin. Arrays, variant parts, arbitrary "
+                     "Rust &str structures and fixed dense arrays within source-associated variables, using supported "
+                     "x86-64 relocations. Array paths use zero-based storage indices. Each array expansion and "
+                     "structure is bounded to 4096 string fields, and paths to eight levels. "
+                     "Root declarations are associations, not proof of literal origin. Dynamic, strided, oversized "
+                     "or unbounded arrays, variant parts, arbitrary "
                      "pointer graphs, location lists, indirect expressions, anonymous roots, code and linker-generated "
                      "material remain outside string coverage. Remaining bytes "
                      "include padding and other structures; no exhaustive data or license clearance is claimed."}

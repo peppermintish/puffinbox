@@ -16,7 +16,8 @@ from check_gnu_data import StringReader, byte_size, covered_bytes, inherited, in
 class Die:
     def __init__(self, offset, tag="DW_TAG_variable", attrs=None, references=None, children=()):
         self.offset, self.tag = offset, tag
-        self.attributes = {key: SimpleNamespace(value=value) for key, value in (attrs or {}).items()}
+        self.attributes = {key: SimpleNamespace(value=value, form="DW_FORM_data8")
+                           for key, value in (attrs or {}).items()}
         self.references, self.children = references or {}, children
         self.cu = SimpleNamespace(header=SimpleNamespace(address_size=8))
 
@@ -71,6 +72,17 @@ class DataAttributionTests(unittest.TestCase):
                         Die(4, tag="DW_TAG_subrange_type", attrs={"DW_AT_upper_bound": [0x50]})])
         self.assertIsNone(byte_size(array))
 
+    def test_integer_references_are_not_literal_sizes_or_bounds(self):
+        scalar = Die(1, attrs={"DW_AT_byte_size": 16})
+        scalar.attributes["DW_AT_byte_size"].form = "DW_FORM_ref4"
+        self.assertIsNone(byte_size(scalar))
+        scalar.attributes["DW_AT_byte_size"].form = "DW_FORM_data8"
+        dimension = Die(2, tag="DW_TAG_subrange_type", attrs={"DW_AT_count": 3})
+        dimension.attributes["DW_AT_count"].form = "DW_FORM_ref4"
+        array = Die(3, tag="DW_TAG_array_type", attrs={"DW_AT_type": 1},
+                    references={"DW_AT_type": scalar}, children=[dimension])
+        self.assertIsNone(byte_size(array))
+
     def test_language_dependent_array_defaults_are_not_guessed(self):
         scalar = Die(1, attrs={"DW_AT_byte_size": 1})
         array = Die(2, tag="DW_TAG_array_type", attrs={"DW_AT_type": 1},
@@ -108,6 +120,48 @@ def string_type():
 
 
 class StringShapeTests(unittest.TestCase):
+    def array(self, element, counts, *, size=None):
+        attributes = {"DW_AT_type": element.offset}
+        if size is not None:
+            attributes["DW_AT_byte_size"] = size
+        return Die(200, tag="DW_TAG_array_type", attrs=attributes,
+                   references={"DW_AT_type": element}, children=[
+                       Die(201 + index, tag="DW_TAG_subrange_type", attrs={"DW_AT_count": count})
+                       for index, count in enumerate(counts)])
+
+    def test_dense_arrays_include_every_element_and_dimension(self):
+        array = self.array(string_type(), [2, 3])
+        self.assertEqual(list(string_fields(array)), [
+            (0, ("[0][0]",)), (16, ("[0][1]",)), (32, ("[0][2]",)),
+            (48, ("[1][0]",)), (64, ("[1][1]",)), (80, ("[1][2]",)),
+        ])
+
+    def test_array_elements_preserve_nested_member_offsets(self):
+        string = string_type()
+        member = Die(106, tag="DW_TAG_member", attrs={"DW_AT_name": "label", "DW_AT_type": 105,
+                                                     "DW_AT_data_member_location": 8},
+                     references={"DW_AT_type": string})
+        parent = Die(107, tag="DW_TAG_structure_type", attrs={"DW_AT_byte_size": 24}, children=[member])
+        self.assertEqual(list(string_fields(self.array(parent, [2]))),
+                         [(8, ("[0]", "label")), (32, ("[1]", "label"))])
+
+    def test_unknown_padded_strided_and_excessive_arrays_are_not_guessed(self):
+        for counts, size in [([], None), ([[0x50]], None), ([-1], None), ([2], 33), ([4097], None)]:
+            with self.subTest(counts=counts, size=size):
+                self.assertEqual(list(string_fields(self.array(string_type(), counts, size=size))), [])
+        for attribute in ("DW_AT_byte_stride", "DW_AT_bit_stride", "DW_AT_ordering"):
+            array = self.array(string_type(), [2])
+            array.attributes[attribute] = SimpleNamespace(value=1)
+            self.assertEqual(list(string_fields(array)), [])
+        array = self.array(string_type(), [0])
+        self.assertEqual(list(string_fields(array)), [])
+        array = self.array(string_type(), [2], size=32)
+        array.children[0].attributes["DW_AT_count"].form = "DW_FORM_ref4"
+        self.assertEqual(list(string_fields(array)), [])
+        array = self.array(string_type(), [2])
+        array.children[0].attributes["DW_AT_byte_stride"] = SimpleNamespace(value=24, form="DW_FORM_data8")
+        self.assertEqual(list(string_fields(array)), [])
+
     def test_nested_layout_uses_declared_offsets(self):
         string = string_type()
         field = Die(106, tag="DW_TAG_member", attrs={"DW_AT_name": "label", "DW_AT_type": 105,
@@ -139,7 +193,7 @@ class StringShapeTests(unittest.TestCase):
                     del size.references["DW_AT_type"].attributes["DW_AT_encoding"]
                 self.assertEqual(list(string_fields(string)), [])
 
-    def test_cycles_arrays_and_pointer_graphs_are_not_traversed(self):
+    def test_cycles_unbounded_arrays_and_pointer_graphs_are_not_traversed(self):
         alias = Die(108, tag="DW_TAG_typedef", attrs={"DW_AT_type": 108})
         alias.references["DW_AT_type"] = alias
         self.assertEqual(list(string_fields(alias)), [])
@@ -245,7 +299,7 @@ class StringPointerTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_INSPECTOR and RUST_COMPILER, "Requires external pyelftools and Rust.")
 class CompiledStringControls(unittest.TestCase):
-    def test_rust_pie_nested_alias_and_empty_strings_use_real_dwarf_and_relocations(self):
+    def test_rust_pie_structures_arrays_aliases_and_empty_strings_use_real_dwarf(self):
         from elftools.elf.elffile import ELFFile
 
         with tempfile.TemporaryDirectory(prefix="puffinbox-string-control-") as directory:
@@ -257,10 +311,13 @@ struct Nested { marker: u64, label: &'static str }
 #[used] static ORIGINAL_ALIAS: &str = "original string control";
 #[used] static ORIGINAL_EMPTY: &str = "";
 #[used] static ORIGINAL_NESTED: Nested = Nested { marker: 17, label: "nested control" };
-#[used] static ORIGINAL_ARRAY: [&str; 1] = ["array outside scope"];
+#[used] static ORIGINAL_ARRAY: [&str; 3] = ["array control", "original string control", ""];
+#[used] static ORIGINAL_GRID: [[&str; 2]; 2] = [["grid zero", "grid one"], ["grid two", "grid three"]];
+#[used] static ORIGINAL_RECORDS: [Nested; 2] = [Nested { marker: 11, label: "record zero" }, Nested { marker: 13, label: "record one" }];
 fn main() {
     std::hint::black_box((&ORIGINAL_STRING, &ORIGINAL_ALIAS, &ORIGINAL_EMPTY,
-                         ORIGINAL_NESTED.marker, &ORIGINAL_NESTED.label, &ORIGINAL_ARRAY));
+                         ORIGINAL_NESTED.marker, &ORIGINAL_NESTED.label, &ORIGINAL_ARRAY,
+                         &ORIGINAL_GRID, &ORIGINAL_RECORDS));
 }
 ''')
             subprocess.run([RUST_COMPILER, "-C", "debuginfo=2", "-C", "opt-level=0", "-C", "relocation-model=pic",
@@ -270,16 +327,30 @@ fn main() {
                 elf = ELFFile(stream)
                 self.assertEqual(elf["e_type"], "ET_DYN")
                 result = inventory(elf, stream)
-        rows = {row["rootName"]: row for row in result["stringReferences"] if row["rootName"].startswith("ORIGINAL_")}
+        original = [row for row in result["stringReferences"] if row["rootName"].startswith("ORIGINAL_")]
+        rows = {row["rootName"]: row for row in original if row["rootName"] not in
+                {"ORIGINAL_ARRAY", "ORIGINAL_GRID", "ORIGINAL_RECORDS"}}
         self.assertEqual(set(rows), {"ORIGINAL_STRING", "ORIGINAL_ALIAS", "ORIGINAL_EMPTY", "ORIGINAL_NESTED"})
         self.assertEqual(rows["ORIGINAL_STRING"]["binding"], "R_X86_64_RELATIVE")
         self.assertEqual(rows["ORIGINAL_STRING"]["dataAddress"], rows["ORIGINAL_ALIAS"]["dataAddress"])
         self.assertEqual(rows["ORIGINAL_EMPTY"]["length"], 0)
         self.assertEqual(rows["ORIGINAL_NESTED"]["memberPath"], ("label",))
         self.assertEqual(rows["ORIGINAL_NESTED"]["storedBytesSha256"], hashlib.sha256(b"nested control").hexdigest())
+        array = [row for row in original if row["rootName"] == "ORIGINAL_ARRAY"]
+        self.assertEqual([row["memberPath"] for row in array], [("[0]",), ("[1]",), ("[2]",)])
+        self.assertEqual([row["length"] for row in array], [len(b"array control"), len(b"original string control"), 0])
+        self.assertEqual(array[1]["dataAddress"], rows["ORIGINAL_STRING"]["dataAddress"])
+        for name, values in [("ORIGINAL_GRID", [b"grid zero", b"grid one", b"grid two", b"grid three"]),
+                             ("ORIGINAL_RECORDS", [b"record zero", b"record one"])]:
+            selected = [row for row in original if row["rootName"] == name]
+            self.assertEqual([row["storedBytesSha256"] for row in selected],
+                             [hashlib.sha256(value).hexdigest() for value in values])
+        self.assertEqual([row["memberPath"] for row in original if row["rootName"] == "ORIGINAL_RECORDS"],
+                         [("[0]", "label"), ("[1]", "label")])
         payload_spans = [(int(row["dataAddress"], 16), int(row["dataAddress"], 16) + row["length"])
-                         for row in rows.values() if row["length"]]
-        self.assertEqual(covered_bytes(payload_spans), len(b"original string controlnested control"))
+                         for row in original if row["length"]]
+        self.assertEqual(covered_bytes(payload_spans), len(b"original string controlnested controlarray control"
+                                                         b"grid zerogrid onegrid twogrid threerecord zerorecord one"))
         for section in result["sectionCoverage"]:
             self.assertLessEqual(section["variableAndStringBytes"], section["variableBytes"] + section["stringPayloadBytes"])
             self.assertEqual(section["remainingAfterStringInspection"], section["bytes"] - section["variableAndStringBytes"])
