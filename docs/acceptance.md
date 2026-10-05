@@ -22,6 +22,35 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Local HTTPS proxy | 29 passed | Certificate checks, forwarding spoof rejection, secure cookies, media-token scope, logout and active remote-policy changes. Synthetic addresses; no Internet deployment. |
 | Public-schema route report | 108 / 364 exact method/path declarations | Declaration coverage only. |
 
+At `bd177a4`, automatic local metadata imports and the series sorting correction
+passed formatting, strict Clippy, source policy, 247 standard Rust cases and the
+30-case disposable-database suite. The core is
+`sha256:353702dbc5743a84bbfce21e8751c5e02a97fbd4265ede0793090f250b05bc4a`;
+the operator is
+`sha256:77795cf7a5f6cd2d33942c4540a956853778e4b26df5a5f6c105c5ae1fbc000d`.
+Both were built from a clean committed source with unchanged input hashes. Image
+inspection and the external FFmpeg encode/probe passed. A fresh stack passed all
+35 container checks and 69 reference projections: 57 Next Up/date projections
+plus twelve series-sort/Favorites reads. The latter compare HTTP success and
+ordered names; disabled catalogue counts remain a recorded difference. The
+fixture titles imported automatically after scanning, without a manual metadata
+refresh. The scan regression also checks queued-job coalescing, changed and
+removed sidecars, artwork bytes and restricted-user visibility.
+
+The existing official-client stack was upgraded to this operator while preserving
+server identity, episode user data and fixture hashes. Favorites displayed the
+expected two episodes in both clients; undo restored the original single favorite.
+The default-renderer Desktop profile resumed its movie from the independently
+stored 65.266-second position across the container replacement. Burned-in video
+advanced from 103.458 to 133.917 seconds, then normal back navigation reported a
+successful stop and stored 134.033 seconds. Both playback rows were ended, old HLS
+URLs returned 404, and no FFmpeg process remained. Other episode state and fixture
+bytes were unchanged. The image, fresh container, comparison, Favorites and
+Desktop restart ledgers are under `.local/next-up-contract-20261005/` in
+`images6`, `container4`, `comparison5`, `client-features6` and `desktop-playback6`.
+These checks establish the named synthetic flows; broader formats, audible
+continuity and complete client behavior remain open.
+
 The original corrected core is `sha256:6d66ba262dfac268acfa49ec6d6894d2c8b2a8edcd582735410cb1f25e80a841`; its operator image is `sha256:53eacf6d1359d2eb1cdce8a8def952768861b9d41cbafbd9ea377fddbb07cae0`. Both were built from the corrected working tree on checkpoint `ece05bd`, with exact source fingerprints in the local ledger. They are not builds of the preceding commit alone.
 
 The subsequent PDF restoration was built on checkpoint `d7417dd`: core `sha256:ac1ae481c3034b3ef2f0dd537f79f5cd0ba416de4c262150df7f5699eb3a5fe7`, operator `sha256:d5f9882fd84675ed1775f04d6491a9fbb750c7e0e9552caa723163043901e8c2`. A fresh isolated tree passed all 35 container checks, followed by the four authenticated PDF browser cases. Source fingerprints, asset hashes, notices, screenshots and cleanup records are in `.local/pdf-assets-20261005/`. Its synthetic browser cookie was revoked and its stack stopped with state preserved. Japanese glyphs displayed correctly on the tested Windows browser; unembedded font appearance on other hosts remains dependent on installed fonts. Documentation changes after these tests do not alter the tested implementation.
@@ -48,11 +77,16 @@ Official web visibly decoded the long synthetic HLS fixture at 640×360. Its tim
 
 Desktop accepted original MP4 direct-play requests, progress and stops, but the earlier profile's captured video surface was black. A subsequent fresh default-renderer profile on operator `9b563540` displayed the long HLS fixture advancing from its burned-in 12.250-second frame to 46.792 seconds. Twenty-eight progress reports succeeded; pausing committed 75.5 seconds. Closing that owned window produced no stopped report, so this does not establish normal Desktop stop behavior or general video acceptance. Audible output/continuity, broader formats and clients remain open. A transient web playback notice was observed before successful HLS playback; its cause is unresolved. Synchronized playback remains incomplete. These results do not clear the behavioral compatibility gate.
 
-On operator `cf88d1da`, unchanged official web and the verified Desktop executable each completed watched, favorite and both undo actions on the same synthetic episode. All eight per-user requests returned 200. Independent reads after each action confirmed the flags, play count and Next Up selection; fresh client views excluded the watched episode and restored it after undo. Original episode user data and fixture hashes were restored, with all other episode state unchanged. Remember Me stayed off. Desktop's Favorites page separately returned 400 for `SeriesSortName`; the [source sorting correction](jellyfin12-series-sort.md) has a database regression, while its packaged Favorites retest remains pending. The generic Next Up list displays `0-0 of 0` when its request disables totals, despite showing the selected cards. This display limit remains qualified.
+On operator `cf88d1da`, unchanged official web and the verified Desktop executable each completed watched, favorite and both undo actions on the same synthetic episode. All eight per-user requests returned 200. Independent reads after each action confirmed the flags, play count and Next Up selection; fresh client views excluded the watched episode and restored it after undo. Original episode user data and fixture hashes were restored, with all other episode state unchanged. Remember Me stayed off. Desktop's Favorites page separately returned 400 for `SeriesSortName`; the [sorting correction](jellyfin12-series-sort.md) passed the rebuilt-image and both official Favorites checks on `77795cf7`, as recorded above. The generic Next Up list displays `0-0 of 0` when its request disables totals, despite showing the selected cards. This display limit remains qualified.
 
 Private evidence is under `.local/policy-correction-20261005/`: `source2`, `browser`, `images`, `image-inspection`, `container2`, `remote`, `clients` and `native`. `clients/verified.json` joins the tested images to 113 implementation fingerprints, queue reports, independent user-data reads and screenshot hashes. Credentials and full client logs remain ignored by Git.
 
 ## Cloud and earlier records
+
+The [local-metadata run at `bd177a4`](https://github.com/peppermintish/puffinbox/actions/runs/37370581543)
+failed to acquire GitHub hosted runners after repeated attempts. Both jobs were
+cancelled before any test step ran. This is an infrastructure failure and provides
+no cloud validation of that source; the local results above remain separate.
 
 The Rust and compatible-license correction at `d7417dd` passed [both cloud jobs](https://github.com/peppermintish/puffinbox/actions/runs/37229872635), including the isolated media/restart acceptance and static Linux build. The PDF restoration's [diagnostic run at `8e70984`](https://github.com/peppermintish/puffinbox/actions/runs/37233830813) passed isolated media acceptance but failed the source browser check: the unembedded Japanese fixture rendered blank. The source and release browser runners install `fonts-noto-cjk`; text and pixel assertions remain unchanged. All twelve cases passed locally in Linux Chromium and [both cloud jobs passed at `601c817`](https://github.com/peppermintish/puffinbox/actions/runs/37235082365). Those fonts are external browser test prerequisites, not assets bundled with Puffinbox.
 

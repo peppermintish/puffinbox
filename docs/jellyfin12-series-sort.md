@@ -37,5 +37,8 @@ The private observations and database runs are under
 rating fixture where the catalogue required an item classification; the second
 expected an omitted total instead of the existing page-size result. Both failed
 records are preserved. The corrected fixture and qualified count assertion
-passed without changing catalogue policy or counting behavior. Rebuilt-image
-and official Favorites results belong in [acceptance.md](acceptance.md).
+passed without changing catalogue policy or counting behavior. The local-metadata
+operator passed all twelve reference reads for HTTP success and ordered names.
+Both official Favorites views displayed the expected episodes, and undo restored
+the original favorite state. Counts remain separately qualified. Exact source,
+image and client evidence is recorded in [acceptance.md](acceptance.md).
