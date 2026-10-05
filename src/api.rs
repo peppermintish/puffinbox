@@ -3045,6 +3045,7 @@ fn catalog_sort(fields: Option<&str>, orders: Option<&str>) -> Result<(String, S
             "Default",
             "IsFolder",
             "SortName",
+            "SeriesSortName",
             "Name",
             "DateCreated",
             "DateAdded",

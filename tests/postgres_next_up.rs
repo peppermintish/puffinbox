@@ -148,6 +148,20 @@ async fn next_up_matches_observed_episode_history_and_enforces_user_and_catalog_
         StatusCode::UNAUTHORIZED
     );
     assert_names(&router, "", token, &[], 0).await;
+    favorite_series_sort(
+        &state,
+        &router,
+        token,
+        owner,
+        [
+            started_episodes[&(1, 1)],
+            started_episodes[&(1, 2)],
+            fresh_episodes[&(1, 1)],
+            hidden_episodes[&(1, 1)],
+            private_episodes[&(1, 1)],
+        ],
+    )
+    .await;
     assert_names(
         &router,
         &format!("seriesId={fresh}"),
@@ -644,6 +658,114 @@ async fn series(
         episodes.insert((season, episode), id);
     }
     (series, episodes)
+}
+
+async fn favorite_series_sort(
+    state: &AppState,
+    router: &Router,
+    token: &str,
+    user: Uuid,
+    items: [Uuid; 5],
+) {
+    let original: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id,sort_name FROM items WHERE id=ANY($1)")
+            .bind(items.to_vec())
+            .fetch_all(&state.db)
+            .await
+            .unwrap();
+    // The general catalogue's policy applies each item's classification;
+    // Next Up additionally checks the enclosing series and season. Classify
+    // this leaf explicitly for the catalogue sorting and filtering checks.
+    sqlx::query("INSERT INTO item_metadata(item_id,provider_key,policy_rating_scale,policy_rating_value) VALUES($1,'local-nfo','US-MPAA-v1',90)")
+        .bind(items[3]).execute(&state.db).await.unwrap();
+    for id in items {
+        db::set_item_favorite(&state.db, state.run_id, user, id, true)
+            .await
+            .unwrap();
+    }
+    // Episode titles deliberately disagree with series order, so accepting
+    // the option without applying its primary key cannot pass these checks.
+    for (id, name) in [
+        (items[0], "a title"),
+        (items[1], "z title"),
+        (items[2], "m title"),
+    ] {
+        sqlx::query("UPDATE items SET sort_name=$2 WHERE id=$1")
+            .bind(id)
+            .bind(name)
+            .execute(&state.db)
+            .await
+            .unwrap();
+    }
+    for (fields, order, expected) in [
+        (
+            "SeriesSortName,SortName",
+            "Ascending",
+            [items[2], items[0], items[1]],
+        ),
+        (
+            "SeriesSortName,SortName",
+            "Descending",
+            [items[1], items[0], items[2]],
+        ),
+        (
+            "SeriesSortName,SortName",
+            "Descending,Ascending",
+            [items[0], items[1], items[2]],
+        ),
+        (
+            "seriessortname",
+            "Descending",
+            [items[0], items[1], items[2]],
+        ),
+    ] {
+        let path = format!(
+            "/Users/{user}/Items?SortBy={fields}&SortOrder={order}&Filters=IsFavorite&Recursive=true&Fields=PrimaryImageAspectRatio&CollapseBoxSetItems=false&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false&Limit=20&IncludeItemTypes=Episode"
+        );
+        let result = json(request(router, &path, Some(token)).await).await;
+        let actual = result["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["Id"].as_str().unwrap().parse::<Uuid>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{path}");
+        // The ordinary catalogue currently reports page size when full
+        // counting is disabled; the reference's episode count of zero is
+        // a separate qualified difference from these ordering checks.
+        assert_eq!(result["TotalRecordCount"], 3);
+    }
+    let page = json(request(router, "/Items?SortBy=SeriesSortName,SortName&Filters=IsFavorite&Recursive=true&IncludeItemTypes=Episode&Limit=1&StartIndex=1", Some(token)).await).await;
+    assert_eq!(page["TotalRecordCount"], 3);
+    assert_eq!(page["Items"][0]["Id"], items[0].to_string());
+    for kind in [
+        "Movie",
+        "Series",
+        "Season",
+        "Audio",
+        "MusicAlbum",
+        "MusicArtist",
+        "Photo",
+    ] {
+        let result = json(request(router, &format!("/Items?SortBy=SeriesSortName,SortName&Filters=IsFavorite&Recursive=true&IncludeItemTypes={kind}&Limit=20"), Some(token)).await).await;
+        assert!(result["Items"].as_array().unwrap().is_empty(), "{kind}");
+    }
+    for (id, name) in original {
+        sqlx::query("UPDATE items SET sort_name=$2 WHERE id=$1")
+            .bind(id)
+            .bind(name)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        db::set_item_favorite(&state.db, state.run_id, user, id, false)
+            .await
+            .unwrap();
+    }
+    sqlx::query("DELETE FROM item_metadata WHERE item_id=$1 AND provider_key='local-nfo'")
+        .bind(items[3])
+        .execute(&state.db)
+        .await
+        .unwrap();
 }
 
 async fn history(pool: &PgPool, user: Uuid, item: Uuid, played: bool, position: i64, date: &str) {

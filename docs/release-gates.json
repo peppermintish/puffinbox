@@ -7,7 +7,7 @@
     },
     "jellyfin_12_behavior": {
       "passed": false,
-      "detail": "Current corrected source passed 247 standard Rust cases and 29 database cases; rebuilt operator 53eacf6d passed 35 semantic container checks including active FFmpeg shutdown/restart/resume. Both official clients completed the four-track FLAC album with 15 successful reports each and independent play counts. Official web displayed advancing decoded HLS video; Desktop video captures remain black. 107/364 exact method/path declarations match the public schema, not full behavior. Next Up and SyncPlay are absent; broad query, metadata, episode, recommendation, client and codec behavior remains incomplete. See compatibility.md and acceptance.md."
+      "detail": "Recorded source runs passed 247 standard Rust cases and a full 30-case database run, with later targeted Next Up and client-action checks. Date-compatible operator 54c7b176 passed 35 semantic container checks including active FFmpeg shutdown/restart/resume and 57 Next Up reference projections. Both official clients completed the four-track FLAC album and later Next Up watched/favorite actions and undo with independent reads. Official web and a later default-renderer Desktop profile displayed advancing HLS video on their named images; normal Desktop stop and general codecs remain unvalidated. 108/364 exact method/path declarations measure declarations only. SyncPlay, broader queries, metadata, numbering, recommendations and full client behavior remain incomplete. See compatibility.md and acceptance.md."
     },
     "feature_acceptance": {
       "passed": false,

@@ -2332,6 +2332,7 @@ fn push_item_source(
         || query.sort_by.split(',').any(|field| {
             field.trim().eq_ignore_ascii_case("ParentIndexNumber")
                 || field.trim().eq_ignore_ascii_case("Album")
+                || field.trim().eq_ignore_ascii_case("SeriesSortName")
         });
     push_visible_album_tracks(builder, user);
     if tree {
@@ -2340,9 +2341,10 @@ fn push_item_source(
             .push(" UNION ALL SELECT child.id, child.library_id, tree.path || child.id, tree.depth + 1 FROM items child JOIN tree ON child.parent_id = tree.id WHERE child.library_id=tree.library_id AND NOT child.id = ANY(tree.path)) ");
     }
     if catalog_nodes {
-        builder.push(", visible_catalog_nodes AS (SELECT i.id,i.name,i.library_id,i.parent_id,i.item_type,i.size_bytes,i.date_modified,i.path_hash FROM items i JOIN libraries l ON l.id=i.library_id");
+        builder.push(", visible_catalog_nodes AS (SELECT i.id,i.name,i.sort_name,i.library_id,i.parent_id,i.item_type,i.size_bytes,i.date_modified,i.path_hash FROM items i JOIN libraries l ON l.id=i.library_id");
         push_item_conditions(builder, user, &ItemQuery::default(), None, true);
-        builder.push(" AND i.item_type IN ('Audio','MusicArtist','MusicAlbum','Season')) ");
+        builder
+            .push(" AND i.item_type IN ('Audio','MusicArtist','MusicAlbum','Season','Series')) ");
         if !query.artist_ids.is_empty()
             || !query.album_artist_ids.is_empty()
             || !query.contributing_artist_ids.is_empty()
@@ -2665,6 +2667,15 @@ async fn run_item_page(
                 }
                 "indexnumber" => crate::metadata::catalog_sql::index_number("i", false),
                 "parentindexnumber" => crate::metadata::catalog_sql::index_number("i", true),
+                "seriessortname" => {
+                    "(SELECT series.sort_name FROM visible_catalog_nodes series \
+                     LEFT JOIN visible_catalog_nodes season ON season.id=i.parent_id \
+                     AND season.library_id=i.library_id AND season.item_type='Season' \
+                     WHERE series.id=CASE WHEN i.item_type='Episode' THEN COALESCE(season.parent_id,i.parent_id) \
+                     WHEN i.item_type='Season' THEN i.parent_id END \
+                     AND series.library_id=i.library_id AND series.item_type='Series') COLLATE \"C\""
+                        .to_owned()
+                }
                 "name" => {
                     let title = crate::metadata::catalog_sql::catalog_title("i.id");
                     format!(
@@ -2694,6 +2705,7 @@ async fn run_item_page(
             field.trim().eq_ignore_ascii_case("IndexNumber")
                 || field.trim().eq_ignore_ascii_case("ParentIndexNumber")
                 || field.trim().eq_ignore_ascii_case("Album")
+                || field.trim().eq_ignore_ascii_case("SeriesSortName")
         });
         let explicit_sort_name = query
             .sort_by
