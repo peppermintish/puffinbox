@@ -126,6 +126,14 @@ pub fn router(state: AppState) -> Router {
             "/UserFavoriteItems/{item_id}",
             post(mark_item_favorite).delete(unmark_item_favorite),
         )
+        .route(
+            "/Users/{user_id}/PlayedItems/{item_id}",
+            post(mark_user_item_played).delete(mark_user_item_unplayed),
+        )
+        .route(
+            "/Users/{user_id}/FavoriteItems/{item_id}",
+            post(mark_user_item_favorite).delete(unmark_user_item_favorite),
+        )
         .route("/Search/Hints", get(search_hints))
         .route("/Sessions", get(list_sessions))
         .route(
@@ -4321,6 +4329,83 @@ struct UserDataQuery {
     user_id: Option<Uuid>,
     #[serde(default, rename = "DatePlayed", alias = "datePlayed")]
     date_played: Option<DateTime<Utc>>,
+}
+
+fn query_for_path_user(
+    user_id: Uuid,
+    mut params: UserDataQuery,
+) -> Result<UserDataQuery, ApiError> {
+    if params.user_id.is_some_and(|id| id != user_id) {
+        return Err(ApiError::BadRequest(
+            "Path and query UserId values conflict".to_owned(),
+        ));
+    }
+    params.user_id = Some(user_id);
+    Ok(params)
+}
+
+async fn mark_user_item_played(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(params): Query<UserDataQuery>,
+) -> Result<Json<UserDataDto>, ApiError> {
+    update_item_played(
+        &state,
+        &current,
+        item_id,
+        query_for_path_user(user_id, params)?,
+        true,
+    )
+    .await
+}
+
+async fn mark_user_item_unplayed(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(params): Query<UserDataQuery>,
+) -> Result<Json<UserDataDto>, ApiError> {
+    update_item_played(
+        &state,
+        &current,
+        item_id,
+        query_for_path_user(user_id, params)?,
+        false,
+    )
+    .await
+}
+
+async fn mark_user_item_favorite(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(params): Query<UserDataQuery>,
+) -> Result<Json<UserDataDto>, ApiError> {
+    update_item_favorite(
+        &state,
+        &current,
+        item_id,
+        query_for_path_user(user_id, params)?,
+        true,
+    )
+    .await
+}
+
+async fn unmark_user_item_favorite(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+    Query(params): Query<UserDataQuery>,
+) -> Result<Json<UserDataDto>, ApiError> {
+    update_item_favorite(
+        &state,
+        &current,
+        item_id,
+        query_for_path_user(user_id, params)?,
+        false,
+    )
+    .await
 }
 
 async fn get_user_item_data(

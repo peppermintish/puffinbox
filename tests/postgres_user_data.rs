@@ -377,6 +377,17 @@ async fn user_data_edits_preserve_omitted_fields_and_follow_user_and_media_permi
     )
     .await;
 
+    client_user_item_actions(
+        &pool,
+        &router,
+        library,
+        owner,
+        peer,
+        &tokens,
+        &[hidden, denied, disabled_item, restricted],
+    )
+    .await;
+
     let count_edit = call(
         &router,
         "POST",
@@ -490,6 +501,140 @@ async fn user_data_edits_preserve_omitted_fields_and_follow_user_and_media_permi
         .execute(&admin_pool)
         .await
         .unwrap();
+}
+
+async fn client_user_item_actions(
+    pool: &PgPool,
+    router: &Router,
+    library: Uuid,
+    owner: Uuid,
+    peer: Uuid,
+    tokens: &[String],
+    invisible: &[Uuid],
+) {
+    let id = item(pool, library, "Movie", "/media/Client actions.mkv", None).await;
+    let data_path = format!("/UserItems/{id}/UserData");
+    let baseline = body(call(router, "GET", &data_path, Some(&tokens[0]), None).await).await;
+    let peer_baseline = body(call(router, "GET", &data_path, Some(&tokens[1]), None).await).await;
+    for action in ["PlayedItems", "FavoriteItems"] {
+        for method in ["POST", "DELETE"] {
+            let path = format!("/Users/{owner}/{action}/{id}");
+            assert_eq!(
+                call(router, method, &path, None, None).await.status(),
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                call(
+                    router,
+                    method,
+                    &format!("/Users/{peer}/{action}/{id}"),
+                    Some(&tokens[0]),
+                    None
+                )
+                .await
+                .status(),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                call(
+                    router,
+                    method,
+                    &format!("{path}?userId={peer}"),
+                    Some(&tokens[2]),
+                    None
+                )
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(
+                call(
+                    router,
+                    method,
+                    &format!("{path}?userId={owner}&UserId={owner}"),
+                    Some(&tokens[0]),
+                    None
+                )
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST
+            );
+            for hidden in invisible {
+                assert_eq!(
+                    call(
+                        router,
+                        method,
+                        &format!("/Users/{owner}/{action}/{hidden}"),
+                        Some(&tokens[0]),
+                        None
+                    )
+                    .await
+                    .status(),
+                    StatusCode::NOT_FOUND
+                );
+            }
+        }
+    }
+    assert_eq!(
+        body(call(router, "GET", &data_path, Some(&tokens[0]), None).await).await,
+        baseline
+    );
+
+    let favorite_path = format!(
+        "/Users/{}/FavoriteItems/{}?UserId={owner}",
+        owner.simple(),
+        id.simple()
+    );
+    let favorite = body(call(router, "POST", &favorite_path, Some(&tokens[0]), None).await).await;
+    assert_eq!(favorite["IsFavorite"], true);
+    assert_eq!(favorite["Played"], false);
+    assert_eq!(favorite["PlayCount"], 0);
+
+    let played_path =
+        format!("/Users/{owner}/PlayedItems/{id}?DatePlayed=2026-10-04T13%3A00%3A00Z");
+    let played = body(call(router, "POST", &played_path, Some(&tokens[0]), None).await).await;
+    assert_eq!(played["Played"], true);
+    assert_eq!(played["IsFavorite"], true);
+    assert_eq!(played["PlayCount"], 1);
+    assert_eq!(played["LastPlayedDate"], "2026-10-04T13:00:00Z");
+    assert_eq!(
+        body(call(router, "GET", &data_path, Some(&tokens[0]), None).await).await,
+        played
+    );
+    assert_eq!(
+        body(call(router, "GET", &data_path, Some(&tokens[1]), None).await).await,
+        peer_baseline
+    );
+
+    let unplayed = body(call(router, "DELETE", &played_path, Some(&tokens[0]), None).await).await;
+    assert_eq!(unplayed["Played"], false);
+    assert_eq!(unplayed["PlayCount"], 0);
+    assert_eq!(unplayed["LastPlayedDate"], Value::Null);
+    assert_eq!(unplayed["IsFavorite"], true);
+    assert_eq!(
+        body(call(router, "DELETE", &favorite_path, Some(&tokens[0]), None).await).await,
+        baseline
+    );
+    let admin_favorite = body(
+        call(
+            router,
+            "POST",
+            &format!("/Users/{peer}/FavoriteItems/{id}"),
+            Some(&tokens[2]),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(admin_favorite["IsFavorite"], true);
+    assert_eq!(
+        body(call(router, "GET", &data_path, Some(&tokens[1]), None).await).await,
+        admin_favorite
+    );
+    assert_eq!(
+        body(call(router, "GET", &data_path, Some(&tokens[0]), None).await).await,
+        baseline
+    );
 }
 
 async fn personal_catalog_filters(
