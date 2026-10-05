@@ -803,6 +803,7 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         "PlayableMediaTypes": ["Video", "Audio"],
         "SupportedCommands": ["SetVolume", "Mute"],
         "SupportsMediaControl": true,
+        "SupportsSyncPlay": true,
         "SupportsPersistentIdentifier": true,
         "DeviceProfile": {"Name": "Synthetic browser", "DirectPlayProfiles": []},
         "IconUrl": "https://example.invalid/client.png"
@@ -861,6 +862,7 @@ async fn capabilities_persist_per_session_and_enforce_ownership_and_revocation()
         .find(|row| row["Id"] == first.token_id.to_string())
         .unwrap();
     assert_eq!(session["Capabilities"]["SupportsMediaControl"], true);
+    assert_eq!(session["Capabilities"]["SupportsSyncPlay"], true);
     assert_eq!(
         session["SupportsRemoteControl"], false,
         "client declarations do not enable unsupported server commands"

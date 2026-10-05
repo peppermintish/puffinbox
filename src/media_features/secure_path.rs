@@ -52,7 +52,6 @@ impl ResolvedDirectory {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-#[allow(dead_code)] // Reserved for the approved metadata-sidecar reader integration.
 pub(crate) enum AdjacentFileRead {
     Missing,
     Unsafe,
@@ -242,49 +241,6 @@ pub(super) async fn open_media(media: ResolvedMedia) -> Result<OpenedMedia, ApiE
     .map_err(|_| ApiError::Unavailable)?
 }
 
-#[allow(dead_code)] // Used by read_adjacent_file, which is wired with metadata routes.
-pub(super) async fn read_relative_bounded(
-    media: ResolvedMedia,
-    relative: PathBuf,
-    max_bytes: usize,
-) -> Result<AdjacentFileRead, ApiError> {
-    let permit = filesystem_permit()?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let Some(name) = relative.file_name().filter(|name| !name.is_empty()) else {
-            return Ok(AdjacentFileRead::Unsafe);
-        };
-        if relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
-        {
-            return Ok(AdjacentFileRead::Unsafe);
-        }
-        let parent = relative.parent().unwrap_or_else(|| Path::new("."));
-        let directory = match media.open_relative_dir(parent) {
-            Ok(directory) => directory,
-            Err(error) if is_unsafe_asset_path(&error) => {
-                return Ok(AdjacentFileRead::Unsafe);
-            }
-            // The media file was already resolved under the same root. A
-            // disappearing ancestor is a stale/storage condition, not proof
-            // that the requested sidecar is absent.
-            Err(_) => return Err(ApiError::Unavailable),
-        };
-        let file = match open_regular_file_no_symlinks(&directory, Path::new(name)) {
-            Ok(file) => file,
-            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
-                return Ok(AdjacentFileRead::Missing);
-            }
-            Err(error) if is_unsafe_asset_path(&error) => return Ok(AdjacentFileRead::Unsafe),
-            Err(_) => return Err(ApiError::Unavailable),
-        };
-        read_bounded_open_file(file, max_bytes)
-    })
-    .await
-    .map_err(|_| ApiError::Unavailable)?
-}
-
 pub(super) async fn read_directory_child_bounded(
     directory: ResolvedDirectory,
     child_name: PathBuf,
@@ -357,7 +313,6 @@ pub(super) async fn read_adjacent_bounded(
     .map_err(|_| ApiError::Unavailable)?
 }
 
-#[allow(dead_code)] // Used by the adjacent-asset reader added with metadata routes.
 fn is_unsafe_asset_path(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::InvalidInput
         || matches!(error.raw_os_error(), Some(code) if [libc::ELOOP, libc::ENOTDIR].contains(&code))
@@ -675,37 +630,39 @@ mod tests {
         let media = resolve_test(item_for(&media_path), &root).unwrap();
 
         assert_eq!(
-            super::read_relative_bounded(media.clone(), PathBuf::from("movie.nfo"), 32)
+            super::read_adjacent_bounded(media.clone(), PathBuf::from("movie.nfo"), 32)
                 .await
                 .unwrap(),
             super::AdjacentFileRead::Content(b"<movie/>\n".to_vec())
         );
         assert_eq!(
-            super::read_relative_bounded(media.clone(), PathBuf::from("missing.nfo"), 32)
+            super::read_adjacent_bounded(media.clone(), PathBuf::from("missing.nfo"), 32)
                 .await
                 .unwrap(),
             super::AdjacentFileRead::Missing,
             "only a missing leaf inside an opened catalog directory is classified as Missing"
         );
         assert_eq!(
-            super::read_relative_bounded(media.clone(), PathBuf::from("movie.nfo"), 4)
+            super::read_adjacent_bounded(media.clone(), PathBuf::from("movie.nfo"), 4)
                 .await
                 .unwrap(),
             super::AdjacentFileRead::Unsafe,
             "oversized assets are rejected as invalid metadata rather than retried as storage failures"
         );
         assert_eq!(
-            super::read_relative_bounded(media.clone(), PathBuf::from("movie-poster.jpg"), 64)
+            super::read_adjacent_bounded(media.clone(), PathBuf::from("movie-poster.jpg"), 64)
                 .await
                 .unwrap(),
             super::AdjacentFileRead::Unsafe,
             "sibling symlinks must not be read"
         );
-        assert!(matches!(
-            super::read_relative_bounded(media, PathBuf::from("missing-directory/movie.nfo"), 32)
-                .await,
-            Err(ApiError::Unavailable)
-        ));
+        assert_eq!(
+            super::read_adjacent_bounded(media, PathBuf::from("missing-directory/movie.nfo"), 32)
+                .await
+                .unwrap(),
+            super::AdjacentFileRead::Unsafe,
+            "adjacent asset requests cannot select a nested directory"
+        );
         let _ = fs::remove_dir_all(base);
     }
 

@@ -9,8 +9,8 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Check | Result | Scope |
 | --- | --- | --- |
 | Formatting, strict Clippy and source policy | Passed | All project targets; GNU and musl dependency graphs select rustls without OpenSSL TLS packages. |
-| Standard Rust suite | 247 passed, 0 failed, 30 ignored | Ignored cases require a disposable database and are run separately. Includes safe-worker confinement, capability closure and graceful/forced shutdown. |
-| PostgreSQL suite | 30 passed, 0 failed | 27 integration cases and three database-backed unit cases, including real SCRAM logins, rejected proofs and Next Up. |
+| Standard Rust suite | 247 passed, 0 failed, 31 ignored | Ignored cases require a disposable database and are run separately. Includes safe-worker confinement, capability closure and graceful/forced shutdown. |
+| PostgreSQL suite | 31 passed, 0 failed | 28 integration cases and three database-backed unit cases, including SCRAM, Next Up and SyncPlay groups. |
 | Python suite | 27 passed | Retired GNU/source-fork tests were removed with their unused implementation. |
 | Source browser checks | Nine groups passed | Client identity, native adapter, heartbeat, offline cache, books, and Chromium offline/Live TV/playlists; delayed response bodies included. |
 | PDF asset restoration | 12 Chromium cases passed | Current source: Japanese CMaps/text, Foxit Symbol, JPEG2000/JBIG2 pixels, both JavaScript decoder fallbacks, and worker cleanup after rendering or while loading. All 194 retained upstream files and nine notices verified. |
@@ -20,7 +20,25 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Images | Passed | Static non-root core, retained notices, operator FFmpeg fd protocol and H.264/AAC encode/probe. |
 | Semantic container acceptance | 35 passed, 0 failed, 0 pending | Authentication, policies, media, scanning, subtitles, music, WebSockets, active FFmpeg shutdown and restart/resume. |
 | Local HTTPS proxy | 29 passed | Certificate checks, forwarding spoof rejection, secure cookies, media-token scope, logout and active remote-policy changes. Synthetic addresses; no Internet deployment. |
-| Public-schema route report | 108 / 364 exact method/path declarations | Declaration coverage only. |
+| Public-schema route report | 113 / 364 exact method/path declarations | Declaration coverage only; includes the initial SyncPlay group routes. |
+
+The initial [SyncPlay group APIs](jellyfin12-syncplay.md) passed formatting,
+strict Clippy, source policy, 247 standard Rust cases and the full 31-case
+database suite. The final group regression also checks omitted/null join IDs
+and the reference's Unicode name limit. The full database run preceded those
+two request corrections and removal of an unused asset reader; final source
+checks and the targeted group regression cover the resulting source. The
+asset confinement tests now exercise the reader used by metadata jobs.
+
+The first full run exposed a missing policy column in the recording worker;
+the second exposed the same omission in two offline snapshot queries. Those
+queries were corrected, the recording regression passed separately, and the
+third full run passed all 31 cases. Failed records remain preserved. Source
+fingerprints and results are under `.local/next-up-contract-20261005/` in
+`syncplay-foundation-source2`, `syncplay-foundation-full3` and
+`syncplay-foundation-final-groups1`. These are source/database results; SyncPlay
+has no packaged-image or official-client acceptance result yet. Shared queues
+and synchronized playback remain incomplete.
 
 At `bd177a4`, automatic local metadata imports and the series sorting correction
 passed formatting, strict Clippy, source policy, 247 standard Rust cases and the
@@ -87,6 +105,13 @@ The [local-metadata run at `bd177a4`](https://github.com/peppermintish/puffinbox
 failed to acquire GitHub hosted runners after repeated attempts. Both jobs were
 cancelled before any test step ran. This is an infrastructure failure and provides
 no cloud validation of that source; the local results above remain separate.
+
+The [following run at `5463c0c`](https://github.com/peppermintish/puffinbox/actions/runs/37372909200)
+passed isolated PostgreSQL and synthetic media acceptance. Its Linux source job
+again failed to acquire a hosted runner and was cancelled before any test step.
+That checkpoint changes documentation only from `bd177a4`; it provides cloud
+media acceptance for the same implementation, with source-job validation still
+pending.
 
 The Rust and compatible-license correction at `d7417dd` passed [both cloud jobs](https://github.com/peppermintish/puffinbox/actions/runs/37229872635), including the isolated media/restart acceptance and static Linux build. The PDF restoration's [diagnostic run at `8e70984`](https://github.com/peppermintish/puffinbox/actions/runs/37233830813) passed isolated media acceptance but failed the source browser check: the unembedded Japanese fixture rendered blank. The source and release browser runners install `fonts-noto-cjk`; text and pixel assertions remain unchanged. All twelve cases passed locally in Linux Chromium and [both cloud jobs passed at `601c817`](https://github.com/peppermintish/puffinbox/actions/runs/37235082365). Those fonts are external browser test prerequisites, not assets bundled with Puffinbox.
 

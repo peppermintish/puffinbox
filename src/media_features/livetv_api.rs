@@ -102,7 +102,7 @@ async fn lock_live_tv_mutation_user(
     db::require_active_run(tx, run_id).await?;
     let row = sqlx::query(
         "SELECT u.id,u.username,u.is_admin,u.disabled,u.enable_remote_access, \
-         u.allow_media_playback,u.enable_content_downloading,u.enable_live_tv_access, \
+         u.allow_media_playback,u.sync_play_access,u.enable_content_downloading,u.enable_live_tv_access, \
          u.enable_live_tv_management,u.restrict_libraries,u.configuration,u.max_parental_rating, \
          u.block_unrated_items,ARRAY[]::uuid[] AS allowed_library_ids \
          FROM users u WHERE u.id=$1 FOR UPDATE OF u",
@@ -2887,6 +2887,7 @@ mod tests {
             disabled: false,
             enable_remote_access: false,
             allow_media_playback: true,
+            sync_play_access: Default::default(),
             enable_content_downloading: false,
             enable_live_tv_access: false,
             enable_live_tv_management: false,

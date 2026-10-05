@@ -1,12 +1,12 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-05T20:33:24.101149+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-05T21:48:25.391212+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `200`
-- Declared pairs matching a schema method/path: `108`
+- Unique declared server method/path pairs: `205`
+- Declared pairs matching a schema method/path: `113`
 - Declared pairs outside the schema: `92`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
@@ -212,6 +212,11 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /Puffinbox/Plugins/{plugin_id}/Disable` | `src/plugins.rs` | custom / not in target schema |
 | `GET /Studios` | `src/studios.rs` | match |
 | `GET /Studios/{name}` | `src/studios.rs` | match |
+| `GET /SyncPlay/List` | `src/syncplay.rs` | match |
+| `GET /SyncPlay/{group_id}` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/New` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Join` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Leave` | `src/syncplay.rs` | match |
 | `POST /Users/Configuration` | `src/user_settings.rs` | match |
 | `GET /DisplayPreferences/{displayPreferencesId}` | `src/user_settings.rs` | match |
 | `POST /DisplayPreferences/{displayPreferencesId}` | `src/user_settings.rs` | match |

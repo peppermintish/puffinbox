@@ -900,7 +900,7 @@ async fn lock_recording_policy_user(
 ) -> Result<UserRecord, ApiError> {
     db::require_active_run(tx, state.run_id).await?;
     let row = sqlx::query(
-        "SELECT id,username,is_admin,disabled,enable_remote_access,allow_media_playback, \
+        "SELECT id,username,is_admin,disabled,enable_remote_access,allow_media_playback,sync_play_access, \
          enable_content_downloading,enable_live_tv_access,enable_live_tv_management, \
          restrict_libraries,configuration,max_parental_rating,block_unrated_items,ARRAY[]::uuid[] AS allowed_library_ids \
          FROM users WHERE id=$1 FOR UPDATE",
@@ -2244,6 +2244,7 @@ mod tests {
             disabled: false,
             enable_remote_access: true,
             allow_media_playback: true,
+            sync_play_access: Default::default(),
             enable_content_downloading: true,
             enable_live_tv_access: false,
             enable_live_tv_management: false,

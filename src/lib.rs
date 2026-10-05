@@ -13,6 +13,7 @@ pub(crate) mod music_mix;
 pub(crate) mod next_up;
 pub mod state;
 pub(crate) mod studios;
+pub(crate) mod syncplay;
 pub mod user_settings;
 pub(crate) mod websocket;
 

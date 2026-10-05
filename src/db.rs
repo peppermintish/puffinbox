@@ -91,6 +91,7 @@ pub struct NewUser {
     pub disabled: bool,
     pub enable_remote_access: bool,
     pub allow_media_playback: bool,
+    pub sync_play_access: crate::auth::SyncPlayAccess,
     pub enable_content_downloading: bool,
     pub enable_live_tv_access: bool,
     pub enable_live_tv_management: bool,
@@ -108,6 +109,7 @@ pub struct UserPatch {
     pub disabled: Option<bool>,
     pub enable_remote_access: Option<bool>,
     pub allow_media_playback: Option<bool>,
+    pub sync_play_access: Option<crate::auth::SyncPlayAccess>,
     pub enable_content_downloading: Option<bool>,
     pub enable_live_tv_access: Option<bool>,
     pub enable_live_tv_management: Option<bool>,
@@ -509,7 +511,7 @@ pub async fn user_count(pool: &PgPool) -> Result<i64, sqlx::Error> {
 
 pub async fn get_user(pool: &PgPool, id: Uuid) -> Result<Option<UserRecord>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id = $1",
+        "SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.sync_play_access, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -523,7 +525,7 @@ pub async fn find_user_by_name(
 ) -> Result<Option<(UserRecord, String)>, sqlx::Error> {
     let normalized = username.trim().to_ascii_lowercase();
     let row = sqlx::query(
-        "SELECT u.id, u.username, u.password_hash, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.username_norm = $1",
+        "SELECT u.id, u.username, u.password_hash, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.sync_play_access, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.username_norm = $1",
     )
     .bind(normalized)
     .fetch_optional(pool)
@@ -539,7 +541,7 @@ pub async fn find_user_by_name(
 
 pub async fn list_users(pool: &PgPool) -> Result<Vec<UserRecord>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u ORDER BY u.username_norm",
+        "SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.sync_play_access, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u ORDER BY u.username_norm",
     )
     .fetch_all(pool)
     .await?;
@@ -567,7 +569,7 @@ pub async fn create_user(
     }
     let restrict_libraries = input.allowed_library_ids.is_some() && !input.is_admin;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO users(id, username, username_norm, password_hash, is_admin, disabled, enable_remote_access, allow_media_playback, restrict_libraries, max_parental_rating, block_unrated_items, enable_content_downloading, enable_live_tv_access, enable_live_tv_management) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+    sqlx::query("INSERT INTO users(id, username, username_norm, password_hash, is_admin, disabled, enable_remote_access, allow_media_playback, restrict_libraries, max_parental_rating, block_unrated_items, enable_content_downloading, enable_live_tv_access, enable_live_tv_management,sync_play_access) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
         .bind(id)
         .bind(&username)
         .bind(&normalized)
@@ -582,6 +584,7 @@ pub async fn create_user(
         .bind(input.enable_content_downloading)
         .bind(input.enable_live_tv_access)
         .bind(input.enable_live_tv_management)
+        .bind(input.sync_play_access.as_str())
         .execute(&mut *tx)
         .await?;
     if restrict_libraries {
@@ -636,7 +639,7 @@ pub async fn update_user(
     sqlx::query("SELECT pg_advisory_xact_lock(82473011)")
         .execute(&mut *tx)
         .await?;
-    let row = sqlx::query("SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id=$1 FOR UPDATE")
+    let row = sqlx::query("SELECT u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.sync_play_access, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id = u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id=$1 FOR UPDATE")
         .bind(id).fetch_optional(&mut *tx).await?;
     let Some(existing) = row.as_ref().map(user_from_row).transpose()? else {
         return Ok(None);
@@ -691,7 +694,7 @@ pub async fn update_user(
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("UPDATE users SET username=$2, username_norm=$3, password_hash=COALESCE($4,password_hash), is_admin=COALESCE($5,is_admin), disabled=COALESCE($6,disabled), enable_remote_access=COALESCE($7,enable_remote_access), allow_media_playback=COALESCE($8,allow_media_playback), restrict_libraries=$9, max_parental_rating=CASE WHEN $10 THEN $11::SMALLINT ELSE max_parental_rating END, block_unrated_items=COALESCE($12,block_unrated_items), enable_content_downloading=COALESCE($13,enable_content_downloading), enable_live_tv_access=COALESCE($14,enable_live_tv_access), enable_live_tv_management=COALESCE($15,enable_live_tv_management), updated_at=NOW() WHERE id=$1")
+    sqlx::query("UPDATE users SET username=$2, username_norm=$3, password_hash=COALESCE($4,password_hash), is_admin=COALESCE($5,is_admin), disabled=COALESCE($6,disabled), enable_remote_access=COALESCE($7,enable_remote_access), allow_media_playback=COALESCE($8,allow_media_playback), restrict_libraries=$9, max_parental_rating=CASE WHEN $10 THEN $11::SMALLINT ELSE max_parental_rating END, block_unrated_items=COALESCE($12,block_unrated_items), enable_content_downloading=COALESCE($13,enable_content_downloading), enable_live_tv_access=COALESCE($14,enable_live_tv_access), enable_live_tv_management=COALESCE($15,enable_live_tv_management),sync_play_access=COALESCE($16,sync_play_access), updated_at=NOW() WHERE id=$1")
         .bind(id)
         .bind(username)
         .bind(normalized)
@@ -707,6 +710,7 @@ pub async fn update_user(
         .bind(patch.enable_content_downloading)
         .bind(patch.enable_live_tv_access)
         .bind(patch.enable_live_tv_management)
+        .bind(patch.sync_play_access.map(crate::auth::SyncPlayAccess::as_str))
         .execute(&mut *tx)
         .await?;
     if patch.password_hash.is_some() {
@@ -789,6 +793,16 @@ pub(crate) fn user_from_row(row: &sqlx::postgres::PgRow) -> Result<UserRecord, s
         disabled: row.try_get("disabled")?,
         enable_remote_access: row.try_get("enable_remote_access")?,
         allow_media_playback: row.try_get("allow_media_playback")?,
+        sync_play_access: match row.try_get::<&str, _>("sync_play_access")? {
+            "CreateAndJoinGroups" => crate::auth::SyncPlayAccess::CreateAndJoinGroups,
+            "JoinGroups" => crate::auth::SyncPlayAccess::JoinGroups,
+            "None" => crate::auth::SyncPlayAccess::None,
+            _ => {
+                return Err(sqlx::Error::Protocol(
+                    "Invalid SyncPlay access policy".to_owned(),
+                ));
+            }
+        },
         enable_content_downloading: row.try_get("enable_content_downloading")?,
         enable_live_tv_access: row.try_get("enable_live_tv_access")?,
         enable_live_tv_management: row.try_get("enable_live_tv_management")?,
@@ -1426,7 +1440,7 @@ pub async fn active_auth_identity(
     pool: &PgPool,
     token_hash: &str,
 ) -> Result<Option<(Uuid, UserRecord)>, sqlx::Error> {
-    let row = sqlx::query("SELECT t.id AS token_id, u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at > NOW() AND u.disabled=FALSE")
+    let row = sqlx::query("SELECT t.id AS token_id, u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.sync_play_access, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at > NOW() AND u.disabled=FALSE")
         .bind(token_hash).fetch_optional(pool).await?;
     row.map(|r| Ok((r.try_get("token_id")?, user_from_row(&r)?)))
         .transpose()
@@ -1436,7 +1450,7 @@ pub async fn active_media_access_identity(
     pool: &PgPool,
     token_hash: &str,
 ) -> Result<Option<(Uuid, UserRecord)>, sqlx::Error> {
-    let row = sqlx::query("SELECT t.id AS token_id, u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM media_access_tokens m JOIN auth_tokens t ON t.id=m.parent_token_id JOIN users u ON u.id=t.user_id WHERE m.token_hash=$1 AND m.expires_at > NOW() AND t.revoked_at IS NULL AND t.expires_at > NOW() AND u.disabled=FALSE")
+    let row = sqlx::query("SELECT t.id AS token_id, u.id, u.username, u.is_admin, u.disabled, u.enable_remote_access, u.allow_media_playback, u.sync_play_access, u.enable_content_downloading, u.enable_live_tv_access, u.enable_live_tv_management, u.restrict_libraries, u.configuration,u.max_parental_rating, u.block_unrated_items, COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id), ARRAY[]::uuid[]) AS allowed_library_ids FROM media_access_tokens m JOIN auth_tokens t ON t.id=m.parent_token_id JOIN users u ON u.id=t.user_id WHERE m.token_hash=$1 AND m.expires_at > NOW() AND t.revoked_at IS NULL AND t.expires_at > NOW() AND u.disabled=FALSE")
         .bind(token_hash).fetch_optional(pool).await?;
     row.map(|r| Ok((r.try_get("token_id")?, user_from_row(&r)?)))
         .transpose()
@@ -2811,6 +2825,7 @@ mod tests {
             disabled: false,
             enable_remote_access: true,
             allow_media_playback: true,
+            sync_play_access: Default::default(),
             enable_content_downloading: true,
             enable_live_tv_access: false,
             enable_live_tv_management: false,
@@ -2866,6 +2881,7 @@ mod tests {
             disabled: false,
             enable_remote_access: true,
             allow_media_playback: true,
+            sync_play_access: Default::default(),
             enable_content_downloading: true,
             enable_live_tv_access: false,
             enable_live_tv_management: false,

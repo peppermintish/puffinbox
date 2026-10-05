@@ -224,6 +224,7 @@ async fn database_and_direct_item_api_hide_restricted_or_legacy_catalog_rows() {
         disabled: false,
         enable_remote_access: true,
         allow_media_playback: true,
+        sync_play_access: Default::default(),
         enable_content_downloading: true,
         enable_live_tv_access: false,
         enable_live_tv_management: false,

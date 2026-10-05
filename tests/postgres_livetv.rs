@@ -954,6 +954,7 @@ async fn pinned_iptv_refresh_applies_guide_parental_policy_and_timer_filters() {
                 disabled: false,
                 enable_remote_access: false,
                 allow_media_playback: true,
+                sync_play_access: Default::default(),
                 enable_content_downloading: false,
                 enable_live_tv_access: true,
                 enable_live_tv_management: false,

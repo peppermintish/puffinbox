@@ -21,6 +21,24 @@ use uuid::Uuid;
 
 use crate::{config::Config, db, error::ApiError, state::AppState};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncPlayAccess {
+    #[default]
+    CreateAndJoinGroups,
+    JoinGroups,
+    None,
+}
+
+impl SyncPlayAccess {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateAndJoinGroups => "CreateAndJoinGroups",
+            Self::JoinGroups => "JoinGroups",
+            Self::None => "None",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserRecord {
     pub id: Uuid,
@@ -29,6 +47,8 @@ pub struct UserRecord {
     pub disabled: bool,
     pub enable_remote_access: bool,
     pub allow_media_playback: bool,
+    #[serde(default)]
+    pub sync_play_access: SyncPlayAccess,
     pub enable_content_downloading: bool,
     pub enable_live_tv_access: bool,
     pub enable_live_tv_management: bool,

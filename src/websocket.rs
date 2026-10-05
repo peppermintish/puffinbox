@@ -132,13 +132,27 @@ pub(crate) async fn connect(
     }
     let registration = state.user_events.enter(identity.user.id)?;
     let events = state.user_events.sender.subscribe();
+    let (session_id, _) = db::active_auth_identity(&state.db, &identity.token_hash)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    let group_events = state.syncplay.subscribe();
     Ok(upgrade
         .read_buffer_size(MAX_MESSAGE_BYTES)
         .write_buffer_size(0)
         .max_write_buffer_size(64 * 1024)
         .max_message_size(MAX_MESSAGE_BYTES)
         .max_frame_size(MAX_MESSAGE_BYTES)
-        .on_upgrade(move |socket| serve(socket, state, identity, registration, events)))
+        .on_upgrade(move |socket| {
+            serve(
+                socket,
+                state,
+                identity,
+                registration,
+                events,
+                session_id,
+                group_events,
+            )
+        }))
 }
 
 #[derive(Deserialize)]
@@ -204,6 +218,8 @@ async fn serve(
     identity: SocketIdentity,
     _registration: Registration,
     mut events: broadcast::Receiver<UserEvent>,
+    session_id: Uuid,
+    mut group_events: broadcast::Receiver<crate::syncplay::GroupEvent>,
 ) {
     let mut shutdown = state.user_events.shutdown.subscribe();
     if *shutdown.borrow() || state.shutdown_requested.load(Ordering::Acquire) {
@@ -234,6 +250,10 @@ async fn serve(
             },
             _ = check.tick() => {
                 if current_user(&state, &identity).await.is_err() {
+                    close_session(&mut socket, &state).await;
+                    return;
+                }
+                if crate::syncplay::refresh_session(&state, &identity.token_hash, identity.user.id).await.is_err() {
                     close_session(&mut socket, &state).await;
                     return;
                 }
@@ -269,6 +289,25 @@ async fn serve(
                         }
                     },
                 }
+            },
+            event = group_events.recv() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        close(&mut socket, 1013, "Reconnect and refresh SyncPlay groups").await; return;
+                    },
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                if event.session_id != session_id { continue; }
+                if current_user(&state, &identity).await.is_err() {
+                    close_session(&mut socket, &state).await; return;
+                }
+                let data = match crate::syncplay::socket_event(&state, &identity.token_hash, identity.user.id, event).await {
+                    Ok(Some(data)) => data,
+                    Ok(None) => continue,
+                    Err(_) => { close_session(&mut socket, &state).await; return; },
+                };
+                if !send(&mut socket, envelope(data.0, Some(data.1))).await { return; }
             },
             event = events.recv() => {
                 let event = match event {

@@ -693,7 +693,7 @@ async fn load_user_for_share(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
 ) -> Result<Option<UserRecord>, sqlx::Error> {
-    let row = sqlx::query("SELECT u.id,u.username,u.is_admin,u.disabled,u.enable_remote_access,u.allow_media_playback,u.enable_content_downloading,u.enable_live_tv_access,u.enable_live_tv_management,u.restrict_libraries,u.configuration,u.max_parental_rating,u.block_unrated_items,COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id),ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id=$1 AND u.disabled=FALSE FOR SHARE OF u")
+    let row = sqlx::query("SELECT u.id,u.username,u.is_admin,u.disabled,u.enable_remote_access,u.allow_media_playback,u.sync_play_access,u.enable_content_downloading,u.enable_live_tv_access,u.enable_live_tv_management,u.restrict_libraries,u.configuration,u.max_parental_rating,u.block_unrated_items,COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id),ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id=$1 AND u.disabled=FALSE FOR SHARE OF u")
         .bind(user_id).fetch_optional(&mut **tx).await?;
     row.as_ref().map(db::user_from_row).transpose()
 }
@@ -702,7 +702,7 @@ async fn load_user_for_update(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
 ) -> Result<Option<UserRecord>, sqlx::Error> {
-    let row = sqlx::query("SELECT u.id,u.username,u.is_admin,u.disabled,u.enable_remote_access,u.allow_media_playback,u.enable_content_downloading,u.enable_live_tv_access,u.enable_live_tv_management,u.restrict_libraries,u.configuration,u.max_parental_rating,u.block_unrated_items,COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id),ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id=$1 AND u.disabled=FALSE FOR UPDATE OF u")
+    let row = sqlx::query("SELECT u.id,u.username,u.is_admin,u.disabled,u.enable_remote_access,u.allow_media_playback,u.sync_play_access,u.enable_content_downloading,u.enable_live_tv_access,u.enable_live_tv_management,u.restrict_libraries,u.configuration,u.max_parental_rating,u.block_unrated_items,COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id),ARRAY[]::uuid[]) AS allowed_library_ids FROM users u WHERE u.id=$1 AND u.disabled=FALSE FOR UPDATE OF u")
         .bind(user_id).fetch_optional(&mut **tx).await?;
     row.as_ref().map(db::user_from_row).transpose()
 }

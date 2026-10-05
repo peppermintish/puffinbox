@@ -151,6 +151,7 @@ pub fn router(state: AppState) -> Router {
     core.merge(crate::media_features::router(state.clone()))
         .merge(crate::catalog_navigation::router(state.clone()))
         .merge(crate::next_up::router(state.clone()))
+        .merge(crate::syncplay::router(state.clone()))
         .merge(crate::music_mix::router(state.clone()))
         .merge(crate::catalog_filters::router(state.clone()))
         .merge(crate::studios::router(state.clone()))
@@ -641,6 +642,7 @@ struct UserPolicyDto {
     is_disabled: bool,
     enable_remote_access: bool,
     enable_media_playback: bool,
+    sync_play_access: crate::auth::SyncPlayAccess,
     enable_content_downloading: bool,
     enable_live_tv_access: bool,
     enable_live_tv_management: bool,
@@ -679,6 +681,7 @@ fn user_dto(user: &UserRecord, server_id: Uuid) -> UserDto {
             is_disabled: user.disabled,
             enable_remote_access: user.enable_remote_access,
             enable_media_playback: user.allow_media_playback,
+            sync_play_access: user.sync_play_access,
             enable_content_downloading: user.enable_content_downloading,
             enable_live_tv_access: user.is_admin || user.enable_live_tv_access,
             enable_live_tv_management: user.is_admin || user.enable_live_tv_management,
@@ -957,6 +960,8 @@ struct UserWriteRequest {
     enable_remote_access: Option<bool>,
     #[serde(default, rename = "EnableMediaPlayback", alias = "enableMediaPlayback")]
     enable_media_playback: Option<bool>,
+    #[serde(default, rename = "SyncPlayAccess", alias = "syncPlayAccess")]
+    sync_play_access: Option<crate::auth::SyncPlayAccess>,
     #[serde(
         default,
         rename = "EnableContentDownloading",
@@ -1197,6 +1202,7 @@ struct ClientCapabilitiesDto {
     playable_media_types: Vec<String>,
     supported_commands: Vec<String>,
     supports_media_control: bool,
+    supports_sync_play: bool,
     supports_persistent_identifier: bool,
     device_profile: Option<serde_json::Value>,
     app_store_url: Option<String>,
@@ -1635,6 +1641,7 @@ async fn create_user(
             disabled: body.is_disabled.unwrap_or(false),
             enable_remote_access: body.remote_access_for_new_user(),
             allow_media_playback: body.enable_media_playback.unwrap_or(true),
+            sync_play_access: body.sync_play_access.unwrap_or_default(),
             enable_content_downloading: body.enable_content_downloading.unwrap_or(true),
             enable_live_tv_access: body.enable_live_tv_access.unwrap_or(is_admin),
             enable_live_tv_management: body.enable_live_tv_management.unwrap_or(is_admin),
@@ -1671,6 +1678,7 @@ async fn update_user(
         disabled: body.is_disabled,
         enable_remote_access: body.enable_remote_access,
         allow_media_playback: body.enable_media_playback,
+        sync_play_access: body.sync_play_access,
         enable_content_downloading: body.enable_content_downloading,
         enable_live_tv_access: body.enable_live_tv_access,
         enable_live_tv_management: body.enable_live_tv_management,
@@ -1741,6 +1749,7 @@ async fn update_user_policy(
         disabled: body.is_disabled,
         enable_remote_access: body.enable_remote_access,
         allow_media_playback: body.enable_media_playback,
+        sync_play_access: body.sync_play_access,
         enable_content_downloading: body.enable_content_downloading,
         enable_live_tv_access: body.enable_live_tv_access,
         enable_live_tv_management: body.enable_live_tv_management,

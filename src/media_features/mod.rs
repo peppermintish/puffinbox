@@ -363,7 +363,6 @@ async fn authorized_media(
 /// the catalog item's registered library root and capability-relative opens.
 /// This internal helper accepts a filename rather than a path so callers
 /// cannot leave the item's directory or follow a symlink.
-#[allow(dead_code)] // The metadata reader will consume this when its routes are registered.
 pub(crate) async fn read_adjacent_file(
     state: &AppState,
     item_id: Uuid,

@@ -18,6 +18,7 @@ pub struct AppState {
     pub scan_slots: Arc<Semaphore>,
     pub shutdown_requested: Arc<AtomicBool>,
     pub(crate) user_events: Arc<crate::websocket::UserEvents>,
+    pub(crate) syncplay: Arc<crate::syncplay::SyncGroups>,
 }
 
 impl AppState {
@@ -56,6 +57,7 @@ impl AppState {
             scan_slots: Arc::new(Semaphore::new(scan_workers)),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             user_events: Arc::new(crate::websocket::UserEvents::new()),
+            syncplay: Arc::new(crate::syncplay::SyncGroups::new()),
         }
     }
 }
