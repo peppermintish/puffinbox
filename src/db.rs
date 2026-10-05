@@ -16,6 +16,8 @@ pub(crate) use catalog_relations::similar_items;
 mod music_credits;
 mod music_mix;
 mod music_tag_artists;
+mod next_up;
+pub(crate) use next_up::{NextUpQuery, next_up_items};
 mod studios;
 pub(crate) use music_credits::{MusicArtistCredit, MusicArtistRole, music_artist_page};
 pub(crate) use music_mix::{MusicMixSeed, instant_mix, visible_music_genre};
@@ -149,7 +151,9 @@ pub struct ItemCounts {
 #[derive(Clone, Debug, Default)]
 pub struct ItemNavigationLinks {
     pub series_id: Option<Uuid>,
+    pub series_name: Option<String>,
     pub season_id: Option<Uuid>,
+    pub season_name: Option<String>,
     pub index_number: Option<i32>,
     pub parent_index_number: Option<i32>,
     pub album_id: Option<Uuid>,
@@ -966,7 +970,7 @@ pub async fn item_navigation_links(
     push_item_conditions(&mut builder, user, &ItemQuery::default(), None, true);
     builder.push(
         " AND i.id IN (SELECT id FROM candidate_ids)) \
-         SELECT i.id,i.name,i.item_type,series.id AS series_id,\
+         SELECT i.id,i.name,i.item_type,series.id AS series_id,series.name AS series_name,\
          CASE WHEN i.item_type='Episode' THEN season.id WHEN i.item_type='Season' THEN i.id END AS season_id,\
          season.name AS season_name,CASE WHEN i.item_type='Audio' THEN album.id WHEN i.item_type='MusicAlbum' THEN i.id END AS album_id,\
          CASE WHEN i.item_type='Audio' THEN album.name END AS album,artist.id AS artist_id,artist.name AS artist \
@@ -1006,7 +1010,9 @@ pub async fn item_navigation_links(
                 id,
                 ItemNavigationLinks {
                     series_id,
+                    series_name: row.try_get("series_name")?,
                     season_id,
+                    season_name,
                     index_number: item_index,
                     parent_index_number: parent_index,
                     album_id: row.try_get("album_id")?,

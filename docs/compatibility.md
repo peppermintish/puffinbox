@@ -1,6 +1,6 @@
 # Capability and validation matrix
 
-Puffinbox is partial and unreleased. The target is the pinned public Jellyfin 12 API schema; version reporting does not certify compatibility. The current report matches 107 of 364 exact method/path declarations. Many missing operations and behavior differences remain.
+Puffinbox is partial and unreleased. The target is the pinned public Jellyfin 12 API schema; version reporting does not certify compatibility. The current report matches 108 of 364 exact method/path declarations. Many missing operations and behavior differences remain.
 
 ## Current evidence
 
@@ -35,7 +35,7 @@ The retained contract documents record exact projections and their limitations: 
 
 Scoped zero-limit, repeated-Fields, count and album-queue projections have preceding-image reference comparisons; they do not cover every query combination. Folder filtering, physical artist-parent layouts, combined Ids/SearchTerm, other zero-limit filters, specialized paging, wider arrays/Fields, legacy album fallback, collation and default catalog membership remain qualified. Arbitrary virtual-item writes and full metadata mutation are incomplete. Duplicate ended stops preserve later user edits, differing from the observed reference.
 
-The present official home requests to `/Shows/NextUp` and `/SyncPlay/List` return 404. Complete episode recommendation/history and synchronized playback are absent. The [release gates](release-gates.json) remain open until the full requested behavior is implemented and validated.
+The current source implements `/Shows/NextUp` for the [observed episode-history selections](jellyfin12-next-up.md), with a disposable-database regression. It uses numbered catalog folders/files and bounded pages; wider episode numbering and official-client validation remain open. `/SyncPlay/List` and synchronized playback remain incomplete. The [release gates](release-gates.json) remain open until the full requested behavior is implemented and validated.
 
 ## Licensing
 

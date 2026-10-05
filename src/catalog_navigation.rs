@@ -194,7 +194,7 @@ enum CatalogEntry {
     Library(LibraryViewDto),
 }
 
-async fn visible_item(
+pub(crate) async fn visible_item(
     state: &AppState,
     user: &UserRecord,
     id: Uuid,

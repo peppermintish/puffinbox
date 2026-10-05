@@ -9,8 +9,8 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Check | Result | Scope |
 | --- | --- | --- |
 | Formatting, strict Clippy and source policy | Passed | All project targets; GNU and musl dependency graphs select rustls without OpenSSL TLS packages. |
-| Standard Rust suite | 247 passed, 0 failed, 29 ignored | Ignored cases require a disposable database and are run separately. Includes safe-worker confinement, capability closure and graceful/forced shutdown. |
-| PostgreSQL suite | 29 passed, 0 failed | 26 integration cases and three database-backed unit cases, including real SCRAM logins and rejected proofs. |
+| Standard Rust suite | 247 passed, 0 failed, 30 ignored | Ignored cases require a disposable database and are run separately. Includes safe-worker confinement, capability closure and graceful/forced shutdown. |
+| PostgreSQL suite | 30 passed, 0 failed | 27 integration cases and three database-backed unit cases, including real SCRAM logins, rejected proofs and Next Up. |
 | Python suite | 27 passed | Retired GNU/source-fork tests were removed with their unused implementation. |
 | Source browser checks | Nine groups passed | Client identity, native adapter, heartbeat, offline cache, books, and Chromium offline/Live TV/playlists; delayed response bodies included. |
 | PDF asset restoration | 12 Chromium cases passed | Current source: Japanese CMaps/text, Foxit Symbol, JPEG2000/JBIG2 pixels, both JavaScript decoder fallbacks, and worker cleanup after rendering or while loading. All 194 retained upstream files and nine notices verified. |
@@ -20,13 +20,19 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Images | Passed | Static non-root core, retained notices, operator FFmpeg fd protocol and H.264/AAC encode/probe. |
 | Semantic container acceptance | 35 passed, 0 failed, 0 pending | Authentication, policies, media, scanning, subtitles, music, WebSockets, active FFmpeg shutdown and restart/resume. |
 | Local HTTPS proxy | 29 passed | Certificate checks, forwarding spoof rejection, secure cookies, media-token scope, logout and active remote-policy changes. Synthetic addresses; no Internet deployment. |
-| Public-schema route report | 107 / 364 exact method/path declarations | Declaration coverage only. |
+| Public-schema route report | 108 / 364 exact method/path declarations | Declaration coverage only. |
 
 The original corrected core is `sha256:6d66ba262dfac268acfa49ec6d6894d2c8b2a8edcd582735410cb1f25e80a841`; its operator image is `sha256:53eacf6d1359d2eb1cdce8a8def952768861b9d41cbafbd9ea377fddbb07cae0`. Both were built from the corrected working tree on checkpoint `ece05bd`, with exact source fingerprints in the local ledger. They are not builds of the preceding commit alone.
 
 The subsequent PDF restoration was built on checkpoint `d7417dd`: core `sha256:ac1ae481c3034b3ef2f0dd537f79f5cd0ba416de4c262150df7f5699eb3a5fe7`, operator `sha256:d5f9882fd84675ed1775f04d6491a9fbb750c7e0e9552caa723163043901e8c2`. A fresh isolated tree passed all 35 container checks, followed by the four authenticated PDF browser cases. Source fingerprints, asset hashes, notices, screenshots and cleanup records are in `.local/pdf-assets-20261005/`. Its synthetic browser cookie was revoked and its stack stopped with state preserved. Japanese glyphs displayed correctly on the tested Windows browser; unembedded font appearance on other hosts remains dependent on installed fonts. Documentation changes after these tests do not alter the tested implementation.
 
 The first container attempt passed twelve checks, then failed because its copied fixture tree lacked the newly required embedded-audio files. The second fresh tree ran the current supplemental generator and passed all 35 checks. Both records are preserved; no acceptance assertion was weakened.
+
+Next Up has source and disposable-database coverage for the [observed episode-history contract](jellyfin12-next-up.md), including skipped gaps, resumable filtering, cutoff, completed shows, rewatching, paging and selected-user policies. The full source and 30-case database run passed before the final dual-candidate rewatch correction; that correction then passed strict Clippy and its targeted database regression. A local compiler memory failure prevented the first targeted retry from starting tests; the fresh retry passed.
+
+The first Next Up core (`sha256:c070b09311922b70d47edf13b373a646e1143a66b44f0bb608535fc8fe42c6c8`) and operator (`sha256:9b563540bde73ae3fd4fdf006e6fc69b87d6956f78b7cf21bd28f9ed1afdc89c`) were built from the working tree at `601c817`, with exact fingerprints under `.local/next-up-contract-20261005/images/`. The isolated operator passed all 35 container checks and 52 selected public-reference projections. Those comparisons required Puffinbox's explicit local NFO refresh after scanning; the first setup attempt had not imported the display titles. Fixture hashes stayed unchanged. Wider DTO fields, server-specific IDs and season folder labels were excluded from the comparison as documented in its ledger.
+
+Official web then exposed a repeated-array request failure on that image. The parser now accepts repeated Fields and image types, with scalar-duplicate and encoded-delimiter regressions. That fix passed strict Clippy and the targeted database regression; its rebuilt-image and client checks remain pending. Ledgers are under `.local/next-up-contract-20261005/`.
 
 The restart check stopped the server while an FFmpeg HLS process was active. It verified process shutdown, playback-row closure, the committed resume position, catalog and embedded metadata persistence, stale HLS-session rejection, and reconnected socket notifications. Independent HLS probes cover the 300.023-second source, nonsequential segment timestamps and the final boundary. Audible continuity across batches remains unvalidated.
 
@@ -36,7 +42,7 @@ Unchanged official web assets and the verified Qt 6 Jellyfin Desktop executable 
 
 Official web visibly decoded the long synthetic HLS fixture at 640×360. Its timeline advanced from 18.830183 to 39.670778 seconds; normal navigation stopped playback and committed 51.948079 seconds. Both clients completed the four-track tagged FLAC album automatically. Each queue generated fifteen successful playback reports and added exactly one play per track; music resume positions stayed zero. A web replay did the same, and active decoded browser audio was observed. All thirteen fixture hashes remained unchanged.
 
-Desktop accepted original MP4 direct-play requests, progress and stops, but its captured video surface was black. General Desktop video remains unvalidated. Audible output/continuity, broader formats and clients remain open. A transient web playback notice was observed before successful HLS playback; its cause is unresolved. Home pages still request unsupported Next Up and SyncPlay routes. These results do not clear the behavioral compatibility gate.
+Desktop accepted original MP4 direct-play requests, progress and stops, but its captured video surface was black. General Desktop video remains unvalidated. Audible output/continuity, broader formats and clients remain open. A transient web playback notice was observed before successful HLS playback; its cause is unresolved. The tested client image lacked Next Up and SyncPlay; Next Up has since been added to source, while synchronized playback remains incomplete. These results do not clear the behavioral compatibility gate.
 
 Private evidence is under `.local/policy-correction-20261005/`: `source2`, `browser`, `images`, `image-inspection`, `container2`, `remote`, `clients` and `native`. `clients/verified.json` joins the tested images to 113 implementation fingerprints, queue reports, independent user-data reads and screenshot hashes. Credentials and full client logs remain ignored by Git.
 

@@ -142,6 +142,7 @@ pub fn router(state: AppState) -> Router {
     });
     core.merge(crate::media_features::router(state.clone()))
         .merge(crate::catalog_navigation::router(state.clone()))
+        .merge(crate::next_up::router(state.clone()))
         .merge(crate::music_mix::router(state.clone()))
         .merge(crate::catalog_filters::router(state.clone()))
         .merge(crate::studios::router(state.clone()))
@@ -2635,7 +2636,11 @@ pub(crate) struct BaseItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     series_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    series_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     season_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    season_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     index_number: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2790,7 +2795,9 @@ fn item_dto(
             .and_then(|metadata| metadata.primary_image_tag.clone())
             .map(|primary| ItemImageTagsDto { primary }),
         series_id: navigation.and_then(|links| links.series_id),
+        series_name: navigation.and_then(|links| links.series_name.clone()),
         season_id: navigation.and_then(|links| links.season_id),
+        season_name: navigation.and_then(|links| links.season_name.clone()),
         index_number: (item.item_type == "Audio")
             .then(|| metadata.and_then(|metadata| metadata.track_number))
             .flatten()
@@ -4739,7 +4746,9 @@ mod item_dto_tests {
             premiere_date: None,
             image_tags: None,
             series_id: None,
+            series_name: None,
             season_id: None,
+            season_name: None,
             index_number: None,
             parent_index_number: None,
             album: None,
@@ -4785,7 +4794,9 @@ mod item_dto_tests {
         };
         let navigation = db::ItemNavigationLinks {
             series_id: Some(series_id),
+            series_name: Some("Visible series".to_owned()),
             season_id: Some(season_id),
+            season_name: Some("Season 1".to_owned()),
             index_number: Some(2),
             parent_index_number: Some(1),
             artist_id: Some(artist_id),

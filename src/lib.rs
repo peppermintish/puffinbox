@@ -10,6 +10,7 @@ pub mod db;
 pub mod error;
 pub mod library;
 pub(crate) mod music_mix;
+pub(crate) mod next_up;
 pub mod state;
 pub(crate) mod studios;
 pub mod user_settings;
