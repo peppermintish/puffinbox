@@ -1,13 +1,13 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-03T23:58:28.307025+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-05T20:33:24.101149+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `195`
-- Declared pairs matching a schema method/path: `107`
-- Declared pairs outside the schema: `88`
+- Unique declared server method/path pairs: `200`
+- Declared pairs matching a schema method/path: `108`
+- Declared pairs outside the schema: `92`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
 
@@ -75,6 +75,10 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /UserPlayedItems/{item_id}` | `src/api.rs` | match |
 | `DELETE /UserFavoriteItems/{item_id}` | `src/api.rs` | match |
 | `POST /UserFavoriteItems/{item_id}` | `src/api.rs` | match |
+| `DELETE /Users/{user_id}/PlayedItems/{item_id}` | `src/api.rs` | custom / not in target schema |
+| `POST /Users/{user_id}/PlayedItems/{item_id}` | `src/api.rs` | custom / not in target schema |
+| `DELETE /Users/{user_id}/FavoriteItems/{item_id}` | `src/api.rs` | custom / not in target schema |
+| `POST /Users/{user_id}/FavoriteItems/{item_id}` | `src/api.rs` | custom / not in target schema |
 | `GET /Search/Hints` | `src/api.rs` | match |
 | `GET /Sessions` | `src/api.rs` | match |
 | `POST /Sessions/Capabilities/Full` | `src/api.rs` | match |
@@ -181,6 +185,7 @@ This is a source declaration comparison only. It does not establish that a match
 | `GET /Playlists/{item_id}/InstantMix` | `src/music_mix.rs` | match |
 | `GET /MusicGenres/{name}/InstantMix` | `src/music_mix.rs` | match |
 | `GET /MusicGenres/InstantMix` | `src/music_mix.rs` | match |
+| `GET /Shows/NextUp` | `src/next_up.rs` | match |
 | `GET /Puffinbox/Offline/Settings` | `src/offline.rs` | custom / not in target schema |
 | `GET /Puffinbox/Offline/Packages` | `src/offline.rs` | custom / not in target schema |
 | `POST /Puffinbox/Offline/Packages` | `src/offline.rs` | custom / not in target schema |

@@ -6,6 +6,20 @@ state in PostgreSQL; ordinary item responses read a bounded page of those
 results in one batch query. `GET /Items`, `GET /Items/{itemId}`, and search
 hints expose the supported display fields directly on each item.
 
+Completed library scans also queue the local NFO and poster importer. Music
+scans queue embedded audio tags as well. These automatic jobs use the same
+registered-root reads, bounded pages, persistent state and policy checks as
+manual refreshes; remote providers and plugins still require an explicit
+request. Scan completion and metadata completion are separate states, so
+display fields can appear after the scan finishes.
+
+Repeated scans share a queued library/provider job without requesting an extra
+pass. A scan during processing or retry requests a full follow-up pass, including
+new items before the old cursor. Scan-triggered refreshes read both local metadata
+and images, including changes or removal of an existing NFO or poster. The
+database regression exercises scan-to-title/rating/artwork delivery, queued-job
+coalescing, rescans, sidecar removal and restricted-user reads.
+
 Administrators can also use Jellyfin's `POST /Items/{itemId}/Refresh` for local
 metadata and images. Both refresh modes default to `None`. `Default` reloads
 local inputs; `FullRefresh` retains existing provider metadata or artwork

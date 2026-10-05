@@ -218,7 +218,17 @@ async fn local_nfo_worker_updates_catalog_dto_and_primary_artwork_route() {
     );
     sqlx::query("UPDATE metadata_refresh_runs SET status='queued',claimed_run_id=NULL,rerun_requested=FALSE WHERE id=$1")
         .bind(policy_job).execute(&pool).await.unwrap();
+    let automatic_scan = prepare_automatic_nfo_scan(&state, &root_dir, &poster_bytes).await;
     metadata::start_worker(state.clone());
+    verify_automatic_nfo_scan(
+        &state,
+        &router,
+        &token,
+        &root_dir,
+        automatic_scan,
+        &poster_bytes,
+    )
+    .await;
 
     let static_response = router
         .clone()
@@ -1064,6 +1074,220 @@ async fn album_names_follow_current_permitted_tags_before_search_sort_and_paging
         .await
         .unwrap();
     admin_pool.close().await;
+}
+
+async fn prepare_automatic_nfo_scan(
+    state: &AppState,
+    root: &std::path::Path,
+    poster: &[u8],
+) -> (Uuid, Uuid, Uuid) {
+    let directory = root.join("automatic-local-scan");
+    fs::create_dir(&directory).unwrap();
+    let media = directory.join("Scanned Movie.mkv");
+    fs::write(&media, b"automatic metadata media fixture").unwrap();
+    fs::write(
+        directory.join("Scanned Movie.nfo"),
+        b"<movie><title>Automatic Original Title</title><mpaa>PG-13</mpaa></movie>",
+    )
+    .unwrap();
+    fs::write(directory.join("Scanned Movie-poster.png"), poster).unwrap();
+    let directory = fs::canonicalize(directory).unwrap();
+    let location = directory.to_str().unwrap().to_owned();
+    let library = Uuid::new_v4();
+    db::insert_library(
+        &state.db,
+        state.run_id,
+        library,
+        "Automatic NFO scan",
+        "movies",
+        std::slice::from_ref(&directory),
+        true,
+    )
+    .await
+    .unwrap();
+    let (device, inode) = library::inspect_library_root_identity(directory)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO library_root_identities(library_id,root_path_hash,root_path,device_id,inode) VALUES($1,$2,$3,$4,$5)")
+        .bind(library).bind(db::path_hash(&location)).bind(location).bind(device.to_string()).bind(inode.to_string()).execute(&state.db).await.unwrap();
+    complete_scan(state, library).await;
+    let job = latest_scan_nfo_job(&state.db, library).await;
+    complete_scan(state, library).await;
+    let jobs: Vec<(Uuid, bool)> = sqlx::query_as("SELECT id,rerun_requested FROM metadata_refresh_runs WHERE scope_library_id=$1 AND status='queued'")
+        .bind(library).fetch_all(&state.db).await.unwrap();
+    assert_eq!(
+        jobs,
+        [(job, false)],
+        "queued scans coalesce without a redundant pass or remote provider"
+    );
+    let item: Uuid =
+        sqlx::query_scalar("SELECT id FROM items WHERE library_id=$1 AND item_type='Movie'")
+            .bind(library)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    (library, item, job)
+}
+
+async fn verify_automatic_nfo_scan(
+    state: &AppState,
+    router: &axum::Router,
+    admin_token: &str,
+    root: &std::path::Path,
+    fixture: (Uuid, Uuid, Uuid),
+    poster: &[u8],
+) {
+    let (library, item, first_job) = fixture;
+    wait_for_scan_nfo_job(&state.db, first_job).await;
+    let viewer = Uuid::new_v4();
+    sqlx::query("INSERT INTO users(id,username,username_norm,password_hash,restrict_libraries,max_parental_rating,block_unrated_items,enable_remote_access) VALUES($1,'automatic-nfo-viewer','automatic-nfo-viewer','unused',TRUE,50,ARRAY['Movie']::text[],TRUE)")
+        .bind(viewer).execute(&state.db).await.unwrap();
+    sqlx::query("INSERT INTO user_library_access(user_id,library_id) VALUES($1,$2)")
+        .bind(viewer)
+        .bind(library)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let viewer = db::get_user(&state.db, viewer).await.unwrap().unwrap();
+    let token = auth::issue_token(
+        state,
+        &viewer,
+        "automatic-nfo-test",
+        "fixture",
+        "automatic-nfo",
+    )
+    .await
+    .unwrap()
+    .token;
+    let path = format!("/Items/{item}");
+    let (status, original) = call_json(router, "GET", &path, &token, None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(original["Name"], "Automatic Original Title");
+    assert_eq!(original["OfficialRating"], "PG-13");
+    let image = call_raw(
+        router,
+        "GET",
+        &format!("{path}/Images/Primary"),
+        &token,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(image.status(), StatusCode::OK);
+    assert_eq!(
+        image
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        poster
+    );
+    let directory = root.join("automatic-local-scan");
+    fs::write(
+        directory.join("Scanned Movie.nfo"),
+        b"<movie><title>Automatic Updated Title</title><mpaa>R</mpaa></movie>",
+    )
+    .unwrap();
+    complete_scan(state, library).await;
+    let second_job = latest_scan_nfo_job(&state.db, library).await;
+    assert_ne!(first_job, second_job);
+    wait_for_scan_nfo_job(&state.db, second_job).await;
+    let (status, updated) = call_json(router, "GET", &path, admin_token, None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["Name"], "Automatic Updated Title");
+    assert_eq!(updated["OfficialRating"], "R");
+    assert_eq!(
+        call_raw(router, "GET", &path, &token, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    fs::remove_file(directory.join("Scanned Movie.nfo")).unwrap();
+    fs::remove_file(directory.join("Scanned Movie-poster.png")).unwrap();
+    complete_scan(state, library).await;
+    wait_for_scan_nfo_job(&state.db, latest_scan_nfo_job(&state.db, library).await).await;
+    let (status, removed) = call_json(router, "GET", &path, admin_token, None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(removed["Name"], "Scanned Movie.mkv");
+    assert!(removed.get("OfficialRating").is_none());
+    assert_eq!(
+        call_raw(
+            router,
+            "GET",
+            &format!("{path}/Images/Primary"),
+            admin_token,
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call_raw(router, "GET", &path, &token, None, None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fs::read(directory.join("Scanned Movie.mkv")).unwrap(),
+        b"automatic metadata media fixture"
+    );
+}
+
+async fn complete_scan(state: &AppState, library: Uuid) {
+    assert_eq!(
+        library::spawn_scan(state.clone(), library).await.unwrap(),
+        library::ScanStart::Started
+    );
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(status) = library::scan_status(&state.db)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|status| status.library_id == library)
+                && status.status != "running"
+            {
+                assert_eq!(status.status, "completed", "{:?}", status.last_error);
+                assert_eq!(status.errors, 0);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("automatic metadata fixture scan should finish");
+}
+
+async fn latest_scan_nfo_job(pool: &sqlx::PgPool, library: Uuid) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM metadata_refresh_runs WHERE scope_library_id=$1 AND provider_key='local-nfo' ORDER BY created_at DESC,id DESC LIMIT 1")
+        .bind(library).fetch_one(pool).await.unwrap()
+}
+
+async fn wait_for_scan_nfo_job(pool: &sqlx::PgPool, job: Uuid) {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let (status, succeeded, errors): (String, i64, i64) = sqlx::query_as(
+                "SELECT status,items_succeeded,items_errors FROM metadata_refresh_runs WHERE id=$1",
+            )
+            .bind(job)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if !matches!(status.as_str(), "queued" | "running" | "retry_wait") {
+                assert_eq!(status, "completed");
+                assert!(succeeded >= 1);
+                assert_eq!(errors, 0);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("scan-triggered local NFO job should finish");
 }
 
 async fn insert_item(pool: &sqlx::PgPool, id: Uuid, library_id: Uuid, path: &std::path::Path) {

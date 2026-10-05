@@ -757,11 +757,17 @@ impl ScanContext {
                 "library scan generation stopped before completion".to_owned(),
             ));
         }
-        if self.collection_type.eq_ignore_ascii_case("music") {
+        let providers: &[&str] = if self.collection_type.eq_ignore_ascii_case("music") {
+            &["local-nfo", "embedded-audio"]
+        } else {
+            &["local-nfo"]
+        };
+        for provider in providers {
             // A scan racing an active refresh requests another full keyset
-            // pass, including new tracks whose IDs precede the old cursor.
-            sqlx::query("INSERT INTO metadata_refresh_runs(id,scope_kind,scope_library_id,scope_library_name,provider_key,status,batch_limit) SELECT $1,'library',id,name,'embedded-audio','queued',250 FROM libraries WHERE id=$2 AND enabled=TRUE ON CONFLICT (scope_library_id,provider_key) WHERE scope_kind='library' AND status IN ('queued','running','retry_wait') DO UPDATE SET rerun_requested=TRUE,updated_at=NOW()")
-                .bind(Uuid::new_v4()).bind(self.library_id).execute(&mut *tx).await?;
+            // pass, including new items whose IDs precede the old cursor.
+            // A queued job has no snapshot yet and needs only one pass.
+            sqlx::query("INSERT INTO metadata_refresh_runs(id,scope_kind,scope_library_id,scope_library_name,provider_key,status,batch_limit) SELECT $1,'library',id,name,$3,'queued',250 FROM libraries WHERE id=$2 AND enabled=TRUE ON CONFLICT (scope_library_id,provider_key) WHERE scope_kind='library' AND status IN ('queued','running','retry_wait') DO UPDATE SET scope_library_name=EXCLUDED.scope_library_name,refresh_metadata=TRUE,refresh_images=TRUE,rerun_requested=metadata_refresh_runs.rerun_requested OR metadata_refresh_runs.status IN ('running','retry_wait'),updated_at=NOW()")
+                .bind(Uuid::new_v4()).bind(self.library_id).bind(provider).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         info!(library_id = %self.library_id, status, files_seen = self.counts.files_seen, directories_seen = self.counts.directories_seen, indexed = self.counts.items_indexed, errors = self.counts.errors, "library scan finished");
