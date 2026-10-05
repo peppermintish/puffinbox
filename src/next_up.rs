@@ -4,7 +4,7 @@ use axum::{
     http::Uri,
     routing::get,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -35,7 +35,12 @@ struct NextUpParams {
     limit: Option<i64>,
     #[serde(rename = "fields", alias = "Fields")]
     fields: Option<String>,
-    #[serde(rename = "nextUpDateCutoff", alias = "NextUpDateCutoff")]
+    #[serde(
+        rename = "nextUpDateCutoff",
+        alias = "NextUpDateCutoff",
+        default,
+        deserialize_with = "date_cutoff"
+    )]
     date_cutoff: Option<DateTime<Utc>>,
     #[serde(rename = "enableTotalRecordCount", alias = "EnableTotalRecordCount")]
     total_count: Option<bool>,
@@ -51,6 +56,27 @@ struct NextUpParams {
     image_limit: Option<i32>,
     #[serde(rename = "enableImageTypes", alias = "EnableImageTypes")]
     image_types: Option<String>,
+}
+
+fn date_cutoff<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    value
+        .map(|value| {
+            if let Ok(timestamp) = DateTime::parse_from_rfc3339(&value) {
+                return Ok(timestamp.with_timezone(&Utc));
+            }
+            // Official web clients also send a calendar date, at UTC midnight.
+            NaiveDate::parse_from_str(&value, "%Y-%m-%d")
+                .ok()
+                .filter(|date| value.len() == 10 && date.format("%Y-%m-%d").to_string() == value)
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+                .map(|date| date.and_utc())
+                .ok_or_else(|| serde::de::Error::custom("Invalid Next Up date cutoff"))
+        })
+        .transpose()
 }
 
 impl NextUpParams {

@@ -779,6 +779,7 @@ async function main() {
     await cdp.waitFor(nativeOfflinePage, 'document.querySelector("#player-dialog")?.open && document.querySelector("#player-stage audio")?.readyState >= 2', Boolean, 'the embedded-player Blob fallback');
     const nativeBlobPlayback = await cdp.evaluate(nativeOfflinePage.sessionId, `(async () => {
       const audio = document.querySelector('#player-stage audio');
+      window.__offlinePreviousAudio = audio;
       await audio.play();
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('the embedded-player Blob copy did not play')), 8000);
@@ -791,8 +792,6 @@ async function main() {
     })()`);
     assert.match(nativeBlobPlayback.source, /^blob:/, 'the embedded player did not use the verified local Blob source');
     assert.ok(nativeBlobPlayback.currentTime > 0.05, 'the embedded-player copy did not advance playback');
-    await cdp.evaluate(nativeOfflinePage.sessionId, 'document.querySelector("#player-dialog").close(); true');
-    await cdp.waitFor(nativeOfflinePage, '!document.querySelector("#player-dialog").open', Boolean, 'closing the embedded-player preview');
     await cdp.evaluate(nativeOfflinePage.sessionId, `(async () => {
       const cache = PuffinboxOfflineCache;
       const db = await cache.openDatabase();
@@ -816,7 +815,17 @@ async function main() {
         await completed;
       } finally { db.close(); }
     })()`);
-    await cdp.evaluate(nativeOfflinePage.sessionId, `document.querySelector('[data-open-offline="${PACKAGE_ID}"]').click(); true`);
+    const reopenedOfflineDialog = await cdp.evaluate(nativeOfflinePage.sessionId, `(async () => {
+      const dialog = document.querySelector('#player-dialog');
+      const closed = new Promise((resolve) => dialog.addEventListener('close', resolve, { once: true }));
+      dialog.close();
+      document.querySelector('[data-open-offline="${PACKAGE_ID}"]').click();
+      await closed;
+      return dialog.open;
+    })()`);
+    assert.equal(reopenedOfflineDialog, true, 'a delayed close event closed the reopened offline preview');
+    assert.equal(await cdp.evaluate(nativeOfflinePage.sessionId, 'window.__offlinePreviousAudio.paused && !window.__offlinePreviousAudio.hasAttribute("src")'), true, 'the reopened preview left its previous audio source active');
+    assert.equal(await cdp.evaluate(nativeOfflinePage.sessionId, `fetch(${JSON.stringify(nativeBlobPlayback.source)}).then(() => false, () => true)`), true, 'the reopened preview retained its previous Blob URL');
     const rejectedCorruptBlob = await cdp.waitFor(nativeOfflinePage,
       'document.querySelector("#player-note")?.textContent',
       (value) => value.includes('failed its local SHA-256 check'), 'rejecting a corrupt embedded-player chunk');

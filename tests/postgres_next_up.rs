@@ -228,6 +228,13 @@ async fn next_up_matches_observed_episode_history_and_enforces_user_and_catalog_
         &["Rated Show S01E02", "Started Show S01E02"],
         0,
     ).await;
+    assert_names(
+        &router,
+        &format!("userId={owner}&limit=24&fields=PrimaryImageAspectRatio&fields=DateCreated&fields=Path&fields=MediaSourceCount&imageTypeLimit=1&enableImageTypes=Primary&enableImageTypes=Backdrop&enableImageTypes=Thumb&nextUpDateCutoff=2025-10-05&enableTotalRecordCount=false&enableResumable=false&enableRewatching=false"),
+        token,
+        &["Rated Show S01E02", "Started Show S01E02"],
+        0,
+    ).await;
     // Encoded text inside an array value cannot introduce another user selector.
     assert_names(
         &router,
@@ -250,6 +257,14 @@ async fn next_up_matches_observed_episode_history_and_enforces_user_and_catalog_
     assert_names(
         &router,
         "nextUpDateCutoff=2026-10-02T00%3A00%3A00Z",
+        token,
+        &["Rated Show S01E02"],
+        1,
+    )
+    .await;
+    assert_names(
+        &router,
+        "nextUpDateCutoff=2026-10-02",
         token,
         &["Rated Show S01E02"],
         1,
@@ -482,6 +497,8 @@ async fn next_up_matches_observed_episode_history_and_enforces_user_and_catalog_
         "StartIndex=-1",
         "StartIndex=2147483648",
         "nextUpDateCutoff=invalid",
+        "nextUpDateCutoff=2026-02-30",
+        "nextUpDateCutoff=2026-1-2",
         "imageTypeLimit=-1",
     ] {
         assert_eq!(

@@ -485,6 +485,10 @@
     const note = document.querySelector('#player-note');
     const playerStage = document.querySelector('#player-stage');
     if (!playerDialog.open) playerDialog.showModal();
+    const previousMedia = playerStage.querySelector('video, audio');
+    if (previousMedia) { previousMedia.pause(); previousMedia.removeAttribute('src'); previousMedia.load(); }
+    if (offlinePlaybackObjectUrl) URL.revokeObjectURL(offlinePlaybackObjectUrl);
+    offlinePlaybackObjectUrl = null;
     setNativePlayerSurface(false);
     nativePlayerControls.hidden = true;
     audioTrackControl.hidden = true;
@@ -2661,6 +2665,8 @@
   }
 
   playerDialog.addEventListener('close', () => {
+    // A queued close can arrive after this dialog has opened another item.
+    if (playerDialog.open) return;
     playbackGeneration += 1;
     offlinePlaybackGeneration += 1;
     pendingPlayback = null;

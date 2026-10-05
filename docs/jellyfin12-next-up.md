@@ -31,6 +31,9 @@ were checked after each sequence of public user-data changes.
   candidates in the observed operation.
 - `limit=0` returns the complete observed result. Paging retains the total and
   requested start index. Disabling counts returns `TotalRecordCount: 0`.
+- A date-only `nextUpDateCutoff` matches the corresponding UTC-midnight
+  timestamp. Official web sends this date form alongside repeated fields and
+  image types, with resumable and rewatching disabled.
 
 ## Puffinbox scope
 
