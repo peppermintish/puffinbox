@@ -1,13 +1,13 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-05T21:48:25.391212+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-05T22:37:03.319402+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `205`
-- Declared pairs matching a schema method/path: `113`
-- Declared pairs outside the schema: `92`
+- Unique declared server method/path pairs: `224`
+- Declared pairs matching a schema method/path: `131`
+- Declared pairs outside the schema: `93`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
 
@@ -20,6 +20,8 @@ This is a source declaration comparison only. It does not establish that a match
 | `GET /socket` | `src/api.rs` | custom / not in target schema |
 | `GET /health/ready` | `src/api.rs` | custom / not in target schema |
 | `GET /System/Info/Public` | `src/api.rs` | match |
+| `GET /GetUtcTime` | `src/api.rs` | match |
+| `GET /GetUTCTime` | `src/api.rs` | custom / not in target schema |
 | `GET /Branding/Configuration` | `src/api.rs` | match |
 | `GET /QuickConnect/Enabled` | `src/api.rs` | match |
 | `GET /Users/Public` | `src/api.rs` | match |
@@ -217,6 +219,23 @@ This is a source declaration comparison only. It does not establish that a match
 | `POST /SyncPlay/New` | `src/syncplay.rs` | match |
 | `POST /SyncPlay/Join` | `src/syncplay.rs` | match |
 | `POST /SyncPlay/Leave` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/SetNewQueue` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Queue` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/MovePlaylistItem` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/RemoveFromPlaylist` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/SetPlaylistItem` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/NextItem` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/PreviousItem` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/SetRepeatMode` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/SetShuffleMode` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Pause` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Unpause` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Stop` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Seek` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Ready` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Buffering` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/SetIgnoreWait` | `src/syncplay.rs` | match |
+| `POST /SyncPlay/Ping` | `src/syncplay.rs` | match |
 | `POST /Users/Configuration` | `src/user_settings.rs` | match |
 | `GET /DisplayPreferences/{displayPreferencesId}` | `src/user_settings.rs` | match |
 | `POST /DisplayPreferences/{displayPreferencesId}` | `src/user_settings.rs` | match |

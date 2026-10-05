@@ -40,6 +40,8 @@ pub fn router(state: AppState) -> Router {
         .route("/socket", get(crate::websocket::connect))
         .route("/health/ready", get(ready))
         .route("/System/Info/Public", get(public_system_info))
+        .route("/GetUtcTime", get(utc_time))
+        .route("/GetUTCTime", get(utc_time))
         .route("/Branding/Configuration", get(branding_configuration))
         .route("/QuickConnect/Enabled", get(quick_connect_enabled))
         .route("/Users/Public", get(public_users))
@@ -551,6 +553,32 @@ async fn system_info(
     _user: CurrentUser,
 ) -> Result<Json<SystemInfoDto>, ApiError> {
     Ok(Json(system_info_inner(&state).await?))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct UtcTimeResponse {
+    request_reception_time: DateTime<Utc>,
+    response_transmission_time: DateTime<Utc>,
+}
+
+async fn utc_time(State(state): State<AppState>) -> Result<Json<UtcTimeResponse>, ApiError> {
+    let request_reception_time = Utc::now();
+    if state
+        .shutdown_requested
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::Unavailable);
+    }
+    let mut tx = state.db.begin().await?;
+    if !db::active_run_is_current(&mut tx, state.run_id).await? {
+        return Err(ApiError::Unavailable);
+    }
+    tx.commit().await?;
+    Ok(Json(UtcTimeResponse {
+        request_reception_time,
+        response_transmission_time: Utc::now(),
+    }))
 }
 
 #[derive(Serialize)]

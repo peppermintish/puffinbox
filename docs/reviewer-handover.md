@@ -16,8 +16,12 @@ passed after recording/offline policy snapshot omissions were corrected. Final
 source checks and the group regression passed after matching omitted/null join
 IDs and Unicode name lengths. An unused asset reader and obsolete lint
 suppressions were removed; confinement tests exercise the production reader.
-Shared queues, synchronization commands and packaged/client SyncPlay acceptance
-remain open; see [the group contract](jellyfin12-syncplay.md).
+Shared queues and synchronization commands are now implemented with per-entry
+IDs, bounded queues, current participant media checks and separate queue/command
+revisions. The final source passed 249 standard cases and all 32 database cases,
+including UTC clock and multi-socket/last-socket cleanup. Packaged and official
+client synchronization remain unvalidated; see [the contract](jellyfin12-syncplay.md).
+The group checkpoint `4560a12` passed both cloud jobs before the queue changes.
 
 The [documentation checkpoint at `5463c0c`](https://github.com/peppermintish/puffinbox/actions/runs/37372909200)
 passed isolated media acceptance for the unchanged local-metadata implementation.

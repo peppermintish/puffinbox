@@ -9,8 +9,8 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Check | Result | Scope |
 | --- | --- | --- |
 | Formatting, strict Clippy and source policy | Passed | All project targets; GNU and musl dependency graphs select rustls without OpenSSL TLS packages. |
-| Standard Rust suite | 247 passed, 0 failed, 31 ignored | Ignored cases require a disposable database and are run separately. Includes safe-worker confinement, capability closure and graceful/forced shutdown. |
-| PostgreSQL suite | 31 passed, 0 failed | 28 integration cases and three database-backed unit cases, including SCRAM, Next Up and SyncPlay groups. |
+| Standard Rust suite | 249 passed, 0 failed, 32 ignored | Ignored cases require a disposable database and are run separately. Includes safe-worker confinement, capability closure and graceful/forced shutdown. |
+| PostgreSQL suite | 32 passed, 0 failed | 29 integration cases and three database-backed unit cases, including SCRAM, Next Up and SyncPlay groups/queues. |
 | Python suite | 27 passed | Retired GNU/source-fork tests were removed with their unused implementation. |
 | Source browser checks | Nine groups passed | Client identity, native adapter, heartbeat, offline cache, books, and Chromium offline/Live TV/playlists; delayed response bodies included. |
 | PDF asset restoration | 12 Chromium cases passed | Current source: Japanese CMaps/text, Foxit Symbol, JPEG2000/JBIG2 pixels, both JavaScript decoder fallbacks, and worker cleanup after rendering or while loading. All 194 retained upstream files and nine notices verified. |
@@ -20,7 +20,33 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Images | Passed | Static non-root core, retained notices, operator FFmpeg fd protocol and H.264/AAC encode/probe. |
 | Semantic container acceptance | 35 passed, 0 failed, 0 pending | Authentication, policies, media, scanning, subtitles, music, WebSockets, active FFmpeg shutdown and restart/resume. |
 | Local HTTPS proxy | 29 passed | Certificate checks, forwarding spoof rejection, secure cookies, media-token scope, logout and active remote-policy changes. Synthetic addresses; no Internet deployment. |
-| Public-schema route report | 113 / 364 exact method/path declarations | Declaration coverage only; includes the initial SyncPlay group routes. |
+| Public-schema route report | 131 / 364 exact method/path declarations | Declaration coverage only; includes the 22 SyncPlay operations and UTC clock. |
+
+The [SyncPlay controls](jellyfin12-syncplay.md) passed formatting, strict Clippy,
+source policy, 249 standard Rust cases and all 32 database cases. The two-user
+HTTP/WebSocket regression covers queues, duplicate entries, selection, repeat,
+shuffle, readiness, scheduled commands, buffering, seek, stale requests and
+current media restrictions. Parent ratings and revoked library grants remove
+participants before further queue delivery. Separate revisions preserve a queue
+while replacing timing commands. The clock endpoint, multiple sockets for one
+session and last-socket removal are covered; the login remains valid after close.
+
+Exact source fingerprints and the final run are in
+`.local/next-up-contract-20261005/syncplay-queue-source5`. Earlier full runs also
+passed before the final expiry correction. A regression reproduced an expired
+token creating a group after a policy-lock wait; the live check now uses the
+current PostgreSQL clock instead of transaction-start time, and rejects that
+request. The expiry reproduction and all failed records remain preserved.
+An initial queue test failed
+compilation on its shutdown helper; an intermediate disconnect run failed on a
+missing test-fixture field. Both were corrected and failed records retained.
+These checks establish source/database protocol behavior. Packaged SyncPlay and
+official-client playback acceptance remain pending; timing and queue edits during
+shuffle need broader comparison. Release gates remain open.
+
+The [group checkpoint at `4560a12`](https://github.com/peppermintish/puffinbox/actions/runs/37378609820)
+passed both cloud jobs: source/license/static checks and isolated database/media
+acceptance. That run precedes shared-queue implementation.
 
 The initial [SyncPlay group APIs](jellyfin12-syncplay.md) passed formatting,
 strict Clippy, source policy, 247 standard Rust cases and the full 31-case
@@ -37,8 +63,9 @@ third full run passed all 31 cases. Failed records remain preserved. Source
 fingerprints and results are under `.local/next-up-contract-20261005/` in
 `syncplay-foundation-source2`, `syncplay-foundation-full3` and
 `syncplay-foundation-final-groups1`. These are source/database results; SyncPlay
-has no packaged-image or official-client acceptance result yet. Shared queues
-and synchronized playback remain incomplete.
+has no packaged-image or official-client acceptance result yet. The subsequent
+queue implementation has the source checks recorded above; client timing remains
+unvalidated.
 
 At `bd177a4`, automatic local metadata imports and the series sorting correction
 passed formatting, strict Clippy, source policy, 247 standard Rust cases and the

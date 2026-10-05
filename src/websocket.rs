@@ -135,6 +135,8 @@ pub(crate) async fn connect(
     let (session_id, _) = db::active_auth_identity(&state.db, &identity.token_hash)
         .await?
         .ok_or(ApiError::Unauthorized)?;
+    let group_connection = state.syncplay.enter(session_id)?;
+    crate::syncplay::refresh_session(&state, &identity.token_hash, identity.user.id).await?;
     let group_events = state.syncplay.subscribe();
     Ok(upgrade
         .read_buffer_size(MAX_MESSAGE_BYTES)
@@ -142,16 +144,25 @@ pub(crate) async fn connect(
         .max_write_buffer_size(64 * 1024)
         .max_message_size(MAX_MESSAGE_BYTES)
         .max_frame_size(MAX_MESSAGE_BYTES)
-        .on_upgrade(move |socket| {
+        .on_upgrade(move |socket| async move {
+            // Retain the existing socket slot through cleanup, bounding tasks
+            // waiting on a database or group lock after a disconnect.
+            let _registration = registration;
+            let token_hash = identity.token_hash.clone();
+            let user_id = identity.user.id;
             serve(
                 socket,
-                state,
+                state.clone(),
                 identity,
-                registration,
                 events,
                 session_id,
                 group_events,
             )
+            .await;
+            drop(group_connection);
+            // Another socket for this token keeps membership alive. HTTP-only
+            // groups remain valid until their session first uses a socket.
+            let _ = crate::syncplay::refresh_session(&state, &token_hash, user_id).await;
         }))
 }
 
@@ -216,7 +227,6 @@ async fn serve(
     mut socket: WebSocket,
     state: AppState,
     identity: SocketIdentity,
-    _registration: Registration,
     mut events: broadcast::Receiver<UserEvent>,
     session_id: Uuid,
     mut group_events: broadcast::Receiver<crate::syncplay::GroupEvent>,

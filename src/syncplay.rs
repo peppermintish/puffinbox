@@ -21,6 +21,12 @@ use crate::{
     db,
 };
 
+mod queue;
+mod requests;
+mod visibility;
+
+use queue::{Control, Playback, PlaybackState};
+
 const MAX_GROUPS: usize = 128;
 const MAX_MEMBERS: usize = 32;
 const MAX_GROUPS_PER_USER: usize = 4;
@@ -32,12 +38,30 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/SyncPlay/New", post(new))
         .route("/SyncPlay/Join", post(join))
         .route("/SyncPlay/Leave", post(leave))
+        .route("/SyncPlay/SetNewQueue", post(requests::set_queue))
+        .route("/SyncPlay/Queue", post(requests::queue))
+        .route("/SyncPlay/MovePlaylistItem", post(requests::move_item))
+        .route("/SyncPlay/RemoveFromPlaylist", post(requests::remove))
+        .route("/SyncPlay/SetPlaylistItem", post(requests::select))
+        .route("/SyncPlay/NextItem", post(requests::next))
+        .route("/SyncPlay/PreviousItem", post(requests::previous))
+        .route("/SyncPlay/SetRepeatMode", post(requests::repeat))
+        .route("/SyncPlay/SetShuffleMode", post(requests::shuffle))
+        .route("/SyncPlay/Pause", post(requests::pause))
+        .route("/SyncPlay/Unpause", post(requests::unpause))
+        .route("/SyncPlay/Stop", post(requests::stop))
+        .route("/SyncPlay/Seek", post(requests::seek))
+        .route("/SyncPlay/Ready", post(requests::ready))
+        .route("/SyncPlay/Buffering", post(requests::buffer))
+        .route("/SyncPlay/SetIgnoreWait", post(requests::ignore))
+        .route("/SyncPlay/Ping", post(requests::ping))
         .with_state(state)
 }
 
 pub(crate) struct SyncGroups {
     registry: Mutex<Registry>,
     events: broadcast::Sender<GroupEvent>,
+    connections: std::sync::Mutex<HashMap<Uuid, usize>>,
 }
 
 impl SyncGroups {
@@ -46,11 +70,51 @@ impl SyncGroups {
         Self {
             registry: Mutex::new(Registry::default()),
             events,
+            connections: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn enter(
+        self: &std::sync::Arc<Self>,
+        session_id: Uuid,
+    ) -> Result<Connection, ApiError> {
+        let mut connections = self.connections.lock().map_err(|_| ApiError::Unavailable)?;
+        *connections.entry(session_id).or_default() += 1;
+        Ok(Connection {
+            groups: self.clone(),
+            session_id,
+        })
+    }
+
+    fn connected(&self, session_id: Uuid) -> Result<bool, ApiError> {
+        Ok(self
+            .connections
+            .lock()
+            .map_err(|_| ApiError::Unavailable)?
+            .get(&session_id)
+            .is_some_and(|count| *count > 0))
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<GroupEvent> {
         self.events.subscribe()
+    }
+}
+
+pub(crate) struct Connection {
+    groups: std::sync::Arc<SyncGroups>,
+    session_id: Uuid,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        if let Ok(mut connections) = self.groups.connections.lock()
+            && let Some(count) = connections.get_mut(&self.session_id)
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                connections.remove(&self.session_id);
+            }
+        }
     }
 }
 
@@ -62,6 +126,22 @@ pub(crate) struct GroupEvent {
     kind: &'static str,
     data: Value,
     requires_membership: bool,
+    revision: Option<EventRevision>,
+}
+
+#[derive(Clone, Copy)]
+enum EventRevision {
+    Queue(u64),
+    Command(u64),
+}
+
+impl EventRevision {
+    fn current(self, group: &Group) -> bool {
+        match self {
+            Self::Queue(revision) => group.playback.queue_revision == revision,
+            Self::Command(revision) => group.playback.revision == revision,
+        }
+    }
 }
 
 impl GroupEvent {
@@ -73,22 +153,7 @@ impl GroupEvent {
             kind,
             data,
             requires_membership: !matches!(kind, "GroupLeft" | "NotInGroup" | "GroupDoesNotExist"),
-        }
-    }
-
-    fn stop(session_id: Uuid, group: &Group) -> Self {
-        Self {
-            session_id,
-            group_id: group.id,
-            message_type: "SyncPlayCommand",
-            kind: "Stop",
-            data: json!({
-                "GroupId": group.id.simple().to_string(),
-                "PlaylistItemId": Uuid::nil().simple().to_string(),
-                "When": group.created_at, "PositionTicks": 0,
-                "Command": "Stop", "EmittedAt": Utc::now(),
-            }),
-            requires_membership: true,
+            revision: None,
         }
     }
 }
@@ -103,6 +168,7 @@ struct Member {
     session_id: Uuid,
     user_id: Uuid,
     username: String,
+    connected: bool,
 }
 
 #[derive(Clone)]
@@ -111,6 +177,7 @@ struct Group {
     name: String,
     created_at: DateTime<Utc>,
     members: Vec<Member>,
+    playback: Playback,
 }
 
 #[derive(Clone, Serialize)]
@@ -118,7 +185,7 @@ struct Group {
 struct GroupInfo {
     group_id: String,
     group_name: String,
-    state: &'static str,
+    state: PlaybackState,
     participants: Vec<String>,
     last_updated_at: DateTime<Utc>,
 }
@@ -134,20 +201,20 @@ impl Group {
         GroupInfo {
             group_id: self.id.simple().to_string(),
             group_name: self.name.clone(),
-            state: "Idle",
+            state: self.playback.state,
             participants,
             last_updated_at: Utc::now(),
         }
     }
 
-    fn joined(&self, session_id: Uuid, events: &mut Vec<GroupEvent>) {
+    fn joined(&mut self, session_id: Uuid, events: &mut Vec<GroupEvent>) {
         events.push(GroupEvent::update(
             session_id,
             self.id,
             "GroupJoined",
             json!(self.info()),
         ));
-        events.push(GroupEvent::stop(session_id, self));
+        self.bootstrap(session_id, events);
     }
 }
 
@@ -189,6 +256,7 @@ impl Registry {
                 json!(member.username),
             ));
         }
+        group.departed(session_id, events);
         if group.members.is_empty() {
             self.groups.remove(&id);
         }
@@ -201,9 +269,9 @@ impl Registry {
             .values()
             .flat_map(|group| &group.members)
             .filter(|member| {
-                !active
-                    .get(&member.session_id)
-                    .is_some_and(LiveMember::eligible)
+                !active.get(&member.session_id).is_some_and(|live| {
+                    live.eligible() && (!member.connected || live.member.connected)
+                })
             })
             .map(|member| member.session_id)
             .collect::<Vec<_>>();
@@ -212,10 +280,9 @@ impl Registry {
         }
         for group in self.groups.values_mut() {
             for member in &mut group.members {
-                if let Some(live) = active.get(&member.session_id)
-                    && member.username != live.member.username
-                {
+                if let Some(live) = active.get(&member.session_id) {
                     member.username.clone_from(&live.member.username);
+                    member.connected |= live.member.connected;
                 }
             }
         }
@@ -231,14 +298,13 @@ impl Registry {
 
 struct LiveMember {
     member: Member,
-    access: SyncPlayAccess,
-    playback: bool,
+    user: auth::UserRecord,
     requested: bool,
 }
 
 impl LiveMember {
     fn eligible(&self) -> bool {
-        self.playback && self.access != SyncPlayAccess::None
+        self.user.allow_media_playback && self.user.sync_play_access != SyncPlayAccess::None
     }
 }
 
@@ -250,6 +316,7 @@ enum Action {
     Leave,
     Refresh,
     Deliver(GroupEvent),
+    Control(Control),
 }
 
 enum Reply {
@@ -268,6 +335,9 @@ async fn execute(
     user_id: Uuid,
     action: Action,
 ) -> Result<Reply, ApiError> {
+    if let Action::Control(control) = &action {
+        control.validate()?;
+    }
     if state.shutdown_requested.load(Ordering::Acquire) {
         return Err(ApiError::Unavailable);
     }
@@ -286,27 +356,22 @@ async fn execute(
         .values()
         .flat_map(|group| group.members.iter().map(|member| member.session_id))
         .collect::<Vec<_>>();
-    let rows = sqlx::query("SELECT t.id,u.id AS user_id,u.username,u.sync_play_access,u.allow_media_playback,t.token_hash=$2 AS requested FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE (t.id=ANY($1) OR t.token_hash=$2) AND t.revoked_at IS NULL AND t.expires_at>NOW() AND u.disabled=FALSE FOR SHARE OF t,u")
+    let rows = sqlx::query("SELECT t.id AS session_id,u.id,u.username,u.is_admin,u.disabled,u.enable_remote_access,u.allow_media_playback,u.sync_play_access,u.enable_content_downloading,u.enable_live_tv_access,u.enable_live_tv_management,u.restrict_libraries,u.configuration,u.max_parental_rating,u.block_unrated_items,COALESCE(ARRAY(SELECT a.library_id FROM user_library_access a WHERE a.user_id=u.id ORDER BY a.library_id),ARRAY[]::uuid[]) AS allowed_library_ids,t.token_hash=$2 AS requested FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE (t.id=ANY($1) OR t.token_hash=$2) AND t.revoked_at IS NULL AND t.expires_at>clock_timestamp() AND u.disabled=FALSE FOR SHARE OF t,u")
         .bind(ids).bind(token_hash).fetch_all(&mut *tx).await?;
     let mut active = HashMap::new();
     for row in rows {
-        let access = match row.try_get::<&str, _>("sync_play_access")? {
-            "CreateAndJoinGroups" => SyncPlayAccess::CreateAndJoinGroups,
-            "JoinGroups" => SyncPlayAccess::JoinGroups,
-            "None" => SyncPlayAccess::None,
-            _ => return Err(ApiError::Unavailable),
-        };
+        let user = db::user_from_row(&row)?;
         let member = Member {
-            session_id: row.try_get("id")?,
-            user_id: row.try_get("user_id")?,
-            username: row.try_get("username")?,
+            session_id: row.try_get("session_id")?,
+            user_id: user.id,
+            username: user.username.clone(),
+            connected: state.syncplay.connected(row.try_get("session_id")?)?,
         };
         active.insert(
             member.session_id,
             LiveMember {
                 member,
-                access,
-                playback: row.try_get("allow_media_playback")?,
+                user,
                 requested: row.try_get("requested")?,
             },
         );
@@ -319,11 +384,20 @@ async fn execute(
     let mut candidate = registry.clone();
     let mut events = Vec::new();
     candidate.prune(&active, &mut events);
+    let new_ids = match &action {
+        Action::Control(control) => control.item_ids(),
+        _ => &[],
+    };
+    let media = visibility::Snapshot::load(&mut tx, &candidate, new_ids).await?;
+    media.prune(&mut candidate, &active, &mut events);
     let reply = match action {
         Action::Refresh => Reply::Empty,
         Action::Deliver(event) => {
             let group = candidate.groups.get(&event.group_id);
             let allowed = event.session_id == session_id
+                && event
+                    .revision
+                    .is_none_or(|revision| group.is_some_and(|group| revision.current(group)))
                 && (!event.requires_membership
                     || (requested.eligible()
                         && group.is_some_and(|group| {
@@ -333,7 +407,11 @@ async fn execute(
                                 .any(|member| member.session_id == session_id)
                         })));
             let data = if event.kind == "GroupJoined" {
-                group.map(|group| json!(group.info()))
+                group.map(|group| {
+                    let mut data = event.data;
+                    data["Participants"] = json!(group.info().participants);
+                    data
+                })
             } else {
                 Some(event.data)
             };
@@ -372,16 +450,29 @@ async fn execute(
             }
             let mut groups = candidate.groups.values().collect::<Vec<_>>();
             groups.sort_by_key(|group| (group.created_at, group.id));
-            Reply::List(groups.into_iter().map(Group::info).collect())
+            Reply::List(
+                groups
+                    .into_iter()
+                    .filter(|group| media.group_allowed(group, &requested.user))
+                    .map(Group::info)
+                    .collect(),
+            )
         }
         Action::Detail(id) => {
             if !requested.eligible() {
                 return Err(ApiError::Forbidden);
             }
-            Reply::Group(candidate.groups.get(&id).ok_or(ApiError::NotFound)?.info())
+            let group = candidate
+                .groups
+                .get(&id)
+                .filter(|group| media.group_allowed(group, &requested.user))
+                .ok_or(ApiError::NotFound)?;
+            Reply::Group(group.info())
         }
         Action::New(name) => {
-            if !requested.eligible() || requested.access != SyncPlayAccess::CreateAndJoinGroups {
+            if !requested.eligible()
+                || requested.user.sync_play_access != SyncPlayAccess::CreateAndJoinGroups
+            {
                 return Err(ApiError::Forbidden);
             }
             candidate.remove(session_id, &mut events);
@@ -391,11 +482,12 @@ async fn execute(
                 return Err(ApiError::RateLimited);
             }
             let now = Utc::now();
-            let group = Group {
+            let mut group = Group {
                 id: Uuid::new_v4(),
                 name,
                 created_at: now,
                 members: vec![requested.member.clone()],
+                playback: Playback::new(now),
             };
             group.joined(session_id, &mut events);
             let info = group.info();
@@ -406,7 +498,11 @@ async fn execute(
             if !requested.eligible() {
                 return Err(ApiError::Forbidden);
             }
-            if !candidate.groups.contains_key(&id) {
+            if !candidate
+                .groups
+                .get(&id)
+                .is_some_and(|group| media.group_allowed(group, &requested.user))
+            {
                 events.push(GroupEvent::update(
                     session_id,
                     Uuid::nil(),
@@ -431,6 +527,12 @@ async fn execute(
                 let group = candidate.groups.get_mut(&id).expect("target group exists");
                 if previous != Some(id) {
                     group.members.push(requested.member.clone());
+                } else if let Some(member) = group
+                    .members
+                    .iter_mut()
+                    .find(|member| member.session_id == session_id)
+                {
+                    member.connected = requested.member.connected;
                 }
                 for peer in &group.members {
                     if peer.session_id != session_id {
@@ -443,6 +545,42 @@ async fn execute(
                     }
                 }
                 group.joined(session_id, &mut events);
+            }
+            Reply::Empty
+        }
+        Action::Control(control) => {
+            if !requested.eligible() {
+                return Err(ApiError::Forbidden);
+            }
+            control.validate()?;
+            if let Some(id) = candidate.membership(session_id) {
+                let group = candidate.groups.get_mut(&id).expect("member group exists");
+                if !control.item_ids().iter().all(|item| {
+                    group.members.iter().all(|member| {
+                        active
+                            .get(&member.session_id)
+                            .is_some_and(|live| media.allowed(*item, &live.user))
+                    })
+                }) {
+                    return Err(ApiError::Forbidden);
+                }
+                group.control(session_id, control, &mut events)?;
+                if candidate
+                    .groups
+                    .values()
+                    .map(|group| group.playback.entries.len())
+                    .sum::<usize>()
+                    > 4096
+                {
+                    return Err(ApiError::RateLimited);
+                }
+            } else {
+                events.push(GroupEvent::update(
+                    session_id,
+                    Uuid::nil(),
+                    "NotInGroup",
+                    json!(""),
+                ));
             }
             Reply::Empty
         }
@@ -512,6 +650,7 @@ async fn detail(
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct NewGroup {
+    #[serde(alias = "groupName")]
     group_name: Option<String>,
 }
 
@@ -542,6 +681,7 @@ async fn new(
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct JoinGroup {
+    #[serde(alias = "groupId")]
     group_id: Option<Uuid>,
 }
 
