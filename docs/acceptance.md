@@ -19,6 +19,7 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Dependencies and notices | Passed | Full cargo-deny checks, GNU license audit and complete notice generation under the compatible permissive policy. |
 | Images | Passed | Static non-root core, retained notices, operator FFmpeg fd protocol and H.264/AAC encode/probe. |
 | Semantic container acceptance | 35 passed, 0 failed, 0 pending | Authentication, policies, media, scanning, subtitles, music, WebSockets, active FFmpeg shutdown and restart/resume. |
+| Current-source official Jellyfin Web replay | Passed | Image9 displayed the synthetic HLS fixture; the clean trace recorded 46 HTTP 200 and 12 HTTP 204 responses, including `Intros`, `PlaybackInfo`, the HLS master and playback reports. |
 | Local HTTPS proxy | 29 passed | Certificate checks, forwarding spoof rejection, secure cookies, media-token scope, logout and active remote-policy changes. Synthetic addresses; no Internet deployment. |
 | Public-schema route report | 132 / 364 exact method/path declarations | Declaration coverage only; includes the 22 SyncPlay operations, UTC clock and Intros response. |
 
@@ -41,7 +42,7 @@ An initial queue test failed
 compilation on its shutdown helper; an intermediate disconnect run failed on a
 missing test-fixture field. Both were corrected and failed records retained.
 These checks establish source/database protocol behavior. Packaged acceptance
-now includes the fresh 35-check operator run and the current-image official Web
+now includes the fresh 35-check operator run and the current-source official Web
 playback recorded below. The two-session official Web SyncPlay and restart run
 is recorded against the preceding operator image; timing and queue edits during
 shuffle need broader comparison. Release gates remain open.
@@ -97,8 +98,16 @@ returned 404: `/Users/{userId}/Items/{itemId}/Intros`. The server now returns
 Jellyfin's empty `QueryResult` shape for both that user-scoped alias and the
 canonical `/Items/{itemId}/Intros` route, after applying the normal selected-user
 and item-visibility checks. The focused disposable PostgreSQL navigation
-regression passed both paths and their forbidden/not-found cases; the next
-packaged rebuild will recheck the Web trace against this source change.
+regression passed both paths and their forbidden/not-found cases. The current
+source was then rebuilt as core
+`sha256:3ba80d9bf2928248c540dbdd00a4d680b0203ecf5220a0e16f24b1d629c5fcf1`
+and operator
+`sha256:f0293c9e4cc1d04f5c040db98b0c46e36ae9239af18ce8c71883fe0939bfac31`.
+The official Web client signed in with Remember Me off, displayed the active HLS
+fixture, and completed a clean trace with `Intros`, `PlaybackInfo`, the HLS
+master and segments returning successfully. The compact record is in
+`.local/next-up-contract-20261005/client-image9-web2/results.json`, with the
+request trace in the adjacent `observed-proxy.log`.
 
 The [group checkpoint at `4560a12`](https://github.com/peppermintish/puffinbox/actions/runs/37378609820)
 passed both cloud jobs: source/license/static checks and isolated database/media

@@ -547,6 +547,9 @@ def verify_container_restart(
     command = ["docker", "compose", "--project-name", project_name, "--env-file", str(env_file), "-f", str(ROOT / "docker-compose.yml"), "-f", str(ROOT / "docker-compose.acceptance.yml")]
     if settings.get("PUFFINBOX_ACCEPTANCE_FFMPEG") == "1":
         command += ["-f", str(ROOT / "docker-compose.ffmpeg-runtime.yml")]
+    external_network = ROOT / "external-network.yml"
+    if external_network.is_file():
+        command += ["-f", str(external_network)]
     container = subprocess.run(command + ["ps", "-q", "server"], check=True, capture_output=True, text=True, timeout=20, env=command_environment).stdout.strip()
     require(bool(container), "acceptance server container could not be identified before graceful stop")
     database = subprocess.run(command + ["ps", "-q", "database"], check=True, capture_output=True, text=True, timeout=20, env=command_environment).stdout.strip()
