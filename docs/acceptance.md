@@ -65,6 +65,16 @@ after the run. Native Jellyfin Desktop synchronization remains separately
 unvalidated; its known unit-mismatch replay failure is retained in the private
 ledger.
 
+Commit `4464c74` built a fresh static core image
+(`sha256:d394fa710f4f6e879f1968fe4484d491dd90d17016b90ae12d52d6ec3357315c`)
+and operator image
+(`sha256:8009273877d07c01c747945b0a19c2add7a4925fd7064542926c8480fd984a50`).
+The source-policy/license checks and operator inventory passed, and a fresh
+isolated stack passed all 35 semantic container checks with no pending cases.
+The packaged playlist smoke check also accepted the official catalog query
+options covered by the source regression. Its network and volumes were stopped
+and left scoped to the disposable acceptance state.
+
 The [group checkpoint at `4560a12`](https://github.com/peppermintish/puffinbox/actions/runs/37378609820)
 passed both cloud jobs: source/license/static checks and isolated database/media
 acceptance. That run precedes shared-queue implementation.
