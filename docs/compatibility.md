@@ -1,6 +1,6 @@
 # Capability and validation matrix
 
-Puffinbox is partial and unreleased. The target is the pinned public Jellyfin 12 API schema; version reporting does not certify compatibility. The current report matches 131 of 364 exact method/path declarations. Many missing operations and behavior differences remain.
+Puffinbox is partial and unreleased. The target is the pinned public Jellyfin 12 API schema; version reporting does not certify compatibility. The current report matches 132 of 364 exact method/path declarations. Many missing operations and behavior differences remain.
 
 ## Current evidence
 
@@ -8,7 +8,7 @@ The current group/queue source passed formatting, strict Clippy, source policy, 
 
 Both official clients completed the synthetic four-track FLAC album with fifteen successful playback reports each and independently verified play counts. Official Web displayed advancing HLS video and decoded audio, and a fresh two-session official Web run created, joined, paused and resumed a SyncPlay group with two decoded HLS players. The same run survived a graceful server restart with the stored position and HLS responses intact. Desktop displayed advancing HLS video, reported normal stops, and resumed the stored position across the local-metadata container replacement. Both clients displayed Next Up, completed watched/favorite actions and undo with independent reads, and displayed Favorites after the series sorting fix. General video, audible continuity, native-client synchronization and full client acceptance remain open.
 
-Current local checks clear the [core distribution license gate](licensing.md) under the corrected compatible permissive policy. The pushed acceptance record also passed both jobs in the [current cloud run](https://github.com/peppermintish/puffinbox/actions/runs/37627131953), alongside the earlier Rust/license correction, Japanese-font fix, date/offline fixes and client-action aliases at their named checkpoints. PDF restoration has source, image and authenticated reader coverage. Behavioral compatibility, full features, external deployment/security and production scale remain open. No release is ready.
+Current local checks clear the [core distribution license gate](licensing.md) under the corrected compatible permissive policy. The pushed acceptance record also passed both jobs in the [current cloud run](https://github.com/peppermintish/puffinbox/actions/runs/37627131953), alongside the earlier Rust/license correction, Japanese-font fix, date/offline fixes and client-action aliases at their named checkpoints. The current source adds the canonical and user-scoped Jellyfin Intros response with database visibility coverage; a packaged replay is pending. PDF restoration has source, image and authenticated reader coverage. Behavioral compatibility, full features, external deployment/security and production scale remain open. No release is ready.
 
 ## Requested scope
 

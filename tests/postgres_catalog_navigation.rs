@@ -299,6 +299,37 @@ async fn navigation_and_theme_media_keep_library_rating_and_user_boundaries() {
     );
     let admin_as_owner = body_json(call(&router, &legacy_path, Some(&admin_token)).await).await;
     assert!(admin_as_owner.get("Path").is_none());
+    let intros_path = format!("/Users/{owner}/Items/{movie}/Intros");
+    let intros = body_json(call(&router, &intros_path, Some(&owner_token)).await).await;
+    assert_eq!(intros["Items"], json!([]));
+    assert_eq!(intros["TotalRecordCount"], 0);
+    assert_eq!(intros["StartIndex"], 0);
+    let canonical_intros = body_json(
+        call(
+            &router,
+            &format!("/Items/{movie}/Intros?userId={owner}"),
+            Some(&owner_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(canonical_intros["Items"], json!([]));
+    assert_eq!(
+        call(&router, &intros_path, Some(&peer_token))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &router,
+            &format!("/Users/{owner}/Items/{private_movie}/Intros"),
+            Some(&admin_token),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
     for path in [
         format!("/Items/{private_movie}/Ancestors"),
         format!("/Items/{private_movie}/ThemeMedia"),

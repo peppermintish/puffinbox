@@ -1,13 +1,13 @@
 # Generated route declaration comparison
 
-Generated at 2026-10-05T22:37:03.319402+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
+Generated at 2026-10-07T14:18:09.672601+00:00 from [https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json](https://repo.jellyfin.org/releases/openapi/stable/jellyfin-openapi-12.0.json).
 
 - OpenAPI version: `12.0.0`
 - Schema paths: `294`
 - Schema operations: `364`
-- Unique declared server method/path pairs: `224`
-- Declared pairs matching a schema method/path: `131`
-- Declared pairs outside the schema: `93`
+- Unique declared server method/path pairs: `226`
+- Declared pairs matching a schema method/path: `132`
+- Declared pairs outside the schema: `94`
 
 This is a source declaration comparison only. It does not establish that a matching route starts, authenticates correctly, returns the required shape, enforces policy, or behaves like Jellyfin.
 
@@ -65,8 +65,10 @@ This is a source declaration comparison only. It does not establish that a match
 | `GET /Items/Counts` | `src/api.rs` | match |
 | `DELETE /Items/{item_id}` | `src/api.rs` | match |
 | `GET /Items/{item_id}` | `src/api.rs` | match |
+| `GET /Items/{item_id}/Intros` | `src/api.rs` | match |
 | `GET /Users/{user_id}/Items` | `src/api.rs` | custom / not in target schema |
 | `GET /Users/{user_id}/Items/{item_id}` | `src/api.rs` | custom / not in target schema |
+| `GET /Users/{user_id}/Items/{item_id}/Intros` | `src/api.rs` | custom / not in target schema |
 | `GET /Items/{item_id}/UserData` | `src/api.rs` | custom / not in target schema |
 | `POST /Items/{item_id}/UserData` | `src/api.rs` | custom / not in target schema |
 | `GET /UserItems/{item_id}` | `src/api.rs` | custom / not in target schema |

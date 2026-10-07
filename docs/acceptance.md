@@ -20,7 +20,7 @@ The compatible-license correction restores upstream packages, uses rustls, remov
 | Images | Passed | Static non-root core, retained notices, operator FFmpeg fd protocol and H.264/AAC encode/probe. |
 | Semantic container acceptance | 35 passed, 0 failed, 0 pending | Authentication, policies, media, scanning, subtitles, music, WebSockets, active FFmpeg shutdown and restart/resume. |
 | Local HTTPS proxy | 29 passed | Certificate checks, forwarding spoof rejection, secure cookies, media-token scope, logout and active remote-policy changes. Synthetic addresses; no Internet deployment. |
-| Public-schema route report | 131 / 364 exact method/path declarations | Declaration coverage only; includes the 22 SyncPlay operations and UTC clock. |
+| Public-schema route report | 132 / 364 exact method/path declarations | Declaration coverage only; includes the 22 SyncPlay operations, UTC clock and Intros response. |
 
 The [SyncPlay controls](jellyfin12-syncplay.md) passed formatting, strict Clippy,
 source policy, 249 standard Rust cases and all 32 database cases. The two-user
@@ -91,6 +91,14 @@ Desktop process in this Codex Windows session, so there is no current-source
 installed-player result to claim. The launch record is in
 `.local/next-up-contract-20261005/native-image8b/launch-result.json`; the
 earlier image7 Desktop result remains historical evidence only.
+
+The image8 official Web trace also exposed one optional pre-play request that
+returned 404: `/Users/{userId}/Items/{itemId}/Intros`. The server now returns
+Jellyfin's empty `QueryResult` shape for both that user-scoped alias and the
+canonical `/Items/{itemId}/Intros` route, after applying the normal selected-user
+and item-visibility checks. The focused disposable PostgreSQL navigation
+regression passed both paths and their forbidden/not-found cases; the next
+packaged rebuild will recheck the Web trace against this source change.
 
 The [group checkpoint at `4560a12`](https://github.com/peppermintish/puffinbox/actions/runs/37378609820)
 passed both cloud jobs: source/license/static checks and isolated database/media

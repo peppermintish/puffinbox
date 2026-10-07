@@ -106,8 +106,13 @@ pub fn router(state: AppState) -> Router {
             "/Items/{item_id}",
             get(get_item).delete(crate::playlists::delete_playlist),
         )
+        .route("/Items/{item_id}/Intros", get(list_item_intros_for_current))
         .route("/Users/{user_id}/Items", get(browse_user_items))
         .route("/Users/{user_id}/Items/{item_id}", get(get_user_item))
+        .route(
+            "/Users/{user_id}/Items/{item_id}/Intros",
+            get(list_item_intros),
+        )
         .route(
             "/Items/{item_id}/UserData",
             get(get_user_item_data).post(update_user_item_data),
@@ -4166,6 +4171,43 @@ async fn get_user_item(
     }
     let user = selected_user(&state, &current, Some(user_id)).await?;
     catalog_item_response(&state, &current, &user, item_id).await
+}
+
+async fn list_item_intros(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path((user_id, item_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ItemsResultDto>, ApiError> {
+    let user = selected_user(&state, &current, Some(user_id)).await?;
+    list_item_intros_for_user(&state, &user, item_id).await
+}
+
+async fn list_item_intros_for_current(
+    State(state): State<AppState>,
+    CurrentUser(current): CurrentUser,
+    Path(item_id): Path<Uuid>,
+    Query(params): Query<UserViewsParams>,
+) -> Result<Json<ItemsResultDto>, ApiError> {
+    let user = selected_user(&state, &current, params.user_id).await?;
+    list_item_intros_for_user(&state, &user, item_id).await
+}
+
+async fn list_item_intros_for_user(
+    state: &AppState,
+    user: &UserRecord,
+    item_id: Uuid,
+) -> Result<Json<ItemsResultDto>, ApiError> {
+    let item = db::get_item(&state.db, item_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if !db::item_visible_to_user(&state.db, user, &item).await? {
+        return Err(ApiError::NotFound);
+    }
+    Ok(Json(ItemsResultDto {
+        items: Vec::new(),
+        total_record_count: Some(0),
+        start_index: 0,
+    }))
 }
 
 async fn catalog_item_response(
