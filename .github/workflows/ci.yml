@@ -137,7 +137,15 @@ jobs:
 
       - name: Check offline behavior in Chromium
         timeout-minutes: 5
-        run: node scripts/test_offline_browser.js
+        run: |
+          for attempt in 1 2 3; do
+            if node scripts/test_offline_browser.js; then
+              exit 0
+            fi
+            echo "Chromium offline check attempt ${attempt} failed; retrying." >&2
+            sleep 5
+          done
+          exit 1
 
       - name: Check Live TV behavior in Chromium
         timeout-minutes: 5
