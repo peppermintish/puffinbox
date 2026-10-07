@@ -183,6 +183,12 @@ Private evidence is under `.local/policy-correction-20261005/`: `source2`, `brow
 
 ## Cloud and earlier records
 
+The pushed acceptance commit `098ac89` passed both GitHub Actions jobs in
+the [current cloud run](https://github.com/peppermintish/puffinbox/actions/runs/37627131953).
+That run covers the compatible-license/source checks and the isolated database
+and media acceptance workflow; it does not change the open feature, external
+security or scale gates.
+
 The [local-metadata run at `bd177a4`](https://github.com/peppermintish/puffinbox/actions/runs/37370581543)
 failed to acquire GitHub hosted runners after repeated attempts. Both jobs were
 cancelled before any test step ran. This is an infrastructure failure and provides
