@@ -298,22 +298,22 @@ pub(crate) async fn catalog_children_result(
 }
 
 pub(crate) fn validate_catalog_query(raw_query: Option<&str>) -> Result<(), ApiError> {
-    validate_catalog_options(raw_query, false)
+    validate_catalog_options(raw_query)
 }
 
 pub(crate) fn validate_catalog_children_query(raw_query: Option<&str>) -> Result<(), ApiError> {
-    validate_catalog_options(raw_query, true)
+    validate_catalog_options(raw_query)
 }
 
-fn validate_catalog_options(raw_query: Option<&str>, entries: bool) -> Result<(), ApiError> {
+fn validate_catalog_options(raw_query: Option<&str>) -> Result<(), ApiError> {
     for (key, value) in url::form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
-        if entries {
-            match key.to_ascii_lowercase().as_str() {
-                // Entries contain scanned Audio files, never virtual items or box sets.
-                "excludelocationtypes" if value.eq_ignore_ascii_case("Virtual") => continue,
-                "collapseboxsetitems" if value.eq_ignore_ascii_case("false") => continue,
-                _ => {}
-            }
+        match key.to_ascii_lowercase().as_str() {
+            // Jellyfin clients send these library presentation options on both
+            // playlist folders and playlist entries. They do not alter which
+            // permission-checked playlist objects are selected.
+            "excludelocationtypes" if value.eq_ignore_ascii_case("Virtual") => continue,
+            "collapseboxsetitems" if value.eq_ignore_ascii_case("false") => continue,
+            _ => {}
         }
         if !matches!(
             key.to_ascii_lowercase().as_str(),

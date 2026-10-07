@@ -2,7 +2,7 @@
 
 Puffinbox is partial and unreleased. Passing the checks below establishes their stated scope; it does not establish complete Jellyfin 12 compatibility or the requested production scale. See [compatibility](compatibility.md) and [release gates](release-gates.json).
 
-## Current local results — 2026-10-06
+## Current local results — 2026-10-07
 
 The compatible-license correction restores upstream packages, uses rustls, removes project C/assembly and obsolete runtime experiments, and forbids unsafe Rust in every project Cargo target. A narrow SQLx patch preserves PostgreSQL SCRAM behavior for valid Unicode roles and normalized or raw-fallback passwords. The media worker retains filesystem, syscall and resource confinement through safe dependency APIs.
 
@@ -40,9 +40,30 @@ request. The expiry reproduction and all failed records remain preserved.
 An initial queue test failed
 compilation on its shutdown helper; an intermediate disconnect run failed on a
 missing test-fixture field. Both were corrected and failed records retained.
-These checks establish source/database protocol behavior. Packaged SyncPlay and
-official-client playback acceptance remain pending; timing and queue edits during
-shuffle need broader comparison. Release gates remain open.
+These checks establish source/database protocol behavior. Packaged SyncPlay
+acceptance remains pending, and timing and queue edits during shuffle need
+broader comparison. Release gates remain open.
+
+### Official Web SyncPlay and restart check
+
+The isolated operator image `sha256:7a4c05bd0d8db11ae0dd512be4b7060a2983a1cb258b92e50be77a8025c6dc57`
+was exercised through two unchanged official Web sessions. Two synthetic users
+created and joined one group, both decoded the same 300-second HLS fixture, and
+the browser video elements reached `readyState=4`. A pause changed the server
+group to `Paused` and a resume returned it to `Playing`; both clients advanced
+from the same paused timestamp. The recorded stages and screenshots are under
+`.local/next-up-contract-20261005/client-syncplay7/`.
+
+The server was then restarted with a 60-second grace period while both media
+children were active. Shutdown logged `all media children drained during
+shutdown` and closed two playback sessions. The replacement container reported
+zero restarts, a running state, no OOM kill and exit code zero. The persisted
+position was `1639726479` ticks; the resumed Web request used that position and
+returned HTTP 200 for PlaybackInfo, the HLS master playlist and media segments.
+The original temporary library grant for the second test user was restored
+after the run. Native Jellyfin Desktop synchronization remains separately
+unvalidated; its known unit-mismatch replay failure is retained in the private
+ledger.
 
 The [group checkpoint at `4560a12`](https://github.com/peppermintish/puffinbox/actions/runs/37378609820)
 passed both cloud jobs: source/license/static checks and isolated database/media

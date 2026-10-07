@@ -411,6 +411,10 @@ async fn playlists_preserve_order_and_enforce_owner_library_and_playback_policy(
             "SearchTerm=100%25_mix&EnableTotalRecordCount=false",
             second_playlist_id,
         ),
+        (
+            "SortBy=DateCreated&SortOrder=Ascending&Limit=1&CollapseBoxSetItems=false&ExcludeLocationTypes=Virtual&EnableTotalRecordCount=false",
+            playlist_id,
+        ),
     ] {
         let response = send(
             &router,
