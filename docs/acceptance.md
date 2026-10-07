@@ -40,9 +40,11 @@ request. The expiry reproduction and all failed records remain preserved.
 An initial queue test failed
 compilation on its shutdown helper; an intermediate disconnect run failed on a
 missing test-fixture field. Both were corrected and failed records retained.
-These checks establish source/database protocol behavior. Packaged SyncPlay
-acceptance remains pending, and timing and queue edits during shuffle need
-broader comparison. Release gates remain open.
+These checks establish source/database protocol behavior. Packaged acceptance
+now includes the fresh 35-check operator run and the current-image official Web
+playback recorded below. The two-session official Web SyncPlay and restart run
+is recorded against the preceding operator image; timing and queue edits during
+shuffle need broader comparison. Release gates remain open.
 
 ### Official Web SyncPlay and restart check
 
@@ -74,6 +76,21 @@ isolated stack passed all 35 semantic container checks with no pending cases.
 The packaged playlist smoke check also accepted the official catalog query
 options covered by the source regression. Its network and volumes were stopped
 and left scoped to the disposable acceptance state.
+
+The operator image above was built from `4464c74` and exercised through the
+official Web client. The HLS fixture displayed a burned-in frame at
+`00:00:57.625` and a later frame at `00:03:10.917`; the observation proxy
+recorded successful HLS segments and HTTP 204 playback-progress reports using
+the `Transcode` play method. The compact record is in
+`.local/next-up-contract-20261005/client-image8-desktop/web-playback.json`.
+
+The same source and image were prepared for the official Jellyfin Desktop
+client with a fresh profile and certificate verification enabled. Both a
+PowerShell launch and a `cmd` launch exited without leaving an observable
+Desktop process in this Codex Windows session, so there is no current-source
+installed-player result to claim. The launch record is in
+`.local/next-up-contract-20261005/native-image8b/launch-result.json`; the
+earlier image7 Desktop result remains historical evidence only.
 
 The [group checkpoint at `4560a12`](https://github.com/peppermintish/puffinbox/actions/runs/37378609820)
 passed both cloud jobs: source/license/static checks and isolated database/media
@@ -148,6 +165,13 @@ The restart check stopped the server while an FFmpeg HLS process was active. It 
 ## Official clients
 
 Unchanged official web assets and the verified Qt 6 Jellyfin Desktop executable were tested against the original corrected operator image through a loopback observation proxy. API responses were forwarded unchanged. A fresh synthetic account and Desktop profile were used; Remember Me was off. Older libraries, grants, media and saved playback rows were preserved.
+
+The current packaged image was also opened in official Web from a fresh
+synthetic profile. It decoded and advanced the long HLS fixture, while the
+proxy recorded segment requests and successful progress reports. A native
+Desktop launch against the same image could not be observed in the current
+Windows session because the executable exited immediately; no current-source
+Desktop compatibility result is asserted.
 
 Official web visibly decoded the long synthetic HLS fixture at 640×360. Its timeline advanced from 18.830183 to 39.670778 seconds; normal navigation stopped playback and committed 51.948079 seconds. Both clients completed the four-track tagged FLAC album automatically. Each queue generated fifteen successful playback reports and added exactly one play per track; music resume positions stayed zero. A web replay did the same, and active decoded browser audio was observed. All thirteen fixture hashes remained unchanged.
 
